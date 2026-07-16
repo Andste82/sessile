@@ -1,62 +1,81 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { api } from '@/api/client'
-import type { AppConfig } from '@/api/types'
+import { useRouter } from 'vue-router'
+import { PlusIcon } from '@heroicons/vue/24/solid'
+import { useSessionsStore } from '@/stores/sessions'
+import SessionListItem from '@/components/SessionListItem.vue'
+import NewSessionDialog from '@/components/NewSessionDialog.vue'
+import type { Session } from '@/api/types'
 
-const health = ref<string>('…')
-const config = ref<AppConfig | null>(null)
-const error = ref<string | null>(null)
+const store = useSessionsStore()
+const router = useRouter()
+const dialogOpen = ref(false)
 
 onMounted(async () => {
-  try {
-    health.value = (await api.health()).status
-    config.value = await api.config()
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
-  }
+  await Promise.all([store.fetchConfig(), store.fetchSessions()])
 })
+
+function onCreated(session: Session) {
+  dialogOpen.value = false
+  router.push(`/sessions/${session.id}`)
+}
+
+async function onDelete(id: string) {
+  await store.deleteSession(id)
+}
 </script>
 
 <template>
-  <main class="mx-auto flex min-h-full max-w-3xl flex-col gap-6 p-8">
-    <header class="flex items-center gap-3">
-      <span class="font-mono text-2xl text-emerald-400">&gt;_</span>
-      <h1 class="text-2xl font-semibold tracking-tight">sessile</h1>
-      <span class="text-sm text-slate-400">terminal session manager</span>
+  <div class="min-h-full">
+    <header
+      class="sticky top-0 z-10 flex items-center gap-3 border-b border-slate-800 bg-slate-900/80 px-6 py-4 backdrop-blur"
+    >
+      <span class="font-mono text-xl text-emerald-400">&gt;_</span>
+      <h1 class="text-lg font-semibold tracking-tight">sessile</h1>
+      <span
+        v-if="store.config"
+        class="ml-2 hidden font-mono text-xs text-slate-500 sm:inline"
+        :title="store.config.root"
+        >root: {{ store.config.root }}</span
+      >
+      <button
+        class="ml-auto flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-500"
+        @click="dialogOpen = true"
+      >
+        <PlusIcon class="h-4 w-4" /> New session
+      </button>
     </header>
 
-    <section class="rounded-lg border border-slate-700 bg-slate-800/50 p-6">
-      <h2 class="mb-4 text-sm font-medium uppercase tracking-wide text-slate-400">
-        Backend status
-      </h2>
-      <dl class="grid grid-cols-[8rem_1fr] gap-y-2 text-sm">
-        <dt class="text-slate-400">Health</dt>
-        <dd>
-          <span
-            class="rounded px-2 py-0.5 text-xs font-medium"
-            :class="
-              health === 'ok'
-                ? 'bg-emerald-500/15 text-emerald-400'
-                : 'bg-amber-500/15 text-amber-400'
-            "
-            >{{ health }}</span
-          >
-        </dd>
-        <template v-if="config">
-          <dt class="text-slate-400">Root</dt>
-          <dd class="font-mono text-slate-200">{{ config.root }}</dd>
-          <dt class="text-slate-400">Shells</dt>
-          <dd class="font-mono text-slate-200">{{ config.shells.join(', ') }}</dd>
-          <dt class="text-slate-400">Version</dt>
-          <dd class="font-mono text-slate-200">{{ config.version }}</dd>
-        </template>
-      </dl>
-      <p v-if="error" class="mt-4 text-sm text-rose-400">{{ error }}</p>
-    </section>
+    <main class="mx-auto max-w-5xl p-6">
+      <p v-if="store.error" class="mb-4 text-sm text-rose-400">{{ store.error }}</p>
 
-    <p class="text-sm text-slate-500">
-      Scaffold (M0) is running. Session management UI arrives in later
-      milestones.
-    </p>
-  </main>
+      <div
+        v-if="!store.loading && store.sessions.length === 0"
+        class="mt-24 flex flex-col items-center gap-3 text-center text-slate-400"
+      >
+        <p class="text-lg">No sessions yet.</p>
+        <button
+          class="flex items-center gap-2 rounded-md border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800"
+          @click="dialogOpen = true"
+        >
+          <PlusIcon class="h-4 w-4" /> Create your first session
+        </button>
+      </div>
+
+      <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <SessionListItem
+          v-for="s in store.sessions"
+          :key="s.id"
+          :session="s"
+          @delete="onDelete"
+        />
+      </div>
+    </main>
+
+    <NewSessionDialog
+      :open="dialogOpen"
+      @close="dialogOpen = false"
+      @created="onCreated"
+    />
+  </div>
 </template>
