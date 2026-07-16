@@ -29,15 +29,14 @@ async function onDelete(id: string) {
 </script>
 
 <template>
-  <div class="min-h-full">
+  <div class="flex h-full flex-col">
     <header
-      class="sticky top-0 z-10 flex items-center gap-3 border-b border-slate-800 bg-slate-900/80 px-6 py-4 backdrop-blur"
+      class="flex items-center gap-3 border-b border-slate-800 bg-slate-900 px-4 py-4 sm:px-6"
     >
-      <span class="font-mono text-xl text-emerald-400">&gt;_</span>
-      <h1 class="text-lg font-semibold tracking-tight">sessile</h1>
+      <h1 class="text-lg font-semibold tracking-tight">Sessions</h1>
       <span
         v-if="store.config"
-        class="ml-2 hidden font-mono text-xs text-slate-500 sm:inline"
+        class="ml-2 hidden truncate font-mono text-xs text-slate-500 sm:inline"
         :title="store.config.root"
         >root: {{ store.config.root }}</span
       >
@@ -49,7 +48,7 @@ async function onDelete(id: string) {
       </button>
     </header>
 
-    <main class="mx-auto max-w-5xl p-6">
+    <main class="mx-auto w-full max-w-5xl flex-1 overflow-y-auto p-4 sm:p-6">
       <p v-if="store.error" class="mb-4 text-sm text-rose-400">{{ store.error }}</p>
 
       <div

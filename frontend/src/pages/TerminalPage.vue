@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeftIcon } from '@heroicons/vue/24/outline'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import TerminalView from '@/components/TerminalView.vue'
+import TabBar from '@/components/TabBar.vue'
 import StatusDot from '@/components/StatusDot.vue'
 import { useSessionsStore } from '@/stores/sessions'
 import { api } from '@/api/client'
@@ -10,7 +10,6 @@ import type { Session } from '@/api/types'
 import type { ConnStatus } from '@/composables/useTerminal'
 
 const route = useRoute()
-const router = useRouter()
 const store = useSessionsStore()
 
 const id = computed(() => String(route.params.id))
@@ -18,17 +17,26 @@ const session = ref<Session | null>(null)
 const conn = ref<ConnStatus>('connecting')
 const loadError = ref<string | null>(null)
 
+async function loadSession(sessionId: string) {
+  store.openTab(sessionId)
+  loadError.value = null
+  session.value = store.byId(sessionId)
+  if (session.value) return
+  try {
+    session.value = await api.getSession(sessionId)
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 onMounted(async () => {
   if (!store.config) store.fetchConfig()
-  session.value = store.byId(id.value)
-  if (!session.value) {
-    try {
-      session.value = await api.getSession(id.value)
-    } catch (e) {
-      loadError.value = e instanceof Error ? e.message : String(e)
-    }
-  }
+  if (store.sessions.length === 0) store.fetchSessions()
+  await loadSession(id.value)
 })
+
+// Handle navigating directly between tabs (component is reused).
+watch(id, (newId) => loadSession(newId))
 
 const statusLabel = computed(() => {
   switch (conn.value) {
@@ -46,26 +54,20 @@ const statusLabel = computed(() => {
 </script>
 
 <template>
-  <div class="flex h-screen flex-col bg-slate-900">
+  <div class="flex h-full flex-col bg-slate-900">
+    <TabBar />
     <header
       class="flex items-center gap-3 border-b border-slate-800 px-4 py-2.5"
     >
-      <button
-        class="rounded p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-        title="Back to dashboard"
-        @click="router.push('/')"
-      >
-        <ArrowLeftIcon class="h-5 w-5" />
-      </button>
       <StatusDot v-if="session" :status="session.status" />
-      <span class="font-medium text-slate-100">
+      <span class="truncate font-medium text-slate-100">
         {{ session?.name ?? id }}
       </span>
-      <span v-if="session" class="font-mono text-xs text-slate-500">
+      <span v-if="session" class="hidden font-mono text-xs text-slate-500 sm:inline">
         {{ session.directory }} · {{ session.shell }}
       </span>
       <span
-        class="ml-auto text-xs"
+        class="ml-auto shrink-0 text-xs"
         :class="{
           'text-emerald-400': conn === 'connected',
           'text-amber-400': conn === 'connecting' || conn === 'disconnected',

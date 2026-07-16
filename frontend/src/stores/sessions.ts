@@ -10,6 +10,17 @@ export const useSessionsStore = defineStore('sessions', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
 
+  // Ordered ids of sessions opened as terminal tabs (§12 M5).
+  const openTabIds = ref<string[]>([])
+
+  function openTab(id: string) {
+    if (!openTabIds.value.includes(id)) openTabIds.value.push(id)
+  }
+
+  function closeTab(id: string) {
+    openTabIds.value = openTabIds.value.filter((t) => t !== id)
+  }
+
   const byId = computed(
     () => (id: string) => sessions.value.find((s) => s.id === id) ?? null,
   )
@@ -64,6 +75,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   async function deleteSession(id: string) {
     await api.deleteSession(id)
     sessions.value = sessions.value.filter((s) => s.id !== id)
+    closeTab(id)
   }
 
   async function renameSession(id: string, name: string) {
@@ -78,6 +90,9 @@ export const useSessionsStore = defineStore('sessions', () => {
     loading,
     error,
     byId,
+    openTabIds,
+    openTab,
+    closeTab,
     fetchConfig,
     fetchSessions,
     refreshSessions,
