@@ -88,26 +88,68 @@ Then open <http://localhost:8080>.
 
 ## Docker
 
+Released images are published to GitHub Container Registry for `linux/amd64`
+and `linux/arm64`. Nothing to build:
+
 ```bash
-# Build and run with compose (mounts ./workspace, persists metadata in a volume)
-docker compose up --build
+docker pull ghcr.io/andste82/sessile:latest     # or pin a release: :0.1.2
 
-# …or pull a released image
-docker run -p 8080:8080 \
-  -v "$PWD/workspace:/workspace" -v sessile-config:/config \
+mkdir -p workspace
+docker run -d --name sessile -p 8080:8080 \
+  -v "$PWD/workspace:/workspace" \
+  -v sessile-config:/config \
   ghcr.io/andste82/sessile:latest
-
-# …or build it yourself (tags sessile:dev)
-make docker
-docker run -p 8080:8080 \
-  -v "$PWD/workspace:/workspace" -v sessile-config:/config \
-  sessile:dev
 ```
 
-Then open <http://localhost:8080>. The image is multi-stage — Node builds the
-SPA, Go builds a static binary, and the runtime layer is `alpine` with `bash`
-installed for shells — and ships a `/api/health` healthcheck. Two volumes:
-`/workspace` (the session root) and `/config` (SQLite metadata).
+Then open <http://localhost:8080>. Prefer a pinned tag like `:0.1.2` over
+`:latest` for anything you care about — `:latest` moves with every release.
+
+### With compose
+
+Save as `docker-compose.yml` and run `docker compose up -d`:
+
+```yaml
+services:
+  sessile:
+    image: ghcr.io/andste82/sessile:0.1.2
+    container_name: sessile
+    ports:
+      - "8080:8080"
+    volumes:
+      # The directory tree sessions may open shells in. Sessions cannot escape it.
+      - ./workspace:/workspace
+      # Session metadata; keep it on a volume so sessions survive a restart.
+      - sessile-config:/config
+    # Defaults baked into the image; override to change the sandbox root, the
+    # database path, or which shells are offered.
+    # command: ["--root=/workspace", "--db=/config/sessions.db", "--shells=bash,zsh"]
+    restart: unless-stopped
+
+volumes:
+  sessile-config:
+```
+
+The repo's own `docker-compose.yml` differs on purpose: it *builds* from source
+rather than pulling, which is what you want when hacking on sessile itself.
+
+### Building it yourself
+
+```bash
+docker compose up --build      # build from source and run
+make docker                    # build only, tags sessile:dev
+```
+
+The image is multi-stage — Node builds the SPA, Go builds a static binary, and
+the runtime layer is `alpine` with `bash` installed for shells — and ships a
+`/api/health` healthcheck. Two volumes: `/workspace` (the session root) and
+`/config` (SQLite metadata). It runs as root, so treat the container as having
+shell access to itself and keep it behind a trusted boundary.
+
+Check what you are running:
+
+```bash
+docker run --rm ghcr.io/andste82/sessile:latest --version
+```
 
 ## Configuration
 
@@ -122,6 +164,17 @@ Every option is a CLI flag with an environment-variable fallback.
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` | Per-session ring buffer size, in bytes |
 | `--log-level` | `TSM_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `--dev` | `TSM_DEV` | `false` | Relax the WebSocket origin check for the Vite dev server |
+
+`--version` prints the version and exits; `--help` lists every flag. Neither
+needs `--root`.
+
+```console
+$ sessile --version
+sessile 0.1.2
+```
+
+The running server reports the same value at `GET /api/config`, and the UI shows
+it on the settings page.
 
 ## REST API
 
