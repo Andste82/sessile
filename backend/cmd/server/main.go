@@ -14,6 +14,8 @@ import (
 
 	"github.com/Andste82/sessile/backend/internal/api"
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/session"
+	"github.com/Andste82/sessile/backend/internal/ws"
 	"github.com/Andste82/sessile/backend/web"
 )
 
@@ -39,7 +41,11 @@ func run(args []string) error {
 		return fmt.Errorf("load embedded frontend: %w", err)
 	}
 
-	srv := api.NewServer(cfg, log)
+	// M1: in-memory manager (nil store). SQLite persistence arrives in M2.
+	manager := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, nil, log)
+	wsHandler := ws.NewHandler(manager, cfg, log)
+
+	srv := api.NewServer(cfg, manager, wsHandler, log)
 	handler := srv.Router(dist)
 
 	httpServer := &http.Server{
@@ -70,8 +76,10 @@ func run(args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("graceful shutdown: %w", err)
+		log.Error("http shutdown error", "err", err)
 	}
+	// Terminate shell processes and mark sessions stopped (§4.6).
+	manager.Shutdown()
 	log.Info("shutdown complete")
 	return nil
 }

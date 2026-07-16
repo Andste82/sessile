@@ -10,6 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/session"
+	"github.com/Andste82/sessile/backend/internal/ws"
 )
 
 // maxBodyBytes bounds JSON request bodies (PROJECT_PLAN.md §11).
@@ -17,13 +19,15 @@ const maxBodyBytes = 4 << 10 // 4 KiB
 
 // Server holds the dependencies shared by the HTTP handlers.
 type Server struct {
-	cfg *config.Config
-	log *slog.Logger
+	cfg     *config.Config
+	manager *session.Manager
+	ws      *ws.Handler
+	log     *slog.Logger
 }
 
 // NewServer constructs a Server.
-func NewServer(cfg *config.Config, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, log: log}
+func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger) *Server {
+	return &Server{cfg: cfg, manager: manager, ws: wsHandler, log: log}
 }
 
 // Router builds the Gin engine with all routes registered.
@@ -38,6 +42,18 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 	{
 		apiGroup.GET("/health", s.health)
 		apiGroup.GET("/config", s.getConfig)
+		apiGroup.GET("/sessions", s.listSessions)
+		apiGroup.POST("/sessions", s.createSession)
+		apiGroup.GET("/sessions/:id", s.getSession)
+		apiGroup.DELETE("/sessions/:id", s.deleteSession)
+		apiGroup.PATCH("/sessions/:id", s.renameSession)
+		apiGroup.GET("/directories", s.listDirectories)
+	}
+
+	if s.ws != nil {
+		r.GET("/ws/sessions/:id", func(c *gin.Context) {
+			s.ws.Handle(c.Writer, c.Request, c.Param("id"))
+		})
 	}
 
 	s.registerSPA(r, dist)
