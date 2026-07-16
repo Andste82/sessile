@@ -1,0 +1,30 @@
+# Build artifacts
+/bin/
+/frontend/dist/
+/frontend/node_modules/
+
+# Embedded SPA build output (a placeholder index.html is committed so the
+# Go embed directive stays valid; real assets are produced by `make build`).
+/backend/web/dist/assets/
+/backend/web/dist/favicon.svg
+
+# Runtime state
+/sandbox/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Local env / editor
+.env
+.env.local
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Go
+/backend/vendor/
