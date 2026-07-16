@@ -180,6 +180,10 @@ The backend suite covers the ring buffer, the directory sandbox, the SQLite
 store, and full create → attach → I/O → replay → delete flows against a real
 PTY. `scripts/wstest.sh` runs the same WebSocket walkthrough by hand.
 
+GitHub Actions runs the same checks (`go vet`, `go test`, the frontend build and
+`vitest`) on every push and pull request — see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
 ## Security & operational notes
 
 - Every user-supplied directory is validated against the sandbox root
