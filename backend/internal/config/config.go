@@ -3,18 +3,29 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
+// usageOut is where the flag set writes usage text and parse errors. It is a
+// variable so tests can capture it instead of dirtying stderr.
+var usageOut io.Writer = os.Stderr
+
 // Version is the application version, injected at build time via ldflags. The
 // literal is a placeholder on purpose — releases derive the real value from the
 // git tag, so hardcoding a number here would only ever be stale.
 var Version = "dev"
+
+// ErrVersionRequested is returned by Parse when --version was given. Like
+// flag.ErrHelp it reports intent, not failure: the caller prints the version
+// and exits 0.
+var ErrVersionRequested = errors.New("version requested")
 
 // Config is the fully-resolved application configuration.
 type Config struct {
@@ -31,7 +42,8 @@ type Config struct {
 // Parse builds a Config from the given argument list (excluding the program
 // name). Flags fall back to environment variables, then to defaults.
 func Parse(args []string) (*Config, error) {
-	fs := flag.NewFlagSet("server", flag.ContinueOnError)
+	fs := flag.NewFlagSet("sessile", flag.ContinueOnError)
+	fs.SetOutput(usageOut)
 
 	root := fs.String("root", env("TSM_ROOT", ""), "sandbox root directory (required)")
 	addr := fs.String("addr", env("TSM_ADDR", ":8080"), "listen address")
@@ -41,9 +53,16 @@ func Parse(args []string) (*Config, error) {
 	logLevel := fs.String("log-level", env("TSM_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	dev := fs.Bool("dev", envBool("TSM_DEV", false), "dev mode (relaxes WS origin check)")
 	allowOrigin := fs.String("allow-origin", env("TSM_ALLOW_ORIGIN", ""), "additional allowed WebSocket origin")
+	showVersion := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+
+	// Before any validation: --version must work without a --root, and asking
+	// for the version is not a request to start a server.
+	if *showVersion {
+		return nil, ErrVersionRequested
 	}
 
 	if *root == "" {

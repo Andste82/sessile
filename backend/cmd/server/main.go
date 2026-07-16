@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,16 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		// --version and --help are requests, not failures: they must exit 0 and
+		// must not be reported as "fatal". flag has already printed the usage
+		// text by the time ErrHelp surfaces.
+		switch {
+		case errors.Is(err, config.ErrVersionRequested):
+			fmt.Println("sessile", config.Version)
+			return
+		case errors.Is(err, flag.ErrHelp):
+			return
+		}
 		fmt.Fprintln(os.Stderr, "fatal:", err)
 		os.Exit(1)
 	}
