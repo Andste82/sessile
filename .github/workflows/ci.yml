@@ -55,8 +55,16 @@ jobs:
         run: npm run test
 
   docker:
-    name: Docker (build + smoke test)
+    name: Docker ${{ matrix.variant }} (build + smoke test)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: alpine
+            target: runtime-alpine
+          - variant: ubuntu
+            target: runtime-ubuntu
     steps:
       - uses: actions/checkout@v4
 
@@ -73,11 +81,12 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: ${{ matrix.target }}
           load: true
-          tags: sessile:dev
+          tags: sessile:${{ matrix.variant }}
           build-args: VERSION=ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=ci-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=ci-${{ matrix.variant }}
 
       - name: Smoke test
-        run: scripts/smoke-docker.sh sessile:dev
+        run: scripts/smoke-docker.sh sessile:${{ matrix.variant }}

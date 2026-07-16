@@ -6,7 +6,7 @@ VERSION   ?= dev
 LDFLAGS   := -s -w -X github.com/Andste82/sessile/backend/internal/config.Version=$(VERSION)
 
 .PHONY: help dev-backend dev-frontend test test-backend test-frontend build \
-        build-frontend build-backend docker clean tidy
+        build-frontend build-backend docker docker-ubuntu clean tidy
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -38,8 +38,12 @@ build-backend: ## Build the single Go binary (embeds the SPA)
 build: build-frontend build-backend ## Full production build → ./bin/sessile
 	@echo "built ./bin/sessile"
 
-docker: ## Build the container image
+docker: ## Build the container image (alpine, the default variant)
 	docker build --build-arg VERSION=$(VERSION) -t sessile:$(VERSION) .
+
+docker-ubuntu: ## Build the ubuntu-based image (glibc, for glibc-linked programs)
+	docker build --target runtime-ubuntu --build-arg VERSION=$(VERSION) \
+	  -t sessile:$(VERSION)-ubuntu .
 
 tidy: ## go mod tidy
 	cd backend && go mod tidy

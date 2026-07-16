@@ -109,9 +109,21 @@ jobs:
           if-no-files-found: error
 
   image:
-    name: Image (multi-arch -> GHCR)
+    name: Image ${{ matrix.variant }} (multi-arch -> GHCR)
     needs: version
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # alpine is the default variant and takes the unsuffixed tags.
+          - variant: alpine
+            target: runtime-alpine
+            suffix: ""
+          # ubuntu is for sessions running glibc-linked programs.
+          - variant: ubuntu
+            target: runtime-ubuntu
+            suffix: "-ubuntu"
     steps:
       - uses: actions/checkout@v4
 
@@ -136,21 +148,32 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: VERSION=${{ needs.version.outputs.version }}
           tags: |
-            ${{ steps.repo.outputs.image }}:${{ needs.version.outputs.version }}
-            ${{ steps.repo.outputs.image }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ steps.repo.outputs.image }}:${{ needs.version.outputs.version }}${{ matrix.suffix }}
+            ${{ steps.repo.outputs.image }}:latest${{ matrix.suffix }}
+          # Separate scopes: one cache shared by both variants would thrash,
+          # since they only have the builder stages in common.
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
 
   # Pull the just-pushed image back down and exercise it, so a broken release
   # is caught before the GitHub release goes out.
   verify-image:
-    name: Verify pushed image
+    name: Verify pushed ${{ matrix.variant }} image
     needs: [version, image]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: alpine
+            suffix: ""
+          - variant: ubuntu
+            suffix: "-ubuntu"
     steps:
       - uses: actions/checkout@v4
 
@@ -166,9 +189,21 @@ jobs:
 
       - name: Smoke test linux/amd64
         run: |
-          IMAGE="${{ steps.repo.outputs.image }}:${{ needs.version.outputs.version }}"
+          IMAGE="${{ steps.repo.outputs.image }}:${{ needs.version.outputs.version }}${{ matrix.suffix }}"
           docker pull "$IMAGE"
           scripts/smoke-docker.sh "$IMAGE"
+
+      # The variants exist to differ in userland; assert they actually do,
+      # rather than trusting that --target picked the right base.
+      - name: Assert the variant is what it claims
+        run: |
+          IMAGE="${{ steps.repo.outputs.image }}:${{ needs.version.outputs.version }}${{ matrix.suffix }}"
+          got=$(docker run --rm --entrypoint sh "$IMAGE" -c '. /etc/os-release; echo $ID')
+          if [ "$got" != "${{ matrix.variant }}" ]; then
+            echo "::error::${{ matrix.variant }} image reports os-release ID '$got'"
+            exit 1
+          fi
+          echo "$IMAGE is $got"
 
   release:
     name: Publish GitHub release
