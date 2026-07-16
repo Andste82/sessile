@@ -1,4 +1,6 @@
-# sessile
+![Sessile Logo](./assets/sessile_logo.png)
+
+# Sessile
 
 A lightweight, browser-based **persistent terminal session manager** — think
 *tmux + the VS Code integrated terminal, in the browser*.
