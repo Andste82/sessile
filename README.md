@@ -7,6 +7,16 @@ replays raw terminal bytes via xterm.js.
 
 See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) for the full specification.
 
+## Features
+
+- Persistent PTY sessions that survive browser disconnects and page refreshes.
+- Scrollback restoration on reconnect via a per-session raw-byte ring buffer
+  (no server-side terminal emulation).
+- Multiple clients attached to one session, mirrored live; live client counts.
+- Auto-reconnect with exponential backoff; responsive UI with a session tab bar
+  and mobile bottom navigation.
+- Single static binary (embedded SPA, `CGO_ENABLED=0`) or a small container.
+
 ## Stack
 
 - **Backend:** Go 1.22+, Gin, gorilla/websocket, creack/pty, modernc.org/sqlite
@@ -30,6 +40,24 @@ make build           # builds the SPA, embeds it, produces ./bin/sessile
 ```
 
 Open http://localhost:8080.
+
+## Docker
+
+```bash
+# Build and run with compose (mounts ./workspace, persists metadata in a volume)
+docker compose up --build
+
+# …or build and run the image directly
+make docker
+docker run -p 8080:8080 \
+  -v "$PWD/workspace:/workspace" -v sessile-config:/config \
+  sessile:0.1.0
+```
+
+Open http://localhost:8080. The image is multi-stage (Node builds the SPA →
+Go builds a static binary → `alpine` runtime with `bash` for shells) and ships
+a `/api/health` `HEALTHCHECK`. Volumes: `/workspace` (session root) and
+`/config` (SQLite metadata).
 
 ## Configuration
 

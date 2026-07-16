@@ -1,0 +1,19 @@
+services:
+  sessile:
+    build:
+      context: .
+      args:
+        VERSION: "0.1.0"
+    image: sessile:0.1.0
+    container_name: sessile
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount the directory tree sessions may open shells in.
+      - ./workspace:/workspace
+      # Persist session metadata across restarts.
+      - sessile-config:/config
+    restart: unless-stopped
+
+volumes:
+  sessile-config:

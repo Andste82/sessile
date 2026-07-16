@@ -1,0 +1,13 @@
+# Keep the build context small and reproducible.
+**/node_modules
+frontend/dist
+backend/web/dist/assets
+bin
+sandbox
+*.db
+*.db-*
+.git
+.github
+docs
+*.log
+.DS_Store

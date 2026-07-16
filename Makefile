@@ -39,7 +39,7 @@ build: build-frontend build-backend ## Full production build → ./bin/sessile
 	@echo "built ./bin/sessile"
 
 docker: ## Build the container image
-	docker build -t sessile:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t sessile:$(VERSION) .
 
 tidy: ## go mod tidy
 	cd backend && go mod tidy
