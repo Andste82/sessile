@@ -44,6 +44,11 @@ RUN apt-get update \
          bash ca-certificates tini wget \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /workspace /config
+# Without this the shells inherit glibc's C locale, which is ASCII-only: bash
+# rejects a typed umlaut with a BEL. C.UTF-8 is built in and needs no locale
+# package. sessile defaults to it too, but set it here so the whole container
+# agrees.
+ENV LANG=C.UTF-8
 COPY --from=backend /sessile /usr/local/bin/sessile
 
 EXPOSE 8080
@@ -61,6 +66,9 @@ CMD ["--root=/workspace", "--db=/config/sessions.db", "--shells=bash"]
 FROM alpine:3 AS runtime-alpine
 RUN apk add --no-cache bash ca-certificates tini \
     && mkdir -p /workspace /config
+# musl treats its C locale as UTF-8, so this is belt-and-braces here — but it
+# keeps both variants identical rather than relying on that difference.
+ENV LANG=C.UTF-8
 COPY --from=backend /sessile /usr/local/bin/sessile
 
 EXPOSE 8080
