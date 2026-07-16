@@ -1,0 +1,27 @@
+{
+  "name": "sessile-dev",
+  "build": { "dockerfile": "Dockerfile" },
+  // Load local secrets (GitHub token) from .devcontainer/.env.
+  // Copy .env.example to .env first; the real .env is gitignored.
+  "runArgs": ["--env-file", "${localWorkspaceFolder}/.devcontainer/.env"],
+  // Pre-fetch backend modules and install frontend deps on first create.
+  "onCreateCommand": "cd backend && go mod download && cd ../frontend && npm install",
+  // Backend (:8080) and Vite dev server (:5173).
+  "forwardPorts": [8080, 5173],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "Vue.volar",
+        "bradlc.vscode-tailwindcss",
+        "dbaeumer.vscode-eslint",
+        "ms-azuretools.vscode-docker",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "go.toolsManagement.autoUpdate": true,
+        "[vue]": { "editor.defaultFormatter": "Vue.volar" }
+      }
+    }
+  }
+}
