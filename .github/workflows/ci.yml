@@ -60,6 +60,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No tag to compare against on a PR, but this still catches a hardcoded
+      # version sneaking back into a placeholder — long before release time.
+      - name: Version placeholders intact
+        run: scripts/check-version.sh
+
       - uses: docker/setup-buildx-action@v3
 
       # Single-arch here: this job is about catching a broken image on the PR,

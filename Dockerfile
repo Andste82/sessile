@@ -11,7 +11,9 @@ RUN npm run build
 
 # --- Stage 2: build the Go binary (embeds the frontend) --------------------
 FROM golang:1.25-alpine AS backend
-ARG VERSION=0.1.0
+# Placeholder: a bare `docker build .` must not claim to be a released version.
+# The release workflow passes the real value from the git tag.
+ARG VERSION=dev
 WORKDIR /app/backend
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download

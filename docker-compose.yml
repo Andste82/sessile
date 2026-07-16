@@ -3,8 +3,9 @@ services:
     build:
       context: .
       args:
-        VERSION: "0.1.0"
-    image: sessile:0.1.0
+        # Local builds are "dev"; override with VERSION=0.2.0 docker compose up.
+        VERSION: ${VERSION:-dev}
+    image: sessile:${VERSION:-dev}
     container_name: sessile
     ports:
       - "8080:8080"

@@ -24,8 +24,28 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+
       - id: v
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Gate: refuse to release if the tag disagrees with the declared version,
+      # or if a placeholder got a hardcoded version baked back into it. Runs
+      # before any build, so a drifted tag costs seconds, not a bad release.
+      - name: Version gate
+        run: scripts/check-version.sh "${{ steps.v.outputs.version }}"
+
+      - name: Reject tags that already exist as a release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}")
+          if [ "$code" = "200" ]; then
+            echo "::error::a release for ${GITHUB_REF_NAME} already exists — delete it first or bump the version"
+            exit 1
+          fi
 
   binaries:
     name: Binary (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -155,9 +175,12 @@ jobs:
     needs: [version, binaries, verify-image]
     runs-on: ubuntu-latest
     steps:
+      # pattern is required: build-push-action also uploads a "*.dockerbuild"
+      # build record, and pulling that one in fails the download step.
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: sessile-*
           merge-multiple: true
 
       - name: Checksums
