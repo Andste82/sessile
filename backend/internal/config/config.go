@@ -11,8 +11,10 @@ import (
 	"strings"
 )
 
-// Version is the application version, overridable at build time via ldflags.
-var Version = "0.1.0-dev"
+// Version is the application version, injected at build time via ldflags. The
+// literal is a placeholder on purpose — releases derive the real value from the
+// git tag, so hardcoding a number here would only ever be stale.
+var Version = "dev"
 
 // Config is the fully-resolved application configuration.
 type Config struct {

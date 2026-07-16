@@ -2,7 +2,7 @@
 .DEFAULT_GOAL := help
 
 ROOT      ?= $(CURDIR)/sandbox
-VERSION   ?= 0.1.0-dev
+VERSION   ?= dev
 LDFLAGS   := -s -w -X github.com/Andste82/sessile/backend/internal/config.Version=$(VERSION)
 
 .PHONY: help dev-backend dev-frontend test test-backend test-frontend build \

@@ -92,11 +92,16 @@ Then open <http://localhost:8080>.
 # Build and run with compose (mounts ./workspace, persists metadata in a volume)
 docker compose up --build
 
-# …or build and run the image directly
+# …or pull a released image
+docker run -p 8080:8080 \
+  -v "$PWD/workspace:/workspace" -v sessile-config:/config \
+  ghcr.io/andste82/sessile:latest
+
+# …or build it yourself (tags sessile:dev)
 make docker
 docker run -p 8080:8080 \
   -v "$PWD/workspace:/workspace" -v sessile-config:/config \
-  sessile:0.1.0
+  sessile:dev
 ```
 
 Then open <http://localhost:8080>. The image is multi-stage — Node builds the
