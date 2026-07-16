@@ -15,6 +15,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/api"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/session"
+	"github.com/Andste82/sessile/backend/internal/storage"
 	"github.com/Andste82/sessile/backend/internal/ws"
 	"github.com/Andste82/sessile/backend/web"
 )
@@ -41,8 +42,16 @@ func run(args []string) error {
 		return fmt.Errorf("load embedded frontend: %w", err)
 	}
 
-	// M1: in-memory manager (nil store). SQLite persistence arrives in M2.
-	manager := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, nil, log)
+	// Open the metadata store; it reconciles any session left "running" by a
+	// previous process to "stopped" on open (§8).
+	store, err := storage.Open(cfg.DB)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer store.Close()
+	log.Info("store ready", "db", cfg.DB)
+
+	manager := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, store, log)
 	wsHandler := ws.NewHandler(manager, cfg, log)
 
 	srv := api.NewServer(cfg, manager, wsHandler, log)

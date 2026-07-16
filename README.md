@@ -43,6 +43,46 @@ Open http://localhost:8080.
 | `--log-level` | `TSM_LOG_LEVEL` | `info` |
 | `--dev` | `TSM_DEV` | `false` — relaxes the WS origin check for Vite |
 
+## REST API walkthrough
+
+With the backend running on `:8080` and a `project-a` directory under the
+sandbox root:
+
+```bash
+# Health
+curl -s localhost:8080/api/health
+# {"status":"ok"}
+
+# Config (root, installed shells from the allowlist, version)
+curl -s localhost:8080/api/config
+
+# Directories one level under the root
+curl -s localhost:8080/api/directories
+# {"directories":["project-a"]}
+
+# Create a session -> 201 + session JSON
+curl -s -X POST localhost:8080/api/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Backend","directory":"project-a","shell":"bash"}'
+
+# List / get
+curl -s localhost:8080/api/sessions
+curl -s localhost:8080/api/sessions/<id>
+
+# Rename
+curl -s -X PATCH localhost:8080/api/sessions/<id> \
+  -H 'Content-Type: application/json' -d '{"name":"API"}'
+
+# Delete (kills the shell) -> 204
+curl -s -X DELETE localhost:8080/api/sessions/<id>
+```
+
+Errors use `{"error":{"code":"…","message":"…"}}` with an appropriate status
+(400 validation, 404 missing, 409 conflict, 500 internal).
+
+The WebSocket protocol is exercised by `scripts/wstest.sh` (create → attach →
+input → reconnect → replay).
+
 ## Caveats
 
 - **Live sessions do not survive a backend restart.** The PTY/shell processes
