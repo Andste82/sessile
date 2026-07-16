@@ -104,6 +104,31 @@ docker run -d --name sessile -p 8080:8080 \
 Then open <http://localhost:8080>. Prefer a pinned tag like `:0.1.2` over
 `:latest` for anything you care about — `:latest` moves with every release.
 
+### Which variant?
+
+Two flavours ship per release, identical in behaviour and configuration —
+they differ only in the userland your **shells** get:
+
+| Tag | Base | Size | libc | Coreutils |
+|---|---|---|---|---|
+| `:0.1.2`, `:latest` | Alpine | ~32 MB | musl | BusyBox |
+| `:0.1.2-ubuntu`, `:latest-ubuntu` | Ubuntu 24.04 | ~107 MB | glibc | GNU |
+
+Sessile itself is a static, CGO-free binary and runs the same on both. The
+difference matters for what *you* run inside a session:
+
+- **Alpine** (default) is small and fine when sessions only use the shell and
+  the tools you install yourself.
+- **Ubuntu** when sessions run precompiled binaries or language toolchains.
+  Plenty of software ships glibc-linked builds that simply will not start on
+  musl, and BusyBox coreutils accept a narrower set of flags than GNU ones
+  (`ls --version` fails on Alpine, for instance). If you hit an unexplained
+  "not found" on a binary that clearly exists, this is usually why.
+
+```bash
+docker pull ghcr.io/andste82/sessile:latest-ubuntu
+```
+
 ### With compose
 
 Save as `docker-compose.yml` and run `docker compose up -d`:
@@ -136,14 +161,20 @@ rather than pulling, which is what you want when hacking on sessile itself.
 
 ```bash
 docker compose up --build      # build from source and run
-make docker                    # build only, tags sessile:dev
+make docker                    # alpine variant, tags sessile:dev
+make docker-ubuntu             # ubuntu variant, tags sessile:dev-ubuntu
 ```
 
 The image is multi-stage — Node builds the SPA, Go builds a static binary, and
-the runtime layer is `alpine` with `bash` installed for shells — and ships a
-`/api/health` healthcheck. Two volumes: `/workspace` (the session root) and
-`/config` (SQLite metadata). It runs as root, so treat the container as having
-shell access to itself and keep it behind a trusted boundary.
+the runtime layer adds `bash` for shells. Both variants share the builder
+stages and differ only in the final one (`--target runtime-alpine` /
+`--target runtime-ubuntu`; alpine is the default target). Both ship a
+`/api/health` healthcheck and run `tini` as PID 1, which reaps the zombies that
+shells leave behind as grandchildren of PID 1.
+
+Two volumes: `/workspace` (the session root) and `/config` (SQLite metadata).
+The container runs as root, so treat it as having shell access to itself and
+keep it behind a trusted boundary.
 
 Check what you are running:
 

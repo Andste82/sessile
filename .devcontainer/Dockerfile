@@ -2,6 +2,13 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# ubuntu:24.04 sets no locale, and glibc's default C locale is ASCII-only. That
+# reaches sessions started by `make dev-backend`: the backend inherits this env
+# and passes it to every shell it spawns, where bash rejects a typed umlaut with
+# a BEL and zsh shows it as <ffffffff>. C.UTF-8 is built in and needs no locale
+# package.
+ENV LANG=C.UTF-8
+
 # =============================================================================
 # sessile — dev environment.
 #
