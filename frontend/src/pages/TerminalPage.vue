@@ -94,6 +94,16 @@ const statusLabel = computed(() => {
           >Session ended — the shell process has exited.</span
         >
       </div>
+
+      <div
+        v-else-if="conn === 'disconnected'"
+        class="absolute inset-0 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm"
+      >
+        <div class="flex items-center gap-3 rounded-lg bg-slate-800 px-5 py-3 text-sm text-slate-200 shadow-lg">
+          <span class="h-4 w-4 animate-spin rounded-full border-2 border-slate-500 border-t-emerald-400" />
+          Disconnected — reconnecting…
+        </div>
+      </div>
     </div>
   </div>
 </template>

@@ -31,6 +31,16 @@ export function useTerminal() {
   const encoder = new TextEncoder()
   let disposed = false
 
+  // Reconnect state (§7): exponential backoff 1s → 2s → 4s → … → max 15s.
+  let sessionId = ''
+  let reconnectAttempts = 0
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  const backoffSteps = [1000, 2000, 4000, 8000, 15000]
+
+  // WS close code the server sends for a missing/stopped session (§5). On this
+  // we stop retrying — the shell is gone (e.g. after a backend restart).
+  const closeSessionUnavailable = 4404
+
   function open(el: HTMLElement) {
     const t = new Terminal({
       scrollback: 5000,
@@ -73,13 +83,19 @@ export function useTerminal() {
   }
 
   function connect(id: string) {
+    sessionId = id
+    openSocket()
+  }
+
+  function openSocket() {
     if (disposed) return
-    status.value = 'connecting'
-    ws = new WebSocket(sessionWsURL(id))
+    if (status.value !== 'disconnected') status.value = 'connecting'
+    ws = new WebSocket(sessionWsURL(sessionId))
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
       status.value = 'connected'
+      reconnectAttempts = 0
       // Push our current geometry so the PTY matches the viewport.
       sendResize()
     }
@@ -90,12 +106,26 @@ export function useTerminal() {
         term.value?.write(new Uint8Array(ev.data as ArrayBuffer))
       }
     }
-    ws.onclose = () => {
-      if (status.value !== 'exited') status.value = 'disconnected'
-    }
+    ws.onclose = (ev) => scheduleReconnect(ev.code)
     ws.onerror = () => {
-      if (status.value !== 'exited') status.value = 'disconnected'
+      // onclose fires after onerror; let scheduleReconnect there handle it.
+      ws?.close()
     }
+  }
+
+  // scheduleReconnect retries with backoff unless the session ended, the server
+  // reported it unavailable (4404), or the component was disposed.
+  function scheduleReconnect(code?: number) {
+    ws = null
+    if (disposed || status.value === 'exited') return
+    if (code === closeSessionUnavailable) {
+      status.value = 'exited'
+      return
+    }
+    status.value = 'disconnected'
+    const delay = backoffSteps[Math.min(reconnectAttempts, backoffSteps.length - 1)]
+    reconnectAttempts++
+    reconnectTimer = setTimeout(openSocket, delay)
   }
 
   function handleControl(data: string) {
@@ -117,6 +147,10 @@ export function useTerminal() {
 
   function dispose() {
     disposed = true
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
     observer?.disconnect()
     observer = null
     if (ws) {

@@ -79,6 +79,115 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestMultiClientMirroring verifies two clients attached to the same session
+// both receive its output, and that clientCount reflects attachments (§12 M4).
+func TestMultiClientMirroring(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	root := t.TempDir()
+	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 512 << 10}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	ts := httptest.NewServer(srv.Router(nil))
+	defer ts.Close()
+
+	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`)
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
+
+	c1 := dialWS(t, wsURL)
+	defer c1.Close()
+	assertAttached(t, c1, id)
+	c2 := dialWS(t, wsURL)
+	defer c2.Close()
+	assertAttached(t, c2, id)
+
+	// Both clients attached: clientCount should report 2.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sessionClientCount(t, ts.URL, id) == 2 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if n := sessionClientCount(t, ts.URL, id); n != 2 {
+		t.Fatalf("clientCount = %d, want 2", n)
+	}
+
+	// Input on c1 is mirrored to both clients.
+	writeInput(t, c1, "echo mirrored-out\n")
+	if !readUntil(t, c1, "mirrored-out", 5*time.Second) {
+		t.Fatal("c1 did not see output")
+	}
+	if !readUntil(t, c2, "mirrored-out", 5*time.Second) {
+		t.Fatal("c2 did not mirror output")
+	}
+}
+
+// TestAttachStoppedSessionRejected verifies that once a session's shell has
+// exited, a new attach is closed with code 4404 (§5) — the signal the frontend
+// uses to stop reconnecting after a backend restart.
+func TestAttachStoppedSessionRejected(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	root := t.TempDir()
+	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	ts := httptest.NewServer(srv.Router(nil))
+	defer ts.Close()
+
+	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`)
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
+
+	// End the shell from the first client, then wait for status=stopped.
+	c1 := dialWS(t, wsURL)
+	assertAttached(t, c1, id)
+	writeInput(t, c1, "exit\n")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		info, err := mgr.Get(id)
+		if err == nil && info.Status == session.StatusStopped {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = c1.Close()
+	if info, _ := mgr.Get(id); info.Status != session.StatusStopped {
+		t.Fatalf("session did not stop; status=%s", info.Status)
+	}
+
+	// A fresh attach must be rejected with close code 4404.
+	c2 := dialWS(t, wsURL)
+	defer c2.Close()
+	_ = c2.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err := c2.ReadMessage()
+	ce, ok := err.(*websocket.CloseError)
+	if !ok {
+		t.Fatalf("expected CloseError, got %v", err)
+	}
+	if ce.Code != 4404 {
+		t.Fatalf("close code = %d, want 4404", ce.Code)
+	}
+}
+
+func sessionClientCount(t *testing.T, baseURL, id string) int {
+	t.Helper()
+	resp, err := http.Get(baseURL + "/api/sessions/" + id)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		ClientCount int `json:"clientCount"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return out.ClientCount
+}
+
 func createSession(t *testing.T, baseURL, body string) string {
 	t.Helper()
 	resp, err := http.Post(baseURL+"/api/sessions", "application/json", strings.NewReader(body))

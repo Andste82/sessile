@@ -30,6 +30,31 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
+  // refreshSessions updates the list without toggling the loading flag, for
+  // background polling (client counts live, §12 M4).
+  async function refreshSessions() {
+    try {
+      sessions.value = await api.listSessions()
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  let pollTimer: ReturnType<typeof setInterval> | null = null
+
+  function startPolling(intervalMs = 5000) {
+    stopPolling()
+    pollTimer = setInterval(refreshSessions, intervalMs)
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+
   async function createSession(body: CreateSessionBody): Promise<Session> {
     const created = await api.createSession(body)
     sessions.value = [created, ...sessions.value.filter((s) => s.id !== created.id)]
@@ -55,6 +80,9 @@ export const useSessionsStore = defineStore('sessions', () => {
     byId,
     fetchConfig,
     fetchSessions,
+    refreshSessions,
+    startPolling,
+    stopPolling,
     createSession,
     deleteSession,
     renameSession,

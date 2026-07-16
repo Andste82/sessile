@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { PlusIcon } from '@heroicons/vue/24/solid'
 import { useSessionsStore } from '@/stores/sessions'
@@ -13,7 +13,10 @@ const dialogOpen = ref(false)
 
 onMounted(async () => {
   await Promise.all([store.fetchConfig(), store.fetchSessions()])
+  store.startPolling(5000) // live client counts (§12 M4)
 })
+
+onUnmounted(() => store.stopPolling())
 
 function onCreated(session: Session) {
   dialogOpen.value = false
