@@ -33,7 +33,7 @@ onMounted(() => {
 
       <p class="mt-4 text-xs text-slate-500">
         Configuration is read-only and set via server flags / environment
-        variables. Authentication and multi-user support arrive in v0.4.
+        variables.
       </p>
     </main>
   </div>

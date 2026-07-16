@@ -15,7 +15,8 @@ import (
 // activityThrottle bounds how often LastActivity is written to the store (§4.6).
 const activityThrottle = 30 * time.Second
 
-// killGrace is the SIGTERM→SIGKILL window when deleting a session (§4.3).
+// killGrace is the grace period before escalating to SIGKILL when terminating
+// a session's shell (§4.3).
 const killGrace = 5 * time.Second
 
 // Manager is the core component: it owns every live Session, the PTY read/
@@ -248,7 +249,7 @@ func (m *Manager) Delete(id string) error {
 	return nil
 }
 
-// Rename updates a session's name in memory and the store (v0.3 PATCH).
+// Rename updates a session's name in memory and the store.
 func (m *Manager) Rename(id, name string) (Info, error) {
 	if l := len(name); l < 1 || l > 64 {
 		return Info{}, ErrInvalidName

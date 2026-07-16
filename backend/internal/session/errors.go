@@ -17,7 +17,7 @@ var (
 	ErrInvalidShell = errors.New("shell not allowed or not installed")
 )
 
-// Store persists session metadata (implemented by internal/storage in M2).
+// Store persists session metadata (implemented by internal/storage).
 // A nil Store means in-memory only — the Manager tolerates it.
 type Store interface {
 	Insert(Info) error

@@ -20,9 +20,9 @@ import (
 	"github.com/Andste82/sessile/backend/internal/ws"
 )
 
-// TestSessionLifecycleAndReplay exercises the M1 acceptance criteria end-to-end
-// against a real PTY: create → attach → send input → observe output → detach →
-// re-attach → confirm the ring-buffer replay contains the earlier output.
+// TestSessionLifecycleAndReplay exercises the core flow end-to-end against a
+// real PTY: create → attach → send input → observe output → detach → re-attach
+// → confirm the ring-buffer replay contains the earlier output.
 func TestSessionLifecycleAndReplay(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
@@ -80,7 +80,7 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 }
 
 // TestMultiClientMirroring verifies two clients attached to the same session
-// both receive its output, and that clientCount reflects attachments (§12 M4).
+// both receive its output, and that clientCount reflects attachments.
 func TestMultiClientMirroring(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")

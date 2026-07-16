@@ -3,14 +3,14 @@ import { ref, computed } from 'vue'
 import { api } from '@/api/client'
 import type { AppConfig, CreateSessionBody, Session } from '@/api/types'
 
-// Session list + config store. Polling is added in M4.
+// Session list + config store, with background polling for live client counts.
 export const useSessionsStore = defineStore('sessions', () => {
   const sessions = ref<Session[]>([])
   const config = ref<AppConfig | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
 
-  // Ordered ids of sessions opened as terminal tabs (§12 M5).
+  // Ordered ids of sessions opened as terminal tabs.
   const openTabIds = ref<string[]>([])
 
   function openTab(id: string) {
@@ -42,7 +42,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   // refreshSessions updates the list without toggling the loading flag, for
-  // background polling (client counts live, §12 M4).
+  // background polling (keeps client counts live).
   async function refreshSessions() {
     try {
       sessions.value = await api.listSessions()

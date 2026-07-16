@@ -1,6 +1,6 @@
 // Command wsclient is a tiny WebSocket test client for scripts/wstest.sh.
 // It attaches to a session, optionally sends input, then prints all bytes
-// received within a window. Used to verify the M1 WS protocol by hand.
+// received within a window. Used to verify the WebSocket protocol by hand.
 package main
 
 import (

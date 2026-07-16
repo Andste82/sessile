@@ -19,7 +19,7 @@ const theme = {
  * single session. It streams binary PTY bytes verbatim (no client-side
  * emulation), sends keystrokes as binary and resize as JSON control frames,
  * and resets the terminal on (re)attach so the ring-buffer replay renders
- * cleanly (§5, §7). Auto-reconnect is layered on in M4.
+ * cleanly (§5, §7), and reconnects automatically with exponential backoff.
  */
 export function useTerminal() {
   const status = ref<ConnStatus>('connecting')

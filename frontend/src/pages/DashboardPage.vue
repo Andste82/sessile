@@ -13,7 +13,7 @@ const dialogOpen = ref(false)
 
 onMounted(async () => {
   await Promise.all([store.fetchConfig(), store.fetchSessions()])
-  store.startPolling(5000) // live client counts (§12 M4)
+  store.startPolling(5000) // keep client counts live
 })
 
 onUnmounted(() => store.stopPolling())

@@ -1,4 +1,4 @@
-# Mobile / Responsive Checklist (M5)
+# Mobile / Responsive Checklist
 
 Manual acceptance checklist for the responsive UI. Test in Chrome device mode
 (iPhone SE / iPhone 14 Pro) and iPad, plus a desktop window resized across the
