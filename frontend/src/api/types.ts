@@ -30,7 +30,9 @@ export interface AppConfig {
 }
 
 export interface DirectoriesResponse {
-  directories: string[]
+  path: string // cleaned relative path being listed ("." = root)
+  parent: string | null // parent relative path, or null at the root
+  directories: string[] // immediate subdirectory names, sorted
 }
 
 export interface ApiError {

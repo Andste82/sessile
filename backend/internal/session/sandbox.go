@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -57,4 +58,34 @@ func resolveDir(root, userPath string) (string, error) {
 		return "", fmt.Errorf("not a directory")
 	}
 	return resolved, nil
+}
+
+// ListDirs returns the names of the immediate subdirectories of a sandboxed
+// path. userPath is relative to root ("" or "." means the root) and is
+// validated through the same sandbox check as session creation (§4.5), so
+// callers may pass user input directly. Hidden entries (including the internal
+// state dir) are omitted; results are sorted.
+func ListDirs(root, userPath string) ([]string, error) {
+	if userPath == "" {
+		userPath = "."
+	}
+	resolved, err := resolveDir(root, userPath)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read directory: %w", err)
+	}
+	dirs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if e.IsDir() {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	sort.Strings(dirs)
+	return dirs, nil
 }
