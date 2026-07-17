@@ -5,7 +5,7 @@ import BottomNav from '@/components/BottomNav.vue'
 </script>
 
 <template>
-  <div class="flex h-screen overflow-hidden bg-slate-900 text-slate-200">
+  <div class="flex h-dvh overflow-hidden bg-slate-900 text-slate-200">
     <!-- Sidebar: icon rail 640–1024px, full at ≥1024px, hidden below 640px. -->
     <AppSidebar class="hidden sm:flex" />
 
