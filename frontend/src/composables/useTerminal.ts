@@ -3,6 +3,15 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
+import {
+  anyMod,
+  applyModifiers,
+  encodeSpecial,
+  noMods,
+  type Mods,
+  type ModName,
+  type SpecialKey,
+} from '@/utils/keys'
 
 export type ConnStatus = 'connecting' | 'connected' | 'exited' | 'disconnected'
 
@@ -28,8 +37,39 @@ export function useTerminal() {
   let fit: FitAddon | null = null
   let ws: WebSocket | null = null
   let observer: ResizeObserver | null = null
+  let hostEl: HTMLElement | null = null
   const encoder = new TextEncoder()
   let disposed = false
+
+  // Touch scrolling (§ mobile): xterm's screen swallows touch events for
+  // selection, so the backlog never scrolls natively. Translate a one-finger
+  // vertical drag into scrollback lines.
+  let touchLastY = 0
+  let touchAccum = 0
+
+  // Armed modifiers for the on-screen key bar (issue #10). Sticky until the
+  // next key is sent, then cleared — so "tap Ctrl, then C" yields Ctrl-C.
+  const mods = ref<Mods>({ ...noMods })
+
+  function toggleMod(name: ModName) {
+    mods.value = { ...mods.value, [name]: !mods.value[name] }
+  }
+
+  function clearMods() {
+    if (anyMod(mods.value)) mods.value = { ...noMods }
+  }
+
+  function send(data: string) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data))
+  }
+
+  // pressSpecial sends a named special key with the currently armed modifiers
+  // applied, then clears them.
+  function pressSpecial(key: SpecialKey) {
+    send(encodeSpecial(key, mods.value))
+    clearMods()
+    term.value?.focus()
+  }
 
   // Reconnect state (§7): exponential backoff 1s → 2s → 4s → … → max 15s.
   let sessionId = ''
@@ -57,14 +97,39 @@ export function useTerminal() {
     fit.fit()
 
     t.onData((d) => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(encoder.encode(d))
-      }
+      send(applyModifiers(d, mods.value))
+      clearMods()
     })
 
     observer = new ResizeObserver(() => doFit())
     observer.observe(el)
+
+    hostEl = el
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
+
     term.value = t
+  }
+
+  function onTouchStart(e: TouchEvent) {
+    if (e.touches.length !== 1) return
+    touchLastY = e.touches[0].clientY
+    touchAccum = 0
+  }
+
+  function onTouchMove(e: TouchEvent) {
+    const t = term.value
+    if (!t || e.touches.length !== 1 || !hostEl) return
+    const y = e.touches[0].clientY
+    touchAccum += touchLastY - y
+    touchLastY = y
+    // Estimate the row height from the rendered viewport; scroll whole lines.
+    const lineHeight = hostEl.clientHeight / (t.rows || 24)
+    const lines = Math.trunc(touchAccum / lineHeight)
+    if (lines !== 0) {
+      t.scrollLines(lines)
+      touchAccum -= lines * lineHeight
+    }
   }
 
   function doFit() {
@@ -153,6 +218,11 @@ export function useTerminal() {
     }
     observer?.disconnect()
     observer = null
+    if (hostEl) {
+      hostEl.removeEventListener('touchstart', onTouchStart)
+      hostEl.removeEventListener('touchmove', onTouchMove)
+      hostEl = null
+    }
     if (ws) {
       ws.onclose = null
       ws.onerror = null
@@ -165,5 +235,15 @@ export function useTerminal() {
     fit = null
   }
 
-  return { status, term, open, connect, dispose, fit: doFit }
+  return {
+    status,
+    term,
+    mods,
+    open,
+    connect,
+    dispose,
+    toggleMod,
+    pressSpecial,
+    fit: doFit,
+  }
 }
