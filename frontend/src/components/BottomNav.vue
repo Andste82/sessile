@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { HomeIcon, CommandLineIcon, Cog6ToothIcon } from '@heroicons/vue/24/outline'
+import {
+  HomeIcon,
+  CommandLineIcon,
+  Cog6ToothIcon,
+  Squares2X2Icon,
+} from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
+import { useUiStore } from '@/stores/ui'
 
 const store = useSessionsStore()
+const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -40,6 +47,16 @@ function goTerminal() {
     >
       <CommandLineIcon class="h-6 w-6" />
       Terminal
+    </button>
+    <button
+      v-if="route.name === 'terminal'"
+      type="button"
+      class="flex flex-1 flex-col items-center justify-center gap-0.5 text-xs"
+      :class="ui.keyBarOpen ? 'text-emerald-400' : 'text-slate-400'"
+      @click="ui.toggleKeyBar()"
+    >
+      <Squares2X2Icon class="h-6 w-6" />
+      Keys
     </button>
     <RouterLink
       to="/settings"
