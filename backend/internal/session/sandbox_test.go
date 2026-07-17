@@ -60,6 +60,61 @@ func TestResolveDir(t *testing.T) {
 	}
 }
 
+func TestListDirs(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "project-a"))
+	mustMkdir(t, filepath.Join(root, "project-b"))
+	mustMkdir(t, filepath.Join(root, "project-a", "nested"))
+	mustMkdir(t, filepath.Join(root, ".hidden"))
+	mustMkdir(t, filepath.Join(root, ".tsm"))
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	// Root lists non-hidden directories only, sorted; files excluded.
+	got, err := ListDirs(root, "")
+	if err != nil {
+		t.Fatalf("ListDirs(root) error: %v", err)
+	}
+	if want := []string{"project-a", "project-b"}; !equalStrings(got, want) {
+		t.Fatalf("ListDirs(root) = %v, want %v", got, want)
+	}
+
+	// "." is equivalent to the root.
+	if dot, _ := ListDirs(root, "."); !equalStrings(dot, got) {
+		t.Fatalf(`ListDirs(".") = %v, want %v`, dot, got)
+	}
+
+	// Nested navigation.
+	nested, err := ListDirs(root, "project-a")
+	if err != nil {
+		t.Fatalf("ListDirs(project-a) error: %v", err)
+	}
+	if want := []string{"nested"}; !equalStrings(nested, want) {
+		t.Fatalf("ListDirs(project-a) = %v, want %v", nested, want)
+	}
+
+	// Traversal and missing paths are rejected by the sandbox check.
+	if _, err := ListDirs(root, "../.."); err == nil {
+		t.Fatal("ListDirs(../..) expected error")
+	}
+	if _, err := ListDirs(root, "does-not-exist"); err == nil {
+		t.Fatal("ListDirs(does-not-exist) expected error")
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {

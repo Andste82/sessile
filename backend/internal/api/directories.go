@@ -2,31 +2,48 @@ package api
 
 import (
 	"net/http"
-	"os"
-	"sort"
+	"path/filepath"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/Andste82/sessile/backend/internal/session"
 )
 
-// listDirectories returns the immediate subdirectories of the sandbox root
-// (§6). Only one level deep; entries are directory names relative to root.
+// listDirectories returns the immediate subdirectories of a path under the
+// sandbox root (§6). The optional `path` query navigates into subdirectories
+// (relative to root; empty or "." is the root). The path is validated by the
+// sandbox check, so traversal or symlink escapes are rejected.
 func (s *Server) listDirectories(c *gin.Context) {
-	entries, err := os.ReadDir(s.cfg.Root)
+	path := c.Query("path")
+
+	dirs, err := session.ListDirs(s.cfg.Root, path)
 	if err != nil {
-		respondError(c, http.StatusInternalServerError, CodeInternal, "read root failed")
+		respondError(c, http.StatusBadRequest, CodeValidation, "invalid directory")
 		return
 	}
-	dirs := make([]string, 0, len(entries))
-	for _, e := range entries {
-		name := e.Name()
-		// Skip the internal state dir and hidden entries.
-		if name == ".tsm" || name[0] == '.' {
-			continue
-		}
-		if e.IsDir() {
-			dirs = append(dirs, name)
-		}
+
+	clean := normalizeRel(path)
+	c.JSON(http.StatusOK, gin.H{
+		"path":        clean,
+		"parent":      parentRel(clean),
+		"directories": dirs,
+	})
+}
+
+// normalizeRel cleans a user-supplied relative path into the canonical
+// forward-slash form the API echoes back; "" and "." both mean the root.
+func normalizeRel(p string) string {
+	if p == "" {
+		return "."
 	}
-	sort.Strings(dirs)
-	c.JSON(http.StatusOK, gin.H{"directories": dirs})
+	return filepath.ToSlash(filepath.Clean(p))
+}
+
+// parentRel returns the parent of a cleaned relative path, or nil at the root.
+func parentRel(clean string) *string {
+	if clean == "." || clean == "" {
+		return nil
+	}
+	parent := filepath.ToSlash(filepath.Dir(clean))
+	return &parent
 }

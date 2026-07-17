@@ -37,7 +37,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<{ status: string }>('/api/health'),
   config: () => request<AppConfig>('/api/config'),
-  directories: () => request<DirectoriesResponse>('/api/directories'),
+  directories: (path?: string) =>
+    request<DirectoriesResponse>(
+      path ? `/api/directories?path=${encodeURIComponent(path)}` : '/api/directories',
+    ),
   listSessions: () => request<Session[]>('/api/sessions'),
   getSession: (id: string) => request<Session>(`/api/sessions/${id}`),
   createSession: (body: CreateSessionBody) =>

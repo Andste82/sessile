@@ -257,7 +257,7 @@ with appropriate HTTP status (400 validation, 404 missing, 409 conflict,
 | `GET /api/sessions/:id` | Get one | |
 | `DELETE /api/sessions/:id` | Kill + remove permanently | 204 |
 | `PATCH /api/sessions/:id` | Rename (`{"name":"…"}`) | v0.3, stub not needed earlier |
-| `GET /api/directories` | List dirs one level under root | `{"directories":["project-a", …]}` |
+| `GET /api/directories` | Browse dirs under root; optional `?path=` (relative, validated by §4.5) navigates into subdirs | `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
 | `GET /api/config` | Root path, available shells, version | Shells = allowlist ∩ installed |
 | `GET /api/health` | `{"status":"ok"}` | For Docker healthcheck |
 

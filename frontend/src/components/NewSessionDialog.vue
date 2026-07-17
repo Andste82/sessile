@@ -7,8 +7,8 @@ import {
   TransitionRoot,
   TransitionChild,
 } from '@headlessui/vue'
-import { api } from '@/api/client'
 import { useSessionsStore } from '@/stores/sessions'
+import DirectoryBrowser from './DirectoryBrowser.vue'
 import type { Session } from '@/api/types'
 
 const props = defineProps<{ open: boolean }>()
@@ -20,9 +20,8 @@ const emit = defineEmits<{
 const store = useSessionsStore()
 
 const name = ref('')
-const directory = ref('')
+const directory = ref('.')
 const shell = ref('')
-const directories = ref<string[]>([])
 const submitting = ref(false)
 const error = ref<string | null>(null)
 
@@ -31,21 +30,15 @@ const canSubmit = computed(
   () => name.value.trim().length > 0 && directory.value !== '' && shell.value !== '',
 )
 
-// Load directories + defaults whenever the dialog opens.
+// Reset to defaults whenever the dialog opens; the browser starts at the root.
 watch(
   () => props.open,
-  async (isOpen) => {
+  (isOpen) => {
     if (!isOpen) return
     error.value = null
     name.value = ''
-    try {
-      const res = await api.directories()
-      directories.value = res.directories
-      directory.value = res.directories[0] ?? ''
-      shell.value = shells.value[0] ?? ''
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
-    }
+    directory.value = '.'
+    shell.value = shells.value[0] ?? ''
   },
 )
 
@@ -115,15 +108,7 @@ async function submit() {
 
               <label class="flex flex-col gap-1 text-sm">
                 <span class="text-slate-400">Directory</span>
-                <select
-                  v-model="directory"
-                  class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
-                >
-                  <option v-if="directories.length === 0" disabled value="">
-                    No directories under root
-                  </option>
-                  <option v-for="d in directories" :key="d" :value="d">{{ d }}</option>
-                </select>
+                <DirectoryBrowser v-model="directory" />
               </label>
 
               <label class="flex flex-col gap-1 text-sm">
