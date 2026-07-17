@@ -3,7 +3,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import TerminalView from '@/components/TerminalView.vue'
 import TabBar from '@/components/TabBar.vue'
-import StatusDot from '@/components/StatusDot.vue'
 import { useSessionsStore } from '@/stores/sessions'
 import { api } from '@/api/client'
 import type { Session } from '@/api/types'
@@ -37,45 +36,11 @@ onMounted(async () => {
 
 // Handle navigating directly between tabs (component is reused).
 watch(id, (newId) => loadSession(newId))
-
-const statusLabel = computed(() => {
-  switch (conn.value) {
-    case 'connected':
-      return 'connected'
-    case 'connecting':
-      return 'connecting…'
-    case 'disconnected':
-      return 'disconnected'
-    case 'exited':
-      return 'session ended'
-  }
-  return ''
-})
 </script>
 
 <template>
   <div class="flex h-full flex-col bg-slate-900">
-    <TabBar />
-    <header
-      class="flex items-center gap-3 border-b border-slate-800 px-4 py-2.5"
-    >
-      <StatusDot v-if="session" :status="session.status" />
-      <span class="truncate font-medium text-slate-100">
-        {{ session?.name ?? id }}
-      </span>
-      <span v-if="session" class="hidden font-mono text-xs text-slate-500 sm:inline">
-        {{ session.directory }} · {{ session.shell }}
-      </span>
-      <span
-        class="ml-auto shrink-0 text-xs"
-        :class="{
-          'text-emerald-400': conn === 'connected',
-          'text-amber-400': conn === 'connecting' || conn === 'disconnected',
-          'text-slate-500': conn === 'exited',
-        }"
-        >{{ statusLabel }}</span
-      >
-    </header>
+    <TabBar :conn="conn" />
 
     <div class="relative min-h-0 flex-1">
       <p v-if="loadError" class="p-6 text-sm text-rose-400">{{ loadError }}</p>
