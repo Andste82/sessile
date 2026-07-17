@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterLink } from 'vue-router'
-import { FolderIcon, UsersIcon, TrashIcon } from '@heroicons/vue/24/outline'
+import { FolderIcon, TrashIcon } from '@heroicons/vue/24/outline'
 import StatusDot from './StatusDot.vue'
 import type { Session } from '@/api/types'
 import { relativeTime } from '@/utils/time'
@@ -19,7 +19,7 @@ const emit = defineEmits<{ (e: 'delete', id: string): void }>()
       <span class="truncate font-medium text-slate-100">{{ session.name }}</span>
       <span class="ml-auto font-mono text-xs text-slate-400">{{ session.shell }}</span>
       <button
-        class="rounded p-1 text-slate-500 opacity-0 transition hover:bg-slate-700 hover:text-rose-400 group-hover:opacity-100"
+        class="rounded p-1 text-slate-500 opacity-100 transition hover:bg-slate-700 hover:text-rose-400 sm:opacity-0 sm:group-hover:opacity-100"
         title="Delete session"
         @click.prevent.stop="emit('delete', session.id)"
       >
@@ -30,9 +30,6 @@ const emit = defineEmits<{ (e: 'delete', id: string): void }>()
       <span class="flex min-w-0 items-center gap-1">
         <FolderIcon class="h-4 w-4 shrink-0" />
         <span class="truncate font-mono">{{ session.directory }}</span>
-      </span>
-      <span class="flex items-center gap-1">
-        <UsersIcon class="h-4 w-4" />{{ session.clientCount }}
       </span>
       <span class="ml-auto whitespace-nowrap">{{ relativeTime(session.lastActivity) }}</span>
     </div>
