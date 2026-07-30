@@ -26,6 +26,9 @@ ENV LANG=C.UTF-8
 #                                needs >= 1.25). Works offline / GOTOOLCHAIN=local.
 #   (nodejs LTS)                 frontend build/test (Vite, vitest) + Claude Code
 #   gh                           GitHub CLI (auth, PRs)
+#   docker-ce-cli                client only, no daemon — `make docker` talks to
+#                                the host's daemon over the socket mounted by
+#                                start.sh / devcontainer.json
 # =============================================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget git jq make gnupg \
@@ -52,6 +55,21 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Docker CLI (docker-outside-of-docker) ------------------------------------
+# Client only — no daemon runs in here. start.sh and devcontainer.json bind-mount
+# the host's /var/run/docker.sock, so `make docker` builds on the host daemon and
+# the resulting image lands in the host's image store. Note this gives the
+# container full control of that daemon, which is root-equivalent on the host.
+# buildx is included because `docker build` defaults to it on modern clients.
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+    && chmod go+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        docker-ce-cli docker-buildx-plugin \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Node.js LTS + Claude Code ------------------------------------------------

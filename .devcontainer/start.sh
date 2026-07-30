@@ -29,6 +29,21 @@ else
   echo "warning: $ENV_FILE not found — copy .devcontainer/.env.example to .devcontainer/.env to load secrets." >&2
 fi
 
+# Docker-outside-of-docker: hand the container the host's daemon socket so
+# `make docker` works inside it. The image ships docker-ce-cli but no daemon.
+# Rootless Docker puts the socket under $XDG_RUNTIME_DIR, so honour DOCKER_HOST
+# when it points at a unix socket. Always mounted at the canonical path inside.
+docker_args=()
+HOST_DOCKER_SOCK="/var/run/docker.sock"
+if [[ "${DOCKER_HOST:-}" == unix://* ]]; then
+  HOST_DOCKER_SOCK="${DOCKER_HOST#unix://}"
+fi
+if [[ -S "$HOST_DOCKER_SOCK" ]]; then
+  docker_args=(-v "$HOST_DOCKER_SOCK":/var/run/docker.sock)
+else
+  echo "warning: no docker socket at $HOST_DOCKER_SOCK — 'make docker' will not work inside the container." >&2
+fi
+
 # Build image if missing (or unconditionally when rebuild was requested).
 if [[ "$REBUILD" == "1" ]]; then
   echo "Rebuilding image '$IMAGE_NAME' from $SCRIPT_DIR"
@@ -67,6 +82,7 @@ fi
 echo "Running new container '$CONTAINER_NAME'..."
 docker run -it --rm --name "$CONTAINER_NAME" \
   "${env_args[@]}" \
+  "${docker_args[@]}" \
   -e CLAUDE_CONFIG_DIR=/root/.claude \
   -v "$PROJECT_ROOT":/workspace \
   -v "$CLAUDE_CONFIG_DIR":/root/.claude \

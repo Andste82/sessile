@@ -4,6 +4,13 @@
   // Load local secrets (GitHub token) from .devcontainer/.env.
   // Copy .env.example to .env first; the real .env is gitignored.
   "runArgs": ["--env-file", "${localWorkspaceFolder}/.devcontainer/.env"],
+  // Docker-outside-of-docker: the image ships docker-ce-cli but no daemon, so
+  // `make docker` builds against the host's daemon over this socket. Mirrors the
+  // mount start.sh adds. Assumes a rootful host daemon; for rootless Docker,
+  // point the source at $XDG_RUNTIME_DIR/docker.sock.
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
   // Pre-fetch backend modules and install frontend deps on first create.
   "onCreateCommand": "cd backend && go mod download && cd ../frontend && npm install",
   // Backend (:8080) and Vite dev server (:5173).
