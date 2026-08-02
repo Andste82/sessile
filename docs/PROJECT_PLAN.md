@@ -310,6 +310,11 @@ frontend/src/
   On reattach, call `terminal.reset()` before replay so buffer replay
   renders cleanly.
 - On `exit` control frame: banner "Session ended", disable input.
+- Focus: the terminal takes keyboard focus when a session becomes active —
+  which is on mount, since the terminal component is keyed on the route id
+  and a session switch remounts it. Pointer devices only (`hover: hover and
+  pointer: fine`): on a touchscreen, focusing opens the virtual keyboard, and
+  it must not spring up on every session switch.
 - IME / predictive keyboards: xterm's three composition paths (`_inputEvent`,
   `CompositionHelper.keydown` textarea diffing, `_finalizeComposition`) all
   leak intermediate states on mobile keyboards, so `useTerminal` owns the

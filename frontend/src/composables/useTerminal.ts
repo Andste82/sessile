@@ -124,6 +124,12 @@ export function useTerminal() {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data))
   }
 
+  // focus puts the caret in xterm's helper textarea, so keystrokes go to the
+  // PTY without the user having to click the terminal first (issue #25).
+  function focus() {
+    term.value?.focus()
+  }
+
   // pressSpecial sends a named special key with the currently armed modifiers
   // applied, then clears them.
   function pressSpecial(key: SpecialKey) {
@@ -691,6 +697,7 @@ export function useTerminal() {
     dispose,
     toggleMod,
     pressSpecial,
+    focus,
     fit: doFit,
   }
 }
