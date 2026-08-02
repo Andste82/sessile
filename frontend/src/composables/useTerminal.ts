@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
+import { isCompositionArtifact } from '@/utils/ime'
 import {
   anyMod,
   applyModifiers,
@@ -48,6 +49,14 @@ export function useTerminal() {
   // browser gestures (pull-to-refresh, back-swipe, overscroll bounce) from
   // firing mid-scroll. That requires non-passive listeners; the matching
   // `touch-action: none` lives in style.css.
+  // IME state (§ mobile): xterm's own `input` handler forwards any
+  // `insertText` straight to the terminal without asking its CompositionHelper
+  // whether a composition is in flight, so every predictive-text preview
+  // Gboard emits ("hel" on the way to "hello") arrives as real input alongside
+  // the committed word. We gate those events instead — see gateCompositionInput.
+  let composing = false
+  let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null
+
   let touching = false
   let touchLastY = 0
   let touchAccum = 0 // sub-line remainder in px, so drags track the finger 1:1
@@ -126,7 +135,48 @@ export function useTerminal() {
     el.addEventListener('touchend', onTouchEnd, { passive: true })
     el.addEventListener('touchcancel', onTouchCancel, { passive: true })
 
+    // Capture phase on the host: xterm binds its own composition and input
+    // handlers directly to the helper textarea, and a capture listener on an
+    // ancestor runs before any listener on the target, which is the only way to
+    // withhold an event from it.
+    el.addEventListener('compositionstart', onCompositionStart, true)
+    el.addEventListener('compositionend', onCompositionEnd, true)
+    el.addEventListener('input', gateCompositionInput, true)
+
     term.value = t
+  }
+
+  function onCompositionStart() {
+    if (compositionSettleTimer) {
+      clearTimeout(compositionSettleTimer)
+      compositionSettleTimer = null
+    }
+    composing = true
+  }
+
+  // onCompositionEnd keeps the gate shut until the current task queue drains.
+  // The commit's own `input` event is dispatched after compositionend, and
+  // xterm reads the finished word off the textarea from a setTimeout(0) of its
+  // own — releasing the gate synchronously would let that trailing event
+  // through and deliver the word twice.
+  function onCompositionEnd() {
+    if (compositionSettleTimer) clearTimeout(compositionSettleTimer)
+    compositionSettleTimer = setTimeout(() => {
+      compositionSettleTimer = null
+      composing = false
+    }, 0)
+  }
+
+  // gateCompositionInput stops composition previews from reaching xterm. It
+  // deliberately does not preventDefault: the textarea must still apply the
+  // edit, because xterm's CompositionHelper reconstructs the committed word by
+  // reading textarea.value once the composition ends. Stopping propagation
+  // withholds the event from xterm's handler without touching the DOM update,
+  // so the terminal receives the final word exactly once.
+  function gateCompositionInput(e: Event) {
+    const inputType = (e as InputEvent).inputType ?? ''
+    if (!isCompositionArtifact(composing, inputType)) return
+    e.stopPropagation()
   }
 
   // rowHeight measures the rendered row pitch. .xterm-screen is sized to
@@ -327,6 +377,10 @@ export function useTerminal() {
       reconnectTimer = null
     }
     stopMomentum()
+    if (compositionSettleTimer) {
+      clearTimeout(compositionSettleTimer)
+      compositionSettleTimer = null
+    }
     observer?.disconnect()
     observer = null
     if (hostEl) {
@@ -334,6 +388,9 @@ export function useTerminal() {
       hostEl.removeEventListener('touchmove', onTouchMove)
       hostEl.removeEventListener('touchend', onTouchEnd)
       hostEl.removeEventListener('touchcancel', onTouchCancel)
+      hostEl.removeEventListener('compositionstart', onCompositionStart, true)
+      hostEl.removeEventListener('compositionend', onCompositionEnd, true)
+      hostEl.removeEventListener('input', gateCompositionInput, true)
       hostEl = null
     }
     if (ws) {
