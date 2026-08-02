@@ -33,3 +33,47 @@ export function isCompositionArtifact(
 ): boolean {
   return composing || compositionInputTypes.has(inputType)
 }
+
+/** The parts of a KeyboardEvent that place it inside or outside an IME. */
+export interface ImeKey {
+  type: string
+  key: string
+  keyCode: number
+  isComposing: boolean
+}
+
+/**
+ * isImeKey reports whether a key event belongs to the keyboard's composition
+ * machinery rather than to the terminal.
+ *
+ * Android soft keyboards report every composing keystroke as keyCode 229 with
+ * no usable `key`, so there is nothing for the terminal to send; worse, xterm
+ * answers each one by diffing its helper textarea on a timer and sending the
+ * difference, which is how half-typed words leak out. Keyups are excluded:
+ * xterm uses them to refocus and to reset its own key-in-flight flag.
+ */
+export function isImeKey(e: ImeKey): boolean {
+  if (e.type === 'keyup') return false
+  return e.isComposing || e.keyCode === 229 || e.key === 'Process'
+}
+
+// Keys that only arm a modifier: pressing one is not the user finishing a word.
+const modifierKeys = new Set([
+  'Shift',
+  'Control',
+  'Alt',
+  'AltGraph',
+  'Meta',
+  'CapsLock',
+])
+
+/**
+ * shouldFlushIme reports whether a key event ends whatever the keyboard has
+ * staged. A real key — Enter, an arrow, Ctrl-C — means the user is done with
+ * the word, so it must reach the PTY before the key itself does.
+ */
+export function shouldFlushIme(e: ImeKey, imeActive: boolean): boolean {
+  if (!imeActive || e.type !== 'keydown') return false
+  if (isImeKey(e)) return false
+  return !modifierKeys.has(e.key)
+}

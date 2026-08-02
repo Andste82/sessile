@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
-import { isCompositionArtifact } from '@/utils/ime'
+import { isCompositionArtifact, isImeKey, shouldFlushIme } from '@/utils/ime'
 import {
   isApplePlatform,
   isCopyShortcut,
@@ -56,13 +56,30 @@ export function useTerminal() {
   // browser gestures (pull-to-refresh, back-swipe, overscroll bounce) from
   // firing mid-scroll. That requires non-passive listeners; the matching
   // `touch-action: none` lives in style.css.
-  // IME state (§ mobile): xterm's own `input` handler forwards any
-  // `insertText` straight to the terminal without asking its CompositionHelper
-  // whether a composition is in flight, so every predictive-text preview
-  // Gboard emits ("hel" on the way to "hello") arrives as real input alongside
-  // the committed word. We gate those events instead — see gateCompositionInput.
-  let composing = false
-  let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null
+  // IME state (§ mobile, issue #22): xterm has three ways of turning keyboard
+  // composition into terminal input and all three are wrong for predictive
+  // keyboards. `_inputEvent` forwards any `insertText` without asking whether a
+  // composition is in flight; `CompositionHelper.keydown` answers every Android
+  // composing keystroke (keyCode 229) by diffing the helper textarea on a timer
+  // and sending the difference; `_finalizeComposition` sends a slice of that
+  // same textarea at every compositionend. Gboard swapping a half-typed word
+  // for a tapped suggestion ends one composition and starts another, so the
+  // last two fire mid-word and leak "hel" on the way to "hello" — and neither
+  // reads the event, so gating `input` alone (as we first tried) cannot stop
+  // them.
+  //
+  // So we own the sequence instead: withhold every composition event and every
+  // composition `input` from xterm, let the browser keep editing the textarea,
+  // and deliver its value once — when the keyboard has gone quiet, or when a
+  // real key says the word is finished. The textarea is the browser's own
+  // account of what the user meant, deletions and re-writes included.
+  let imeActive = false // a sequence is in flight, settle window included
+  let imeComposing = false // between compositionstart and compositionend
+  let imeDelivered = false // already flushed by a real key; ignore the tail
+  let imeSettleTimer: ReturnType<typeof setTimeout> | null = null
+  // Quiet period that ends a sequence. Gboard's end-then-restart churn lands
+  // within a task or two; anything longer is a new word, not a correction.
+  const imeSettleMs = 40
 
   // Clipboard state (issue #21) — see handleKeyEvent and onPaste.
   const applePlatform = isApplePlatform(navigator)
@@ -101,6 +118,9 @@ export function useTerminal() {
   }
 
   function send(data: string) {
+    // Empty writes are never meaningful, and xterm's composition helper emits
+    // them once we have taken its textarea away (see resetXtermComposition).
+    if (!data) return
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data))
   }
 
@@ -178,6 +198,21 @@ export function useTerminal() {
   // the helper textarea exactly as it does for the context menu, and onPaste
   // picks it up.
   function handleKeyEvent(e: KeyboardEvent): boolean {
+    // An IME keystroke is the keyboard talking to itself. Swallow it without
+    // cancelling — the browser still needs it to drive the composition, but
+    // xterm must not see it, or CompositionHelper.keydown starts diffing the
+    // textarea behind our back.
+    if (isImeKey(e)) {
+      // Opening the sequence here also covers keyboards that report 229 but
+      // never open a composition: the quiet period delivers their textarea,
+      // which is the job xterm's diffing was doing badly.
+      if (e.type === 'keydown') {
+        beginImeSequence()
+        if (!imeComposing) armImeSettle()
+      }
+      return false
+    }
+    if (shouldFlushIme(e, imeActive)) flushIme()
     if (isCopyShortcut(e, applePlatform)) {
       // Swallowed whether or not anything was copied: Ctrl+Shift+C must never
       // reach the shell as ^C. preventDefault only when we did copy, so an
@@ -302,37 +337,119 @@ export function useTerminal() {
     term.value?.paste(text)
   }
 
-  function onCompositionStart() {
-    if (compositionSettleTimer) {
-      clearTimeout(compositionSettleTimer)
-      compositionSettleTimer = null
-    }
-    composing = true
+  // beginImeSequence opens a sequence, or starts a fresh one when the last
+  // word has already been delivered — a composition that begins after a flush
+  // is the next word, not a correction of the last.
+  function beginImeSequence() {
+    if (imeActive && !imeDelivered) return
+    imeActive = true
+    imeDelivered = false
+    // Start from a known-empty buffer so the value read at the end is this word
+    // and nothing else. It is normally empty already — every sequence ends by
+    // clearing it — but xterm's blur and right-click paths write there too.
+    const ta = term.value?.textarea
+    if (ta && ta.value !== '') ta.value = ''
   }
 
-  // onCompositionEnd keeps the gate shut until the current task queue drains.
-  // The commit's own `input` event is dispatched after compositionend, and
-  // xterm reads the finished word off the textarea from a setTimeout(0) of its
-  // own — releasing the gate synchronously would let that trailing event
-  // through and deliver the word twice.
-  function onCompositionEnd() {
-    if (compositionSettleTimer) clearTimeout(compositionSettleTimer)
-    compositionSettleTimer = setTimeout(() => {
-      compositionSettleTimer = null
-      composing = false
-    }, 0)
+  function onCompositionStart(e: Event) {
+    if (!e.isTrusted) return // ours, from resetXtermComposition
+    beginImeSequence()
+    imeComposing = true
+    clearImeSettle() // an open composition ends on its own; nothing to wait for
   }
 
-  // gateCompositionInput stops composition previews from reaching xterm. It
-  // deliberately does not preventDefault: the textarea must still apply the
-  // edit, because xterm's CompositionHelper reconstructs the committed word by
-  // reading textarea.value once the composition ends. Stopping propagation
-  // withholds the event from xterm's handler without touching the DOM update,
-  // so the terminal receives the final word exactly once.
+  // onCompositionEnd is withheld from xterm: its _finalizeComposition would
+  // send a slice of the textarea, and on a predictive keyboard this event
+  // often marks an intermediate state ("hel" before the tapped "hello"), not
+  // the finished word. What ends the word is quiet, so we wait for it.
+  function onCompositionEnd(e: Event) {
+    if (!e.isTrusted) return
+    e.stopPropagation()
+    imeComposing = false
+    armImeSettle()
+  }
+
+  // gateCompositionInput withholds composition input from xterm without
+  // preventDefault: the textarea must still apply every edit, because its value
+  // is what we deliver once the sequence settles. While a composition is open
+  // there is nothing to wait for — the keyboard tells us when it ends — but
+  // once it has ended, further edits are the keyboard revising its own commit,
+  // and each one restarts the quiet period.
   function gateCompositionInput(e: Event) {
     const inputType = (e as InputEvent).inputType ?? ''
-    if (!isCompositionArtifact(composing, inputType)) return
+    if (!isCompositionArtifact(imeActive, inputType)) return
     e.stopPropagation()
+    imeActive = true
+    if (!imeComposing) armImeSettle()
+  }
+
+  function clearImeSettle() {
+    if (imeSettleTimer) {
+      clearTimeout(imeSettleTimer)
+      imeSettleTimer = null
+    }
+  }
+
+  function armImeSettle() {
+    clearImeSettle()
+    imeSettleTimer = setTimeout(settleIme, imeSettleMs)
+  }
+
+  // takeImeText empties the helper textarea and returns what was in it.
+  function takeImeText(): string {
+    const ta = term.value?.textarea
+    if (!ta) return ''
+    const text = ta.value
+    ta.value = ''
+    ta.setSelectionRange(0, 0)
+    return text
+  }
+
+  // flushIme delivers the staged word because a real key arrived. The sequence
+  // stays open: the browser still has the composition's own commit events to
+  // emit, and those must be swallowed rather than delivered a second time.
+  //
+  // Emptying the textarea here is also what makes the key safe to hand on to
+  // xterm: its helper finalizes any composition it still believes is open by
+  // sending a slice of that textarea, which is now empty — and send() drops
+  // empty writes. So Enter delivers the word, then the carriage return.
+  function flushIme() {
+    clearImeSettle()
+    imeDelivered = true
+    armImeSettle()
+    deliverIme(takeImeText())
+  }
+
+  // settleIme ends a sequence that has gone quiet, delivering the word unless
+  // a real key already flushed it.
+  function settleIme() {
+    imeSettleTimer = null
+    if (!imeActive) return
+    const text = takeImeText()
+    const delivered = imeDelivered
+    imeActive = false
+    imeComposing = false
+    imeDelivered = false
+    resetXtermComposition()
+    if (!delivered) deliverIme(text)
+  }
+
+  // deliverIme sends committed text the way typed text is sent, so the key bar's
+  // armed modifiers still apply to a one-character commit.
+  function deliverIme(text: string) {
+    if (!text) return
+    send(applyModifiers(text, mods.value))
+    clearMods()
+  }
+
+  // resetXtermComposition hands xterm a finished composition over the textarea
+  // we just emptied. It clears isComposing, releases the key path its helper
+  // holds open, and hides the composition overlay — while its own finalize
+  // reads an empty string and so cannot deliver the word again.
+  function resetXtermComposition() {
+    term.value?.textarea?.dispatchEvent(
+      new CompositionEvent('compositionend', { data: '' })
+    )
   }
 
   // rowHeight measures the rendered row pitch. .xterm-screen is sized to
@@ -533,10 +650,7 @@ export function useTerminal() {
       reconnectTimer = null
     }
     stopMomentum()
-    if (compositionSettleTimer) {
-      clearTimeout(compositionSettleTimer)
-      compositionSettleTimer = null
-    }
+    clearImeSettle()
     if (pasteFallbackTimer) {
       clearTimeout(pasteFallbackTimer)
       pasteFallbackTimer = null

@@ -310,6 +310,14 @@ frontend/src/
   On reattach, call `terminal.reset()` before replay so buffer replay
   renders cleanly.
 - On `exit` control frame: banner "Session ended", disable input.
+- IME / predictive keyboards: xterm's three composition paths (`_inputEvent`,
+  `CompositionHelper.keydown` textarea diffing, `_finalizeComposition`) all
+  leak intermediate states on mobile keyboards, so `useTerminal` owns the
+  sequence instead. Composition events and composition `input` are withheld
+  from xterm (never `preventDefault`ed — the browser must keep editing the
+  helper textarea), and the textarea's value is delivered once: after 40 ms of
+  keyboard quiet, or immediately when a real key ends the word. Only committed
+  text reaches the PTY.
 - Copy: selection copy via context menu, Ctrl+Shift+C and Ctrl+Insert
   (Cmd+C on macOS, which the browser handles itself). Ctrl+C is always
   SIGINT, never a copy — even with a selection.
