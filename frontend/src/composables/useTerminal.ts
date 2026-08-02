@@ -5,6 +5,13 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
 import { isCompositionArtifact } from '@/utils/ime'
 import {
+  isApplePlatform,
+  isCopyShortcut,
+  isPasteInput,
+  isPasteShortcut,
+  pastedText,
+} from '@/utils/clipboard'
+import {
   anyMod,
   applyModifiers,
   encodeSpecial,
@@ -56,6 +63,16 @@ export function useTerminal() {
   // the committed word. We gate those events instead — see gateCompositionInput.
   let composing = false
   let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null
+
+  // Clipboard state (issue #21) — see handleKeyEvent and onPaste.
+  const applePlatform = isApplePlatform(navigator)
+  // How long to wait for a chord's native paste before reading the clipboard
+  // ourselves: long enough for the event to be dispatched, short enough that
+  // the keystroke still feels like it did something.
+  const pasteFallbackMs = 150
+  let pasteFallbackTimer: ReturnType<typeof setTimeout> | null = null
+  let pasteCount = 0
+  let beforeInputHandledPaste = false
 
   let touching = false
   let touchLastY = 0
@@ -125,6 +142,8 @@ export function useTerminal() {
       clearMods()
     })
 
+    t.attachCustomKeyEventHandler(handleKeyEvent)
+
     observer = new ResizeObserver(() => doFit())
     observer.observe(el)
 
@@ -143,7 +162,144 @@ export function useTerminal() {
     el.addEventListener('compositionend', onCompositionEnd, true)
     el.addEventListener('input', gateCompositionInput, true)
 
+    // Clipboard, same capture-phase reasoning: xterm binds `paste` to both the
+    // textarea and its own container, and we must take the event before it.
+    el.addEventListener('paste', onPaste, true)
+    el.addEventListener('beforeinput', onBeforeInput, true)
+    el.addEventListener('input', onPasteInput, true)
+
     term.value = t
+  }
+
+  // handleKeyEvent runs before xterm's own key handling; returning false means
+  // "not mine, and do not cancel it". That is the whole fix for Ctrl+V: xterm
+  // would otherwise send ^V and preventDefault the keydown, and a cancelled
+  // keydown never becomes a paste. Left uncancelled, the browser pastes into
+  // the helper textarea exactly as it does for the context menu, and onPaste
+  // picks it up.
+  function handleKeyEvent(e: KeyboardEvent): boolean {
+    if (isCopyShortcut(e, applePlatform)) {
+      // Swallowed whether or not anything was copied: Ctrl+Shift+C must never
+      // reach the shell as ^C. preventDefault only when we did copy, so an
+      // empty selection leaves the clipboard alone instead of clearing it.
+      if (e.type === 'keydown' && copySelection()) e.preventDefault()
+      return false
+    }
+    if (!isPasteShortcut(e, applePlatform)) return true
+    if (e.type === 'keydown') armClipboardFallback()
+    return false
+  }
+
+  // copySelection puts the terminal's selection on the clipboard, reporting
+  // whether there was anything to copy. Plain Ctrl+C never lands here — it
+  // stays SIGINT — so copying is Ctrl+Shift+C, Ctrl+Insert, or right-click.
+  function copySelection(): boolean {
+    const text = term.value?.getSelection() ?? ''
+    if (!text) return false
+    // The async API needs a secure context, which a self-hosted deployment
+    // reached over plain http on a LAN is not. Decide synchronously: an async
+    // fallback would land outside the user gesture, where the legacy path is
+    // itself refused.
+    const clip = window.isSecureContext ? navigator.clipboard : null
+    if (clip?.writeText) {
+      clip.writeText(text).catch(() => {
+        // Permission denied: the selection stays selected, right-click works.
+      })
+    } else {
+      legacyCopy(text)
+    }
+    return true
+  }
+
+  // legacyCopy is the pre-Clipboard-API path, and the same trick xterm uses
+  // for right-click copy: stage the text in the helper textarea, which already
+  // holds focus, so the copy command has something to act on and the terminal
+  // never visibly loses focus.
+  function legacyCopy(text: string) {
+    const ta = term.value?.textarea
+    if (!ta) return
+    ta.value = text
+    ta.select()
+    try {
+      document.execCommand('copy')
+    } catch {
+      // Nothing else to fall back to.
+    }
+    // Leave it as xterm expects to find it: empty, cursor collapsed.
+    ta.value = ''
+    ta.setSelectionRange(0, 0)
+  }
+
+  // armClipboardFallback covers browsers that do not turn the chord into a
+  // paste event for a focused-but-hidden textarea. If nothing was delivered
+  // shortly after the keystroke, read the clipboard through the async API
+  // instead — still inside the user gesture, so the permission holds.
+  function armClipboardFallback() {
+    if (pasteFallbackTimer) clearTimeout(pasteFallbackTimer)
+    const seen = pasteCount
+    pasteFallbackTimer = setTimeout(() => {
+      pasteFallbackTimer = null
+      if (pasteCount !== seen) return // the native paste arrived
+      navigator.clipboard
+        ?.readText()
+        .then(deliverPaste)
+        .catch(() => {
+          // No clipboard permission (or no clipboard): nothing more to try.
+        })
+    }, pasteFallbackMs)
+  }
+
+  // onPaste takes over from xterm's own paste handler. Cancelling the event
+  // keeps the text out of the helper textarea, which both spares us xterm's
+  // trailing `input` event and stops the pasted text lingering there where the
+  // next composition would read it back.
+  function onPaste(e: ClipboardEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    deliverPaste(e.clipboardData?.getData('text/plain') ?? '')
+  }
+
+  // onBeforeInput handles the mobile path: a paste offered by the keyboard's
+  // clipboard menu can arrive as a plain editing command with no clipboard
+  // event, and xterm forwards only `insertText`, so the text would be dropped.
+  function onBeforeInput(e: InputEvent) {
+    if (!isPasteInput(e.inputType)) return
+    const text = pastedText(e)
+    // Some browsers withhold the text until the edit is applied; recover it
+    // from the textarea in onPasteInput instead.
+    beforeInputHandledPaste = text !== '' && e.cancelable
+    if (!beforeInputHandledPaste) return
+    e.preventDefault()
+    e.stopPropagation()
+    deliverPaste(text)
+  }
+
+  // onPasteInput is that recovery: the edit has landed, so the pasted text is
+  // sitting in the helper textarea — which xterm otherwise keeps empty.
+  function onPasteInput(e: Event) {
+    if (!isPasteInput((e as InputEvent).inputType ?? '')) return
+    const handled = beforeInputHandledPaste
+    beforeInputHandledPaste = false
+    if (handled) return
+    e.stopPropagation()
+    const ta = e.target as HTMLTextAreaElement | null
+    const text = pastedText(e as InputEvent) || ta?.value || ''
+    if (ta) ta.value = ''
+    deliverPaste(text)
+  }
+
+  // deliverPaste feeds clipboard text to the terminal through xterm's own
+  // paste path, which normalises newlines to CR and applies bracketed-paste
+  // framing when the foreground app asked for it.
+  function deliverPaste(text: string) {
+    if (!text) return
+    pasteCount++
+    // Leave the textarea empty, as xterm's own paste path does: it is the
+    // buffer CompositionHelper reads a committed word out of, and Firefox's
+    // right-click handler parks the current selection there.
+    const ta = term.value?.textarea
+    if (ta) ta.value = ''
+    term.value?.paste(text)
   }
 
   function onCompositionStart() {
@@ -381,6 +537,10 @@ export function useTerminal() {
       clearTimeout(compositionSettleTimer)
       compositionSettleTimer = null
     }
+    if (pasteFallbackTimer) {
+      clearTimeout(pasteFallbackTimer)
+      pasteFallbackTimer = null
+    }
     observer?.disconnect()
     observer = null
     if (hostEl) {
@@ -391,6 +551,9 @@ export function useTerminal() {
       hostEl.removeEventListener('compositionstart', onCompositionStart, true)
       hostEl.removeEventListener('compositionend', onCompositionEnd, true)
       hostEl.removeEventListener('input', gateCompositionInput, true)
+      hostEl.removeEventListener('paste', onPaste, true)
+      hostEl.removeEventListener('beforeinput', onBeforeInput, true)
+      hostEl.removeEventListener('input', onPasteInput, true)
       hostEl = null
     }
     if (ws) {
