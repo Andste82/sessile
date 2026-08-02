@@ -310,8 +310,16 @@ frontend/src/
   On reattach, call `terminal.reset()` before replay so buffer replay
   renders cleanly.
 - On `exit` control frame: banner "Session ended", disable input.
-- Copy: xterm default selection copy. Paste: Ctrl+Shift+V / context menu
-  (send pasted text as binary input).
+- Copy: selection copy via context menu, Ctrl+Shift+C and Ctrl+Insert
+  (Cmd+C on macOS, which the browser handles itself). Ctrl+C is always
+  SIGINT, never a copy — even with a selection.
+- Paste: Ctrl+V / Ctrl+Shift+V /
+  Shift+Insert (Cmd+V on macOS), context menu, and the mobile keyboard's
+  clipboard menu — all funnelled through `terminal.paste()`, so pasted text
+  is sent as binary input with bracketed-paste framing when the foreground
+  app enabled it. The paste chords are handed back to the browser via
+  `attachCustomKeyEventHandler`; xterm would otherwise send ^V and cancel the
+  keydown, which suppresses the native paste.
 
 ### Responsiveness
 - ≥1024 px: persistent sidebar | terminal.
