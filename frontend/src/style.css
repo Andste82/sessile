@@ -9,10 +9,32 @@ body,
   height: 100%;
 }
 
+/* The app shell is a fixed-height flex layout (App.vue) and every scrollable
+   pane scrolls internally, so the document itself must never scroll or bounce.
+   Without this, a drag that reaches the root scroller triggers the browser's
+   pull-to-refresh on Android and rubber-band/back-swipe on iOS. */
+html,
+body {
+  overscroll-behavior: none;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   background-color: #0f172a; /* slate-900 */
   color: #e2e8f0; /* slate-200 */
   font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
     sans-serif;
+}
+
+/* The terminal owns every one-finger drag inside it: useTerminal.ts translates
+   the drag into scrollback lines. `touch-action: none` stops the browser from
+   claiming the gesture as a pan before our first touchmove can cancel it —
+   preventDefault() alone races with an already-started pull-to-refresh. */
+.terminal-host,
+.terminal-host .xterm,
+.terminal-host .xterm-viewport,
+.terminal-host .xterm-screen {
+  touch-action: none;
+  overscroll-behavior: contain;
 }
