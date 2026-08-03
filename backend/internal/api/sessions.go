@@ -133,6 +133,8 @@ func (s *Server) respondSessionError(c *gin.Context, err error) {
 	case errors.Is(err, session.ErrInvalidName),
 		errors.Is(err, session.ErrInvalidShell):
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
+	case errors.Is(err, session.ErrShuttingDown):
+		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
 	default:
 		// resolveDir and other validation-style failures surface here as 400;
 		// treat unknown errors as validation to avoid leaking internals, but

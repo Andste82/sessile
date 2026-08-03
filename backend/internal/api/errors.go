@@ -20,6 +20,9 @@ const (
 	CodeNotFound   = "not_found"
 	CodeConflict   = "conflict"
 	CodeInternal   = "internal"
+	// CodeUnavailable is for work refused because the server is going away,
+	// not because the request was wrong.
+	CodeUnavailable = "unavailable"
 )
 
 // respondError writes a JSON error envelope with the given HTTP status.

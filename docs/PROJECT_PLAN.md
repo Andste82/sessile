@@ -252,7 +252,7 @@ Base path `/api`. All responses JSON. Errors use:
 {"error":{"code":"not_found","message":"session not found"}}
 ```
 with appropriate HTTP status (400 validation, 404 missing, 409 conflict,
-500 internal).
+500 internal, 503 unavailable — refused because the server is shutting down).
 
 | Method & Path | Purpose | Notes |
 |---|---|---|
