@@ -242,15 +242,21 @@ func (m *Manager) readLoop(s *Session) {
 			break
 		}
 	}
+	// Snapshot before anything is told the session stopped. The buffer is final
+	// the moment this loop breaks — broadcast is the only writer and it runs
+	// here — and markStopped both flips the status and sends the exit frame. A
+	// client that acts on either can call Restart immediately, and Restart reads
+	// this file: writing it afterwards would hand that restart a missing or
+	// stale scrollback.
+	m.saveScrollback(s)
+
 	if s.markStopped() {
 		if m.store != nil {
 			if err := m.store.SetStatus(s.ID, StatusStopped); err != nil {
 				m.log.Error("persist stop failed", "id", s.ID, "err", err)
 			}
 		}
-		// Snapshot the final output — this is what a later Restart replays —
-		// then let the buffer go; nothing can read it again from here.
-		m.saveScrollback(s)
+		// The snapshot is on disk and nothing can read the buffer again.
 		s.releaseBuffer()
 		m.log.Info("session stopped", "id", s.ID)
 	}

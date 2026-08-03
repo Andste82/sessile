@@ -348,6 +348,92 @@ func TestStoppedSessionReleasesItsBuffer(t *testing.T) {
 	}
 }
 
+// snapshotWatcher is a Client that records what the scrollback snapshot looked
+// like at the instant the session announced its exit.
+type snapshotWatcher struct {
+	store *ScrollbackStore
+	id    string
+
+	mu       sync.Mutex
+	sawExit  bool
+	atExit   []byte
+	loadErr  error
+	exitSeen chan struct{}
+}
+
+func newSnapshotWatcher(store *ScrollbackStore, id string) *snapshotWatcher {
+	return &snapshotWatcher{store: store, id: id, exitSeen: make(chan struct{})}
+}
+
+func (w *snapshotWatcher) ID() string            { return "watcher" }
+func (w *snapshotWatcher) Send(_ []byte) bool    { return true }
+func (w *snapshotWatcher) Close(_ int, _ string) {}
+
+func (w *snapshotWatcher) SendControl(v any) bool {
+	if _, ok := v.(ExitMsg); !ok {
+		return true
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.sawExit {
+		return true
+	}
+	w.sawExit = true
+	w.atExit, w.loadErr = w.store.Load(w.id)
+	close(w.exitSeen)
+	return true
+}
+
+// The exit frame is the fastest signal a browser gets that a session stopped —
+// it is what raises the "Restart session" banner — and Restart reads the
+// scrollback snapshot. So the snapshot has to be on disk before that frame goes
+// out, not after; otherwise a fast click restores nothing.
+//
+// This is checked from inside SendControl rather than by racing the loop from
+// outside: the ordering is the guarantee, and a timing race reproduces it only
+// on a loaded machine. (It reproduced on CI and not locally, which is how the
+// original ordering shipped.)
+func TestSnapshotIsWrittenBeforeClientsAreToldOfExit(t *testing.T) {
+	mgr, _, dataDir := testManager(t)
+
+	created, err := mgr.Create("racy", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	watcher := newSnapshotWatcher(NewScrollbackStore(dataDir), created.ID)
+	if _, err := mgr.Attach(created.ID, watcher); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	const marker = "output-before-exit"
+	if err := mgr.WriteInput(created.ID, []byte("echo "+marker+"\n")); err != nil {
+		t.Fatalf("WriteInput: %v", err)
+	}
+	waitForOutput(t, liveSession(t, mgr, created.ID), marker)
+
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+
+	select {
+	case <-watcher.exitSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no exit control frame arrived")
+	}
+
+	watcher.mu.Lock()
+	defer watcher.mu.Unlock()
+	if watcher.loadErr != nil {
+		t.Fatalf("Load at exit: %v", watcher.loadErr)
+	}
+	if !bytes.Contains(watcher.atExit, []byte(marker)) {
+		t.Errorf("snapshot at the moment of the exit frame was %d bytes and lacks %q; "+
+			"a client restarting on this signal would restore nothing",
+			len(watcher.atExit), marker)
+	}
+}
+
 // Shutdown snapshots live sessions, but must leave an already-stopped one alone:
 // its buffer has been released, so saving again would overwrite a good snapshot
 // with an empty one.
