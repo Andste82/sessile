@@ -94,12 +94,19 @@ func (m *Manager) Restart(id string) (Info, error) {
 	}
 	defer m.releaseRestart(id)
 
-	prev, err := m.restartable(id)
+	meta, err := m.restartable(id)
 	if err != nil {
 		return Info{}, err
 	}
 
-	s, err := m.spawn(prev.ID, prev.Name, prev.Directory, prev.Shell, prev.Created)
+	// The stopped session object, captured before register replaces the map
+	// entry. It is nil for a session that only survives as a stopped row — the
+	// state after a backend restart — and it holds the clients to migrate below.
+	// The restart reservation is what makes it safe to hold across the spawn: no
+	// second restart can replace it, and Delete refuses while it is held.
+	prev := m.live(id)
+
+	s, err := m.spawn(meta.ID, meta.Name, meta.Directory, meta.Shell, meta.Created)
 	if err != nil {
 		return Info{}, err
 	}
@@ -117,12 +124,33 @@ func (m *Manager) Restart(id string) (Info, error) {
 		}
 	}
 
-	info, err := m.register(s)
-	if err != nil {
+	if _, err := m.register(s); err != nil {
 		return Info{}, err
 	}
+
+	// Hand the stopped shell's viewers to the replacement. They are the clients
+	// that watched it stop — every browser that had this session open, not only
+	// the one that asked for the restart — and attach re-primes each of them with
+	// the attached frame and the restored scrollback. That frame is what tells
+	// them the session is live again; without it they sat on a dead socket
+	// offering to start a session someone else had already started.
+	//
+	// After register, so they are handed to the published session, whose read
+	// loop broadcasts under the same lock attach takes: no output can slip in
+	// ahead of a client's replay.
+	if prev != nil {
+		clients := prev.takeClients()
+		for _, c := range clients {
+			s.attach(c)
+		}
+		if len(clients) > 0 {
+			m.log.Info("clients moved to the restarted session", "id", s.ID, "clients", len(clients))
+		}
+	}
+
 	m.log.Info("session restarted", "id", s.ID, "name", s.Name, "shell", s.Shell, "pid", s.PID)
-	return info, nil
+	// Snapshotted after the migration so the reply carries the real client count.
+	return s.Info(), nil
 }
 
 // claimRestart reserves id for one restart, refusing if the session is already
@@ -161,6 +189,13 @@ func (m *Manager) releaseRestart(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.restarting, id)
+}
+
+// live returns the session object currently published under id, or nil.
+func (m *Manager) live(id string) *Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessions[id]
 }
 
 // restartable returns the metadata to restart id with, or an error explaining
@@ -599,12 +634,20 @@ func (m *Manager) Detach(id string, c Client) {
 }
 
 // WriteInput forwards client keystrokes to the session's PTY.
+//
+// A stopped session reports ErrStopped rather than the write error from a
+// closed PTY. Clients now stay attached across a stop, waiting to be told the
+// session came back, so typing into the dead terminal has to be a no-op the
+// caller can recognise instead of a failure that tears the connection down.
 func (m *Manager) WriteInput(id string, data []byte) error {
 	m.mu.RLock()
 	s, ok := m.sessions[id]
 	m.mu.RUnlock()
 	if !ok {
 		return ErrNotFound
+	}
+	if s.Info().Status != StatusRunning {
+		return ErrStopped
 	}
 	return s.pty.Write(data)
 }

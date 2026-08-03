@@ -23,6 +23,12 @@ const (
 	// CodeUnavailable is for work refused because the server is going away,
 	// not because the request was wrong.
 	CodeUnavailable = "unavailable"
+	// CodeAlreadyRunning narrows the conflict on a restart: the session is
+	// running, so there is nothing to start. With several browsers on one
+	// session this is a race one of them always loses, and it is not a failure
+	// — the client that lost it wanted a live session and there is one, so it
+	// needs to tell this apart from the other conflicts and just reconnect.
+	CodeAlreadyRunning = "already_running"
 )
 
 // respondError writes a JSON error envelope with the given HTTP status.

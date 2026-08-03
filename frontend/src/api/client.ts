@@ -18,6 +18,14 @@ export class ApiRequestError extends Error {
   }
 }
 
+// isAlreadyRunning reports whether a failed restart failed only because the
+// session is already running — another browser on the same session started it
+// first (§6). The caller wanted a live session and there is one, so this is a
+// cue to reconnect, not an error to show.
+export function isAlreadyRunning(e: unknown): boolean {
+  return e instanceof ApiRequestError && e.code === 'already_running'
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },

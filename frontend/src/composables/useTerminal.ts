@@ -164,8 +164,10 @@ export function useTerminal() {
 
   // WS close codes that mean the session is gone, not the connection (§5):
   // 4404 when attaching to a missing or stopped session (e.g. after a backend
-  // restart), 4000 when a live one ended or was deleted under us. Retrying
-  // either only produces a 4404 one backoff step later.
+  // restart), 4000 when one was deleted under us. Retrying either only produces
+  // a 4404 one backoff step later. A shell that merely exits no longer closes
+  // the connection — the session can come back under the same id, and this is
+  // the connection the server says so on.
   const closeSessionEnded = 4000
   const closeSessionUnavailable = 4404
 
@@ -665,6 +667,12 @@ export function useTerminal() {
       case 'attached':
         // Clear before the ring-buffer replay so it renders from a clean slate.
         term.value?.reset()
+        // A second attach on a live connection is a restart: the session ended,
+        // someone — not necessarily this browser — started it again, and the
+        // server moved us to the new shell. Saying so here is what takes the
+        // "session ended" banner down everywhere, rather than only in the tab
+        // whose button was clicked.
+        status.value = 'connected'
         break
       case 'exit':
         status.value = 'exited'

@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { PlusIcon } from '@heroicons/vue/24/solid'
 import { useSessionsStore } from '@/stores/sessions'
+import { isAlreadyRunning } from '@/api/client'
 import SessionListItem from '@/components/SessionListItem.vue'
 import NewSessionDialog from '@/components/NewSessionDialog.vue'
 import type { Session } from '@/api/types'
@@ -40,6 +41,13 @@ async function onRestart(id: string) {
     await store.restartSession(id)
     router.push(`/sessions/${id}`)
   } catch (e) {
+    // Another browser started it first. The button asked for a live session and
+    // there is one, so open it rather than reporting a conflict about the state
+    // the user wanted.
+    if (isAlreadyRunning(e)) {
+      router.push(`/sessions/${id}`)
+      return
+    }
     store.error = e instanceof Error ? e.message : String(e)
   }
 }
