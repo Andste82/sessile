@@ -245,7 +245,7 @@ func TestRestartReusesTheSameHistoryFile(t *testing.T) {
 // A session whose row survives but whose Manager does not — the state after a
 // backend restart — must still be restartable.
 func TestRestartFromStoreOnlyRow(t *testing.T) {
-	mgr, store, _ := testManager(t)
+	mgr, store, dataDir := testManager(t)
 
 	created, err := mgr.Create("survivor", ".", "sh")
 	if err != nil {
@@ -260,7 +260,15 @@ func TestRestartFromStoreOnlyRow(t *testing.T) {
 		t.Fatalf("SetStatus: %v", err)
 	}
 
-	restarted, err := mgr.Restart(created.ID)
+	// The process comes back: a new Manager over the store and data directory the
+	// old one left behind. Restarting on the shut-down Manager itself is not the
+	// same scenario and no longer allowed — one that has torn down its sessions
+	// can no longer terminate anything it starts.
+	revived := NewManager(mgr.root, mgr.shells, mgr.bufferSize, dataDir, store,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(revived.Shutdown)
+
+	restarted, err := revived.Restart(created.ID)
 	if err != nil {
 		t.Fatalf("Restart from store-only row: %v", err)
 	}
@@ -345,6 +353,60 @@ func TestConcurrentRestartStartsOneShell(t *testing.T) {
 			t.Errorf("orphaned shell: pid %d is still running but is not the session's (%d)",
 				w.PID, live.PID)
 		}
+	}
+}
+
+// TestRegisterAfterShutdownDiscardsTheShell covers the last of the restart
+// windows: a shell spawned before Shutdown drained the sessions map, arriving to
+// be published after it. Publishing it would put a live shell somewhere nothing
+// tracks — Shutdown has already been past that map, and the process is on its
+// way out — and Setsid means the shell survives its parent.
+//
+// register is called directly with a hand-spawned session because the window it
+// stands for is a fork+exec inside Restart, which cannot be paused from outside.
+func TestRegisterAfterShutdownDiscardsTheShell(t *testing.T) {
+	mgr, _, _ := testManager(t)
+
+	s, err := mgr.spawn("11111111-2222-3333-4444-555555555555", "late", ".", "sh", timeNow())
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	pid := s.PID
+
+	mgr.Shutdown()
+
+	if _, err := mgr.register(s); !errors.Is(err, ErrShuttingDown) {
+		t.Errorf("register during shutdown = %v, want %v", err, ErrShuttingDown)
+	}
+	if _, ok := mgr.sessions[s.ID]; ok {
+		t.Error("the session was published into a manager that had already shut down")
+	}
+	// register reaps what it refuses, so the pid is gone for good rather than
+	// left as a zombie for whoever exits last.
+	if syscall.Kill(pid, 0) == nil {
+		t.Errorf("shell %d outlived the manager that spawned it", pid)
+	}
+}
+
+// Once Shutdown has run, nothing may start a shell — the cheap refusal in
+// claimRestart and the authoritative one in register have to agree.
+func TestStartAfterShutdownIsRefused(t *testing.T) {
+	mgr, _, _ := testManager(t)
+
+	created, err := mgr.Create("doomed", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mgr.Shutdown()
+
+	if _, err := mgr.Restart(created.ID); !errors.Is(err, ErrShuttingDown) {
+		t.Errorf("Restart after shutdown = %v, want %v", err, ErrShuttingDown)
+	}
+	if _, err := mgr.Create("too-late", ".", "sh"); !errors.Is(err, ErrShuttingDown) {
+		t.Errorf("Create after shutdown = %v, want %v", err, ErrShuttingDown)
+	}
+	if n := len(mgr.sessions); n != 0 {
+		t.Errorf("%d sessions live after shutdown, want 0", n)
 	}
 }
 

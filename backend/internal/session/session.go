@@ -201,6 +201,19 @@ func (s *Session) terminate(grace time.Duration) {
 	}
 }
 
+// discard kills and reaps a shell that was spawned but never published.
+//
+// terminate cannot do this job: it waits for the read loop to close s.exited,
+// and a session that was never registered never got one. Nothing has ever seen
+// this shell — it has been alive for the length of a failed publish and holds no
+// user state — so it goes straight to SIGKILL, and this goroutine is the only
+// reaper it will ever have.
+func (s *Session) discard() {
+	s.pty.Signal(syscall.SIGKILL)
+	s.pty.Wait()
+	s.pty.CloseFile()
+}
+
 // WebSocket close codes (application range).
 const (
 	closeSlowConsumer = 4001

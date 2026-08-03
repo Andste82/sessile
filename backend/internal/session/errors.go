@@ -17,6 +17,9 @@ var (
 	// shell is already starting, so honouring the delete would leave the process
 	// behind with nothing tracking it.
 	ErrRestarting = errors.New("session is restarting")
+	// ErrShuttingDown is returned when a session would be started on a Manager
+	// that has begun tearing down: nothing would ever terminate it.
+	ErrShuttingDown = errors.New("server is shutting down")
 	// ErrInvalidName is returned for names outside the 1–64 char range.
 	ErrInvalidName = errors.New("name must be 1-64 characters")
 	// ErrInvalidShell is returned when a shell is not in the allowlist or is

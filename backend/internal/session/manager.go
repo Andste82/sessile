@@ -35,6 +35,8 @@ type Manager struct {
 	// ids with a Restart in flight. A restart spawns a shell before it can
 	// publish the session, and that gap is not covered by sessions alone.
 	restarting map[string]struct{}
+	// set by Shutdown, in the same critical section that drains sessions.
+	shuttingDown bool
 
 	stop     chan struct{} // closed by Shutdown to end the flush loop
 	stopOnce sync.Once
@@ -70,7 +72,10 @@ func (m *Manager) Create(name, dir, shell string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	info := m.register(s)
+	info, err := m.register(s)
+	if err != nil {
+		return Info{}, err
+	}
 	m.log.Info("session created", "id", s.ID, "name", name, "shell", shell, "pid", s.PID)
 	return info, nil
 }
@@ -112,7 +117,10 @@ func (m *Manager) Restart(id string) (Info, error) {
 		}
 	}
 
-	info := m.register(s)
+	info, err := m.register(s)
+	if err != nil {
+		return Info{}, err
+	}
 	m.log.Info("session restarted", "id", s.ID, "name", s.Name, "shell", s.Shell, "pid", s.PID)
 	return info, nil
 }
@@ -134,6 +142,10 @@ func (m *Manager) Restart(id string) (Info, error) {
 func (m *Manager) claimRestart(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.shuttingDown {
+		// register would refuse anyway; refusing here spares the fork.
+		return ErrShuttingDown
+	}
 	if _, ok := m.restarting[id]; ok {
 		return ErrAlreadyRunning
 	}
@@ -235,8 +247,20 @@ func (m *Manager) spawn(id, name, dir, shell string, created time.Time) (*Sessio
 }
 
 // register publishes a spawned session, persists it and starts its read loop.
-func (m *Manager) register(s *Session) Info {
+//
+// A Manager that has begun shutting down publishes nothing. Its map has already
+// been drained and every shell in it terminated, so a session landing here now
+// would be tracked by nothing and terminated by nothing: the process exits and
+// the shell, which Setsid gave a session of its own, outlives it. The shell is
+// discarded here rather than handed back, because a caller holding an
+// unpublished session has no other way to reach it.
+func (m *Manager) register(s *Session) (Info, error) {
 	m.mu.Lock()
+	if m.shuttingDown {
+		m.mu.Unlock()
+		s.discard()
+		return Info{}, ErrShuttingDown
+	}
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
 
@@ -247,7 +271,7 @@ func (m *Manager) register(s *Session) Info {
 		}
 	}
 	go m.readLoop(s)
-	return info
+	return info, nil
 }
 
 // resolveShell checks the allowlist then resolves the binary on PATH.
@@ -608,6 +632,10 @@ func (m *Manager) Shutdown() {
 	m.stopOnce.Do(func() { close(m.stop) })
 
 	m.mu.Lock()
+	// Set with the drain, not before or after it: from here on register refuses,
+	// so a session spawned by a call already in flight cannot slip into the map
+	// behind this loop and outlive the process.
+	m.shuttingDown = true
 	live := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		live = append(live, s)
