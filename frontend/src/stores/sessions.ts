@@ -75,6 +75,16 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
+  // Inserts or replaces a single session. Fetching one by id (a deep link into
+  // a terminal, say) otherwise left it out of the list, so the tab bar showed
+  // "session" and the window title fell back to the plain route title until the
+  // next poll.
+  function upsertSession(session: Session) {
+    const idx = sessions.value.findIndex((s) => s.id === session.id)
+    if (idx === -1) sessions.value = [session, ...sessions.value]
+    else sessions.value = sessions.value.map((s) => (s.id === session.id ? session : s))
+  }
+
   async function createSession(body: CreateSessionBody): Promise<Session> {
     const created = await api.createSession(body)
     sessions.value = [created, ...sessions.value.filter((s) => s.id !== created.id)]
@@ -126,6 +136,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     refreshSessions,
     startPolling,
     stopPolling,
+    upsertSession,
     createSession,
     deleteSession,
     renameSession,

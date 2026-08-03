@@ -2,6 +2,9 @@
 import { RouterView } from 'vue-router'
 import AppSidebar from '@/components/AppSidebar.vue'
 import BottomNav from '@/components/BottomNav.vue'
+import { useDocumentTitle } from '@/composables/useDocumentTitle'
+
+useDocumentTitle()
 </script>
 
 <template>
