@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 import TerminalView from '@/components/TerminalView.vue'
 import TabBar from '@/components/TabBar.vue'
 import { useSessionsStore } from '@/stores/sessions'
-import { api } from '@/api/client'
+import { api, isAlreadyRunning } from '@/api/client'
 import type { Session } from '@/api/types'
 import type { ConnStatus } from '@/composables/useTerminal'
 
@@ -31,7 +31,16 @@ async function restart() {
     session.value = await store.restartSession(id.value)
     reloadNonce.value++
   } catch (e) {
-    restartError.value = e instanceof Error ? e.message : String(e)
+    // Another browser on this session got there first. Not a failure: this
+    // click asked for a live session and there is one, so attach to it instead
+    // of reporting "session is already running" at someone who cannot act on it.
+    if (isAlreadyRunning(e)) {
+      await store.refreshSessions()
+      session.value = store.byId(id.value) ?? session.value
+      reloadNonce.value++
+    } else {
+      restartError.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
     restarting.value = false
   }
@@ -77,6 +86,21 @@ watch(conn, async (c) => {
   await store.refreshSessions()
   session.value = store.byId(id.value) ?? session.value
 })
+
+// A restart from another browser reaches an attached client over its own socket
+// (the server moves it to the new shell), but not one that has no socket left —
+// arriving while the session was stopped is refused, so a page opened then never
+// had one. For those the polled list is the only signal, and it is worth acting
+// on: the session is running, so reconnect instead of showing a dead terminal
+// with a button that would only be told "already running".
+watch(
+  () => store.byId(id.value)?.status,
+  (status) => {
+    if (status !== 'running' || conn.value !== 'exited') return
+    session.value = store.byId(id.value) ?? session.value
+    reloadNonce.value++
+  },
+)
 </script>
 
 <template>

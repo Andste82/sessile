@@ -238,6 +238,15 @@ Server → Client:
   (gorilla ping/pong handlers). No JSON-level heartbeat needed.
 - Attach sequence, in order: upgrade → send `attached` control frame →
   send ring buffer replay (binary) → begin live streaming.
+- `exit` does **not** close the connection: the session can be restarted
+  under the same id, and this is the channel that carries that news to every
+  client — including the ones that did not ask for it. Restarting a session
+  moves its clients to the new shell, so each of them receives the attach
+  sequence again on the connection it already holds. A second `attached` is
+  therefore a legitimate mid-connection message and means "live again, reset
+  and take the replay". Input sent while stopped is dropped, not an error.
+  Only `delete` (4000), shutdown (1001) and a slow consumer (4001) close a
+  connection server-side.
 
 Frontend uses plain `WebSocket` with `binaryType = "arraybuffer"`; feed
 binary data straight into `terminal.write(new Uint8Array(data))`. Do not use
@@ -253,6 +262,10 @@ Base path `/api`. All responses JSON. Errors use:
 ```
 with appropriate HTTP status (400 validation, 404 missing, 409 conflict,
 500 internal, 503 unavailable — refused because the server is shutting down).
+A restart refused because the session is already running uses the narrower
+code `already_running` (still 409): with several browsers on one session that
+race has a loser every time, and the loser wanted a live session and now has
+one, so it reconnects rather than reporting a failure.
 
 | Method & Path | Purpose | Notes |
 |---|---|---|

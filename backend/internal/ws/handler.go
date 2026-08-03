@@ -106,6 +106,14 @@ func (h *Handler) readPump(client *Client, id string) {
 		switch mt {
 		case websocket.BinaryMessage:
 			if err := h.mgr.WriteInput(id, data); err != nil {
+				// A stopped session keeps its clients: they are waiting to be
+				// told it has been restarted, by whichever browser does it.
+				// Keystrokes typed at the dead terminal in the meantime go
+				// nowhere, but they must not end the connection that is here to
+				// receive that news.
+				if errors.Is(err, session.ErrStopped) {
+					continue
+				}
 				h.log.Warn("write input failed", "id", id, "err", err)
 				return
 			}

@@ -124,8 +124,17 @@ func (s *Session) broadcast(data []byte) {
 	}
 }
 
-// markStopped transitions the session to stopped, notifies every client with an
-// exit control frame and closes them. Returns true if it changed state.
+// markStopped transitions the session to stopped and notifies every client with
+// an exit control frame. Returns true if it changed state.
+//
+// The clients stay attached. A stopped session can be restarted under the same
+// id, and the connection that is showing "session ended" is precisely the one
+// that has to be told when it comes back — whoever restarted it. Closing them
+// here left every other client with a dead socket and a restart dialog nothing
+// would ever take down, so it kept offering to start a session that was already
+// running. Restart hands them to the replacement (see Manager.Restart); Delete
+// and Shutdown still close them, and the keep-alive still reaps a client whose
+// browser went away.
 func (s *Session) markStopped() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -135,10 +144,23 @@ func (s *Session) markStopped() bool {
 	s.Status = StatusStopped
 	for c := range s.clients {
 		c.SendControl(ExitMsg{Type: "exit"})
-		go c.Close(closeSessionEnded, "session ended")
-		delete(s.clients, c)
 	}
 	return true
+}
+
+// takeClients removes and returns every attached client, for handing them to
+// the session that replaces this one. They are removed under the same lock that
+// returns them so a concurrent second caller cannot hand the same connection to
+// two sessions.
+func (s *Session) takeClients() []Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Client, 0, len(s.clients))
+	for c := range s.clients {
+		out = append(out, c)
+		delete(s.clients, c)
+	}
+	return out
 }
 
 // snapshotRunning returns a copy of the scrollback, or false once the session

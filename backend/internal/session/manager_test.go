@@ -800,3 +800,165 @@ func TestDeleteDiscardsScrollbackAndHistory(t *testing.T) {
 		t.Errorf("history survived Delete (err=%v)", err)
 	}
 }
+
+// recordingClient is a Client that keeps every control frame and every byte it
+// was sent, for asserting what a browser would have seen.
+type recordingClient struct {
+	id string
+
+	mu       sync.Mutex
+	controls []any
+	sent     [][]byte
+	closed   bool
+}
+
+func (c *recordingClient) ID() string { return c.id }
+
+func (c *recordingClient) Send(data []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sent = append(c.sent, append([]byte(nil), data...))
+	return true
+}
+
+func (c *recordingClient) SendControl(v any) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.controls = append(c.controls, v)
+	return true
+}
+
+func (c *recordingClient) Close(_ int, _ string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+}
+
+func (c *recordingClient) snapshot() ([]any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]any(nil), c.controls...), c.closed
+}
+
+// counts the control frames of type T the client received.
+func countControls[T any](controls []any) int {
+	n := 0
+	for _, v := range controls {
+		if _, ok := v.(T); ok {
+			n++
+		}
+	}
+	return n
+}
+
+// A stopped session's clients are not disconnected: the session can come back
+// under the same id, and the connection is the only way to tell a browser that
+// it did. Closing them left every client but the one that clicked "restart"
+// holding a dead socket and a dialog offering to start a running session.
+func TestStoppedSessionKeepsItsClients(t *testing.T) {
+	mgr, _, _ := testManager(t)
+
+	created, err := mgr.Create("watched", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	client := &recordingClient{id: "c1"}
+	if _, err := mgr.Attach(created.ID, client); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+	waitForStatus(t, mgr, created.ID, StatusStopped)
+
+	controls, closed := client.snapshot()
+	if countControls[ExitMsg](controls) != 1 {
+		t.Errorf("client got %d exit frames, want exactly 1: %+v", countControls[ExitMsg](controls), controls)
+	}
+	if closed {
+		t.Error("stopped session closed its client; it has to stay attached for the restart")
+	}
+	if info, _ := mgr.Get(created.ID); info.ClientCount != 1 {
+		t.Errorf("stopped session reports %d clients, want 1", info.ClientCount)
+	}
+
+	// Keystrokes at a dead terminal go nowhere, but must be distinguishable from
+	// a broken connection: the ws read pump keeps the socket open on ErrStopped
+	// and tears it down on anything else.
+	if err := mgr.WriteInput(created.ID, []byte("ignored\n")); !errors.Is(err, ErrStopped) {
+		t.Errorf("WriteInput on a stopped session = %v, want ErrStopped", err)
+	}
+}
+
+// Issue #42: the restart one browser performs has to reach the others. They are
+// still attached, so the replacement shell adopts them and re-primes each with
+// the attach sequence — which is what takes their restart dialog down.
+func TestRestartMovesEveryClientToTheNewShell(t *testing.T) {
+	mgr, _, _ := testManager(t)
+
+	created, err := mgr.Create("shared", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	clients := []*recordingClient{{id: "c1"}, {id: "c2"}}
+	for _, c := range clients {
+		if _, err := mgr.Attach(created.ID, c); err != nil {
+			t.Fatalf("Attach %s: %v", c.ID(), err)
+		}
+	}
+
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+	waitForStatus(t, mgr, created.ID, StatusStopped)
+
+	info, err := mgr.Restart(created.ID)
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if info.ClientCount != len(clients) {
+		t.Errorf("restarted session reports %d clients, want %d", info.ClientCount, len(clients))
+	}
+
+	for _, c := range clients {
+		controls, _ := c.snapshot()
+		// One attach on the original Attach, a second one from the restart.
+		if got := countControls[AttachedMsg](controls); got != 2 {
+			t.Errorf("%s got %d attached frames, want 2 (the second is the restart): %+v",
+				c.ID(), got, controls)
+		}
+	}
+
+	// And the adopted clients are the live session's, so new output reaches them.
+	if err := mgr.WriteInput(created.ID, []byte("echo after-restart\n")); err != nil {
+		t.Fatalf("WriteInput after restart: %v", err)
+	}
+	waitForOutput(t, liveSession(t, mgr, created.ID), "after-restart")
+}
+
+// A restart after a backend restart has no previous session object at all — the
+// session survives only as a stopped row — and must not trip over the migration.
+func TestRestartFromStoreOnlyRowMigratesNothing(t *testing.T) {
+	mgr, store, _ := testManager(t)
+
+	created, err := mgr.Create("survivor", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mgr.Shutdown()
+
+	revived := NewManager(t.TempDir(), []string{"sh"}, 64<<10, t.TempDir(), store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(revived.Shutdown)
+
+	info, err := revived.Restart(created.ID)
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if info.ClientCount != 0 {
+		t.Errorf("restarted session reports %d clients, want 0", info.ClientCount)
+	}
+	if info.Status != StatusRunning {
+		t.Errorf("status = %s, want %s", info.Status, StatusRunning)
+	}
+}
