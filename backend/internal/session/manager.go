@@ -113,7 +113,7 @@ func (m *Manager) Restart(id string) (Info, error) {
 			m.log.Error("load scrollback failed", "id", id, "err", err)
 		} else if len(replay) > 0 {
 			_, _ = s.buffer.Write(replay)
-			_, _ = s.buffer.Write(restoreSeparator(timeNow()))
+			_, _ = s.buffer.Write(restoreSeparator(timeNow(), endsInAltScreen(replay)))
 		}
 	}
 

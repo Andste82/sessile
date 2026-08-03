@@ -108,7 +108,7 @@ func TestScrollbackStoreRejectsUnsafeIDs(t *testing.T) {
 // drawing into the alternate screen.
 func TestRestoreSeparatorResetsTerminalModes(t *testing.T) {
 	at := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
-	got := string(restoreSeparator(at))
+	got := string(restoreSeparator(at, true))
 
 	for _, want := range []string{
 		"\x1b[?1049l", // leave alternate screen
@@ -125,5 +125,62 @@ func TestRestoreSeparatorResetsTerminalModes(t *testing.T) {
 	}
 	if !strings.Contains(got, "2026-08-03T12:00:00Z") {
 		t.Errorf("separator %q does not carry the restore time", got)
+	}
+}
+
+// DECRST 1049 also restores the cursor saved when the alternate screen was
+// entered, and a terminal that never entered it restores to the top-left. Sent
+// after an ordinary snapshot, it moved the cursor back to the top of the screen
+// and the separator was drawn over the first lines of the restored history —
+// the output it exists to sit below.
+func TestRestoreSeparatorKeepsTheCursorOutsideTheAlternateScreen(t *testing.T) {
+	at := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	got := string(restoreSeparator(at, false))
+
+	if strings.Contains(got, "\x1b[?1049l") {
+		t.Errorf("separator moves the cursor with 1049l outside the alternate screen: %q", got)
+	}
+	// The resets that do not move the cursor stay unconditional.
+	for _, want := range []string{"\x1b[0m", "\x1b[?25h", "\x1b[?7h"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("separator %q missing escape %q", got, want)
+		}
+	}
+	if !strings.Contains(got, "── restored 2026-08-03T12:00:00Z") {
+		t.Errorf("separator %q does not carry the restore banner", got)
+	}
+}
+
+func TestEndsInAltScreen(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{"empty", "", false},
+		{"plain output", "$ ls\r\nfile\r\n$ ", false},
+		{"entered and never left", "$ htop\r\n\x1b[?1049h\x1b[Hcpu", true},
+		{"entered and left", "\x1b[?1049h\x1b[Hcpu\x1b[?1049l$ ", false},
+		{"left then re-entered", "\x1b[?1049h\x1b[?1049l\x1b[?1049h", true},
+		{"legacy 47", "\x1b[?47h drawing", true},
+		{"legacy 1047 left", "\x1b[?1047h\x1b[?1047l", false},
+		// vim sends the alternate-screen switch alongside other private modes.
+		{"combined params", "\x1b[?1049;1004;2004h", true},
+		{"combined reset", "\x1b[?1049h\x1b[?1049;2004l", false},
+		// Unrelated private modes must not be mistaken for the alternate screen.
+		{"bracketed paste only", "\x1b[?2004h\x1b[?25l", false},
+		{"mode number is not a substring match", "\x1b[?10490h", false},
+		// A ring buffer hands back a tail, so a snapshot can start mid-sequence.
+		{"truncated head", "049h\x1b[Hcpu", false},
+		{"truncated tail", "output\x1b[?1049", false},
+		{"escape at the very end", "output\x1b[?", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := endsInAltScreen([]byte(tt.data)); got != tt.want {
+				t.Errorf("endsInAltScreen(%q) = %v, want %v", tt.data, got, tt.want)
+			}
+		})
 	}
 }

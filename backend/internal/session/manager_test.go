@@ -199,6 +199,16 @@ func TestRestartRestoresIdentityAndScrollback(t *testing.T) {
 	case sepAt < markerAt:
 		t.Errorf("separator precedes the restored output; want old output first")
 	}
+
+	// Coming out of an ordinary shell, the separator must not carry the
+	// alternate-screen reset: 1049l restores a cursor that was never saved, so
+	// the terminal draws the banner over the top of the very history above it.
+	if sepAt >= 0 {
+		from := max(sepAt-32, 0) // the separator's escapes sit just before its text
+		if bytes.Contains(replay[from:], []byte("\x1b[?1049l")) {
+			t.Errorf("separator resets the alternate screen after a plain shell: %q", replay[from:])
+		}
+	}
 }
 
 // The command history is the other half of the restore, and it hinges entirely
