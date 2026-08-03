@@ -93,6 +93,16 @@ export const useSessionsStore = defineStore('sessions', () => {
     return updated
   }
 
+  // Records a session whose shell exited while its terminal was open. The list
+  // is only polled from the dashboard, so without this the tab and the sidebar
+  // keep showing a running session right next to the "session ended" banner,
+  // until the user navigates away and back.
+  function markStopped(id: string) {
+    sessions.value = sessions.value.map((s) =>
+      s.id === id ? { ...s, status: 'stopped', clientCount: 0 } : s,
+    )
+  }
+
   // Gives a stopped session a new shell under the same id, with its scrollback
   // and command history restored. The id is unchanged, so any open tab keeps
   // pointing at the same session and only needs to reconnect.
@@ -119,6 +129,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     createSession,
     deleteSession,
     renameSession,
+    markStopped,
     restartSession,
   }
 })
