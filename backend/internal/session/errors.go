@@ -30,4 +30,7 @@ type Store interface {
 	Get(id string) (Info, bool, error)
 	// LoadStopped returns all sessions persisted with stopped status.
 	LoadStopped() ([]Info, error)
+	// DeleteStoppedBefore removes stopped sessions last active before cutoff,
+	// returning the ids removed.
+	DeleteStoppedBefore(cutoff time.Time) ([]string, error)
 }

@@ -141,6 +141,23 @@ func (s *Session) markStopped() bool {
 	return true
 }
 
+// releaseBuffer drops the scrollback of a stopped session.
+//
+// A stopped session stays in the Manager's map — it is still listed, still
+// restartable — but its ring buffer is unreachable from that moment on, because
+// Attach rejects anything that is not running. Holding up to --buffer-size per
+// dead session for the lifetime of the process buys nothing; the contents have
+// already been snapshotted to disk, which is where Restart reads them from.
+//
+// The buffer is replaced rather than nilled: attach and broadcast dereference it
+// without checking, and a stopped session is not worth a nil guard on the two
+// hottest paths in the package.
+func (s *Session) releaseBuffer() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buffer = NewRingBuffer(1)
+}
+
 // closeClients disconnects all attached clients without changing status (used
 // on graceful shutdown).
 func (s *Session) closeClients(code int, reason string) {

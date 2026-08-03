@@ -63,6 +63,11 @@ func run(args []string) error {
 	log.Info("store ready", "db", cfg.DB)
 
 	manager := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, cfg.DataDir, store, log)
+	// Discard long-idle stopped sessions before anything can attach to them.
+	// Off unless --session-retention is set.
+	if _, err := manager.PruneStopped(cfg.SessionRetention); err != nil {
+		log.Error("prune stopped sessions failed", "err", err)
+	}
 	wsHandler := ws.NewHandler(manager, cfg, log)
 
 	srv := api.NewServer(cfg, manager, wsHandler, log)

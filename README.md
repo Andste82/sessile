@@ -204,6 +204,7 @@ Every option is a CLI flag with an environment-variable fallback.
 | `--db` | `TSM_DB` | `<root>/.tsm/sessions.db` | SQLite database path |
 | `--shells` | `TSM_SHELLS` | `bash,zsh,fish` | Shell allowlist (only installed ones are offered) |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` | Per-session ring buffer size, in bytes |
+| `--session-retention` | `TSM_SESSION_RETENTION` | `0` | Discard stopped sessions idle longer than this on startup, with their scrollback and history. A Go duration — `720h`, not `30d`. `0` keeps them forever |
 | `--log-level` | `TSM_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `--dev` | `TSM_DEV` | `false` | Relax the WebSocket origin check for the Vite dev server |
 
@@ -302,7 +303,9 @@ GitHub Actions runs the same checks (`go vet`, `go test`, the frontend build and
   the UI — but the processes that were running are gone.
 - Scrollback snapshots and history files sit next to the database, so whatever
   volume holds `--db` also holds terminal output. Keep it off shared storage and
-  size it for `--buffer-size` per session.
+  size it for `--buffer-size` per session. Stopped sessions are kept forever
+  unless you set `--session-retention`; the default never deletes anything,
+  because a stopped session can still be restarted with its state.
 - Per-session command history is set through the shell's environment. An rc file
   that assigns `HISTFILE` itself — oh-my-zsh does — wins over that, and such a
   session keeps using the shared history file instead of its own.

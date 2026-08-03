@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // usageOut is where the flag set writes usage text and parse errors. It is a
@@ -29,15 +30,18 @@ var ErrVersionRequested = errors.New("version requested")
 
 // Config is the fully-resolved application configuration.
 type Config struct {
-	Root        string   // sandbox root; all sessions run inside this tree
-	Addr        string   // listen address, e.g. ":8080"
-	DB          string   // path to the SQLite database file
-	DataDir     string   // directory holding the DB plus scrollback/history state
-	Shells      []string // shell allowlist
-	BufferSize  int      // per-session ring buffer size in bytes
-	LogLevel    string   // slog level: debug|info|warn|error
-	Dev         bool     // dev mode: relaxes WS origin check for the Vite proxy
-	AllowOrigin string   // extra allowed WS origin (e.g. http://localhost:5173)
+	Root       string   // sandbox root; all sessions run inside this tree
+	Addr       string   // listen address, e.g. ":8080"
+	DB         string   // path to the SQLite database file
+	DataDir    string   // directory holding the DB plus scrollback/history state
+	Shells     []string // shell allowlist
+	BufferSize int      // per-session ring buffer size in bytes
+	// SessionRetention discards stopped sessions idle for longer than this on
+	// startup. Zero keeps them forever, which is the default.
+	SessionRetention time.Duration
+	LogLevel         string // slog level: debug|info|warn|error
+	Dev              bool   // dev mode: relaxes WS origin check for the Vite proxy
+	AllowOrigin      string // extra allowed WS origin (e.g. http://localhost:5173)
 }
 
 // Parse builds a Config from the given argument list (excluding the program
@@ -51,6 +55,8 @@ func Parse(args []string) (*Config, error) {
 	db := fs.String("db", env("TSM_DB", ""), "SQLite database path (default <root>/.tsm/sessions.db)")
 	shells := fs.String("shells", env("TSM_SHELLS", "bash,zsh,fish"), "comma-separated shell allowlist")
 	bufferSize := fs.String("buffer-size", env("TSM_BUFFER_SIZE", "524288"), "per-session ring buffer size in bytes")
+	sessionRetention := fs.String("session-retention", env("TSM_SESSION_RETENTION", "0"),
+		"discard stopped sessions idle longer than this on startup, as a Go duration (e.g. 720h); 0 keeps them forever")
 	logLevel := fs.String("log-level", env("TSM_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	dev := fs.Bool("dev", envBool("TSM_DEV", false), "dev mode (relaxes WS origin check)")
 	allowOrigin := fs.String("allow-origin", env("TSM_ALLOW_ORIGIN", ""), "additional allowed WebSocket origin")
@@ -100,6 +106,16 @@ func Parse(args []string) (*Config, error) {
 		return nil, fmt.Errorf("invalid buffer-size %q", *bufferSize)
 	}
 
+	// Retention is off by default and an empty value means the same as zero.
+	// Note Go durations have no day unit: a month is 720h, not 30d.
+	var retention time.Duration
+	if s := strings.TrimSpace(*sessionRetention); s != "" {
+		retention, err = time.ParseDuration(s)
+		if err != nil || retention < 0 {
+			return nil, fmt.Errorf("invalid session-retention %q: want a Go duration like 720h, or 0 to disable", *sessionRetention)
+		}
+	}
+
 	var shellList []string
 	for _, s := range strings.Split(*shells, ",") {
 		if s = strings.TrimSpace(s); s != "" {
@@ -115,12 +131,15 @@ func Parse(args []string) (*Config, error) {
 	}
 
 	return &Config{
-		Root:        absRoot,
-		Addr:        *addr,
-		DB:          dbPath,
-		DataDir:     dataDir,
-		Shells:      shellList,
-		BufferSize:  bufSize,
+		Root:       absRoot,
+		Addr:       *addr,
+		DB:         dbPath,
+		DataDir:    dataDir,
+		Shells:     shellList,
+		BufferSize: bufSize,
+
+		SessionRetention: retention,
+
 		LogLevel:    *logLevel,
 		Dev:         *dev,
 		AllowOrigin: *allowOrigin,

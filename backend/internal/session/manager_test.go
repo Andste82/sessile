@@ -73,6 +73,19 @@ func (s *memStore) LoadStopped() ([]Info, error) {
 	return out, nil
 }
 
+func (s *memStore) DeleteStoppedBefore(cutoff time.Time) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for id, row := range s.rows {
+		if row.Status == StatusStopped && row.LastActivity.Before(cutoff) {
+			ids = append(ids, id)
+			delete(s.rows, id)
+		}
+	}
+	return ids, nil
+}
+
 // testManager builds a Manager backed by a temp sandbox and data directory.
 func testManager(t *testing.T) (*Manager, *memStore, string) {
 	t.Helper()
@@ -293,6 +306,226 @@ func TestRestartRejectsVanishedDirectory(t *testing.T) {
 	}
 	if _, err := mgr.Restart(created.ID); err == nil {
 		t.Error("Restart into a deleted directory succeeded, want an error")
+	}
+}
+
+// A stopped session's ring buffer is unreachable — Attach rejects anything not
+// running — so holding up to --buffer-size for it until the process exits is
+// pure waste. The snapshot on disk is what a restart reads.
+func TestStoppedSessionReleasesItsBuffer(t *testing.T) {
+	mgr, _, dataDir := testManager(t)
+
+	created, err := mgr.Create("leaky", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.WriteInput(created.ID, []byte("echo filling-the-buffer\n")); err != nil {
+		t.Fatalf("WriteInput: %v", err)
+	}
+	s := liveSession(t, mgr, created.ID)
+	waitForOutput(t, s, "filling-the-buffer")
+
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+	waitForStatus(t, mgr, created.ID, StatusStopped)
+
+	// The session is still listed and restartable, but its buffer is gone.
+	if n := s.buffer.Len(); n != 0 {
+		t.Errorf("stopped session still holds %d scrollback bytes, want 0", n)
+	}
+	if _, err := mgr.Get(created.ID); err != nil {
+		t.Errorf("stopped session no longer resolvable: %v", err)
+	}
+
+	// Releasing must happen after the snapshot, not instead of it.
+	snap, err := NewScrollbackStore(dataDir).Load(created.ID)
+	if err != nil {
+		t.Fatalf("Load snapshot: %v", err)
+	}
+	if !bytes.Contains(snap, []byte("filling-the-buffer")) {
+		t.Errorf("snapshot lost the output the buffer held: %q", snap)
+	}
+}
+
+// snapshotWatcher is a Client that records what the scrollback snapshot looked
+// like at the instant the session announced its exit.
+type snapshotWatcher struct {
+	store *ScrollbackStore
+	id    string
+
+	mu       sync.Mutex
+	sawExit  bool
+	atExit   []byte
+	loadErr  error
+	exitSeen chan struct{}
+}
+
+func newSnapshotWatcher(store *ScrollbackStore, id string) *snapshotWatcher {
+	return &snapshotWatcher{store: store, id: id, exitSeen: make(chan struct{})}
+}
+
+func (w *snapshotWatcher) ID() string            { return "watcher" }
+func (w *snapshotWatcher) Send(_ []byte) bool    { return true }
+func (w *snapshotWatcher) Close(_ int, _ string) {}
+
+func (w *snapshotWatcher) SendControl(v any) bool {
+	if _, ok := v.(ExitMsg); !ok {
+		return true
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.sawExit {
+		return true
+	}
+	w.sawExit = true
+	w.atExit, w.loadErr = w.store.Load(w.id)
+	close(w.exitSeen)
+	return true
+}
+
+// The exit frame is the fastest signal a browser gets that a session stopped —
+// it is what raises the "Restart session" banner — and Restart reads the
+// scrollback snapshot. So the snapshot has to be on disk before that frame goes
+// out, not after; otherwise a fast click restores nothing.
+//
+// This is checked from inside SendControl rather than by racing the loop from
+// outside: the ordering is the guarantee, and a timing race reproduces it only
+// on a loaded machine. (It reproduced on CI and not locally, which is how the
+// original ordering shipped.)
+func TestSnapshotIsWrittenBeforeClientsAreToldOfExit(t *testing.T) {
+	mgr, _, dataDir := testManager(t)
+
+	created, err := mgr.Create("racy", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	watcher := newSnapshotWatcher(NewScrollbackStore(dataDir), created.ID)
+	if _, err := mgr.Attach(created.ID, watcher); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	const marker = "output-before-exit"
+	if err := mgr.WriteInput(created.ID, []byte("echo "+marker+"\n")); err != nil {
+		t.Fatalf("WriteInput: %v", err)
+	}
+	waitForOutput(t, liveSession(t, mgr, created.ID), marker)
+
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+
+	select {
+	case <-watcher.exitSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no exit control frame arrived")
+	}
+
+	watcher.mu.Lock()
+	defer watcher.mu.Unlock()
+	if watcher.loadErr != nil {
+		t.Fatalf("Load at exit: %v", watcher.loadErr)
+	}
+	if !bytes.Contains(watcher.atExit, []byte(marker)) {
+		t.Errorf("snapshot at the moment of the exit frame was %d bytes and lacks %q; "+
+			"a client restarting on this signal would restore nothing",
+			len(watcher.atExit), marker)
+	}
+}
+
+// Shutdown snapshots live sessions, but must leave an already-stopped one alone:
+// its buffer has been released, so saving again would overwrite a good snapshot
+// with an empty one.
+func TestShutdownDoesNotOverwriteAStoppedSnapshot(t *testing.T) {
+	mgr, _, dataDir := testManager(t)
+
+	created, err := mgr.Create("stopped-early", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.WriteInput(created.ID, []byte("echo precious-output\n")); err != nil {
+		t.Fatalf("WriteInput: %v", err)
+	}
+	waitForOutput(t, liveSession(t, mgr, created.ID), "precious-output")
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+	waitForStatus(t, mgr, created.ID, StatusStopped)
+
+	mgr.Shutdown()
+
+	snap, err := NewScrollbackStore(dataDir).Load(created.ID)
+	if err != nil {
+		t.Fatalf("Load snapshot: %v", err)
+	}
+	if !bytes.Contains(snap, []byte("precious-output")) {
+		t.Errorf("Shutdown clobbered the snapshot: %q", snap)
+	}
+}
+
+// Stopped rows accumulate forever otherwise — one per session ever created,
+// each with a scrollback snapshot and a history file behind it.
+func TestPruneStopped(t *testing.T) {
+	mgr, store, dataDir := testManager(t)
+
+	old, err := mgr.Create("ancient", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	recent, err := mgr.Create("recent", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, id := range []string{old.ID, recent.ID} {
+		if err := mgr.WriteInput(id, []byte("exit\n")); err != nil {
+			t.Fatalf("WriteInput exit: %v", err)
+		}
+		waitForStatus(t, mgr, id, StatusStopped)
+	}
+
+	// Age one of them past the retention window.
+	if err := store.Touch(old.ID, time.Now().UTC().Add(-48*time.Hour)); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	histPath := filepath.Join(dataDir, "history", old.ID)
+	if err := os.MkdirAll(filepath.Dir(histPath), 0o750); err != nil {
+		t.Fatalf("mkdir history: %v", err)
+	}
+	if err := os.WriteFile(histPath, []byte("echo old\n"), 0o600); err != nil {
+		t.Fatalf("write history: %v", err)
+	}
+
+	// Zero retention is the off switch and must touch nothing.
+	if n, err := mgr.PruneStopped(0); err != nil || n != 0 {
+		t.Fatalf("PruneStopped(0) = (%d, %v), want (0, nil)", n, err)
+	}
+	if _, found, _ := store.Get(old.ID); !found {
+		t.Fatal("PruneStopped(0) removed a session; zero must disable pruning")
+	}
+
+	n, err := mgr.PruneStopped(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneStopped: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("PruneStopped pruned %d sessions, want 1", n)
+	}
+
+	if _, found, _ := store.Get(old.ID); found {
+		t.Error("the idle session survived pruning")
+	}
+	if _, found, _ := store.Get(recent.ID); !found {
+		t.Error("pruning took a session inside the retention window")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "scrollback", old.ID+".bin")); !os.IsNotExist(err) {
+		t.Errorf("pruning left the scrollback behind (err=%v)", err)
+	}
+	if _, err := os.Stat(histPath); !os.IsNotExist(err) {
+		t.Errorf("pruning left the history behind (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "scrollback", recent.ID+".bin")); err != nil {
+		t.Errorf("pruning removed a retained session's scrollback: %v", err)
 	}
 }
 

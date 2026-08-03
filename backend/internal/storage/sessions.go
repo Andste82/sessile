@@ -93,6 +93,45 @@ func (s *Store) LoadStopped() ([]session.Info, error) {
 	return out, rows.Err()
 }
 
+// DeleteStoppedBefore removes stopped sessions whose last activity predates
+// cutoff and returns the ids it removed, so the caller can discard their
+// scrollback and history too.
+//
+// The comparison is lexicographic on the stored text. That is exact here and
+// not a shortcut: every write formats through time.RFC3339 in UTC, which is
+// fixed-width and orders the same way as the instants it encodes.
+func (s *Store) DeleteStoppedBefore(cutoff time.Time) ([]string, error) {
+	before := cutoff.UTC().Format(time.RFC3339)
+
+	rows, err := s.db.Query(
+		`SELECT id FROM sessions WHERE status='stopped' AND last_activity < ?`, before)
+	if err != nil {
+		return nil, fmt.Errorf("query expired: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan expired: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query expired: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	if _, err := s.db.Exec(
+		`DELETE FROM sessions WHERE status='stopped' AND last_activity < ?`, before); err != nil {
+		return nil, fmt.Errorf("delete expired: %w", err)
+	}
+	return ids, nil
+}
+
 // scanner abstracts *sql.Row and *sql.Rows for scan.
 type scanner interface {
 	Scan(dest ...any) error

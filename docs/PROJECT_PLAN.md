@@ -418,6 +418,13 @@ a shell's environment.
   itself (oh-my-zsh does) wins over the environment, and such a session falls
   back to the shared history file.
 
+Neither grows without bound. A session's ring buffer is released the moment it
+stops — it is unreachable from then on, since Attach rejects anything not
+running, and the snapshot on disk is what a restart reads. Rows and their files
+are discarded by `--session-retention` on startup, which is **off by default**:
+a stopped session is no longer a dead end now that it can be restarted with its
+output and history, so expiring one is an operator's decision.
+
 `POST /api/sessions/:id/restart` (§6) spawns a new shell under the same id,
 name, directory and shell, re-running the §4.5 sandbox and allowlist checks.
 The new ring buffer is pre-seeded with the snapshot followed by a separator
@@ -437,6 +444,7 @@ explicit: sessions are never respawned automatically on startup.
 | `--db` | `TSM_DB` | `<root>/.tsm/sessions.db` → in Docker: `/config/sessions.db` |
 | `--shells` | `TSM_SHELLS` | `bash,zsh,fish` (allowlist) |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` (bytes) |
+| `--session-retention` | `TSM_SESSION_RETENTION` | `0` (keep forever); Go duration, e.g. `720h` |
 | `--log-level` | `TSM_LOG_LEVEL` | `info` |
 
 ---
