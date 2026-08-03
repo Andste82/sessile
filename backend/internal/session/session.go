@@ -141,6 +141,24 @@ func (s *Session) markStopped() bool {
 	return true
 }
 
+// snapshotRunning returns a copy of the scrollback, or false once the session
+// has stopped.
+//
+// The status check and the read of the buffer happen under the one lock that
+// stops the session, and that is the whole point. Both were separate steps
+// before, so a snapshot could straddle markStopped: the caller saw a running
+// session, the read loop then wrote the final snapshot and released the buffer,
+// and the caller went on to save the empty buffer it had just been handed —
+// over the good snapshot, leaving a restart with nothing to restore.
+func (s *Session) snapshotRunning() ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Status != StatusRunning {
+		return nil, false
+	}
+	return s.buffer.Snapshot(), true
+}
+
 // releaseBuffer drops the scrollback of a stopped session.
 //
 // A stopped session stays in the Manager's map — it is still listed, still

@@ -464,6 +464,54 @@ func TestShutdownDoesNotOverwriteAStoppedSnapshot(t *testing.T) {
 	}
 }
 
+// TestLateFlushKeepsFinalSnapshot replays the interleaving the flush timer can
+// lose: it read a running status, and by the time it gets to the buffer the
+// session has stopped — final snapshot written, buffer released. Saving now
+// would put an empty file where the session's whole output was, and a restart
+// would restore nothing.
+//
+// Calling saveScrollback directly is the point: it stands in for a flusher that
+// is already past its status check, which is the state that cannot be scheduled
+// on demand.
+func TestLateFlushKeepsFinalSnapshot(t *testing.T) {
+	mgr, _, dataDir := testManager(t)
+
+	created, err := mgr.Create("late-flush", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.WriteInput(created.ID, []byte("echo precious-output\n")); err != nil {
+		t.Fatalf("WriteInput: %v", err)
+	}
+	s := liveSession(t, mgr, created.ID)
+	waitForOutput(t, s, "precious-output")
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+	waitForStatus(t, mgr, created.ID, StatusStopped)
+
+	store := NewScrollbackStore(dataDir)
+	before, err := store.Load(created.ID)
+	if err != nil {
+		t.Fatalf("Load snapshot: %v", err)
+	}
+	if !bytes.Contains(before, []byte("precious-output")) {
+		t.Fatalf("the read loop's own snapshot already lacks the output: %q", before)
+	}
+
+	// The flusher finally gets to run, still holding the session it checked.
+	mgr.saveScrollback(s)
+
+	after, err := store.Load(created.ID)
+	if err != nil {
+		t.Fatalf("Load snapshot after the late flush: %v", err)
+	}
+	if !bytes.Contains(after, []byte("precious-output")) {
+		t.Errorf("a flush that lost the race replaced the final snapshot with %d bytes: %q",
+			len(after), after)
+	}
+}
+
 // Stopped rows accumulate forever otherwise — one per session ever created,
 // each with a scrollback snapshot and a history file behind it.
 func TestPruneStopped(t *testing.T) {
