@@ -2,6 +2,7 @@ import { ref, shallowRef } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { applyUnicodeVersion } from '@/utils/unicode'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
 import { isCompositionArtifact, isImeKey, shouldFlushIme } from '@/utils/ime'
 import {
@@ -22,6 +23,23 @@ import {
 } from '@/utils/keys'
 
 export type ConnStatus = 'connecting' | 'connected' | 'exited' | 'disconnected'
+
+// Monospace stack first — xterm measures the cell from it, and every font here
+// has the digits it measures with, so the emoji fallbacks appended at the end
+// cannot change the cell size. Naming them matters anyway: without an emoji
+// font in the stack a browser is free to fall back to a proportional face
+// whose glyph overhangs the two cells we now reserve (issue #27).
+const fontFamily = [
+  'ui-monospace',
+  'SFMono-Regular',
+  '"SF Mono"',
+  'Menlo',
+  'Consolas',
+  'monospace',
+  '"Apple Color Emoji"',
+  '"Segoe UI Emoji"',
+  '"Noto Color Emoji"',
+].join(', ')
 
 // Dark theme matching the app palette (slate).
 const theme = {
@@ -152,14 +170,19 @@ export function useTerminal() {
     const t = new Terminal({
       scrollback: 5000,
       cursorBlink: true,
-      fontFamily:
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+      fontFamily,
       fontSize: 13,
       theme,
+      // Required for `unicode.activeVersion` below — xterm gates the whole
+      // unicode handle behind this flag.
+      allowProposedApi: true,
     })
     fit = new FitAddon()
     t.loadAddon(fit)
     t.loadAddon(new WebLinksAddon())
+    // Wide-character widths (issue #27) — see utils/unicode.ts for why the
+    // built-in table is not the one we want.
+    applyUnicodeVersion(t)
     t.open(el)
     fit.fit()
 
