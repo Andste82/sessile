@@ -32,6 +32,9 @@ type Manager struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	// ids with a Restart in flight. A restart spawns a shell before it can
+	// publish the session, and that gap is not covered by sessions alone.
+	restarting map[string]struct{}
 
 	stop     chan struct{} // closed by Shutdown to end the flush loop
 	stopOnce sync.Once
@@ -49,6 +52,7 @@ func NewManager(root string, shells []string, bufferSize int, dataDir string, st
 		log:        log,
 		store:      store,
 		sessions:   make(map[string]*Session),
+		restarting: make(map[string]struct{}),
 		stop:       make(chan struct{}),
 	}
 	if dataDir != "" {
@@ -80,6 +84,11 @@ func (m *Manager) Create(name, dir, shell string) (Info, error) {
 // file and the shell's HISTFILE line up again, and it keeps the row, the open
 // browser tab and any bookmarked URL pointing at the same session.
 func (m *Manager) Restart(id string) (Info, error) {
+	if err := m.claimRestart(id); err != nil {
+		return Info{}, err
+	}
+	defer m.releaseRestart(id)
+
 	prev, err := m.restartable(id)
 	if err != nil {
 		return Info{}, err
@@ -106,6 +115,40 @@ func (m *Manager) Restart(id string) (Info, error) {
 	info := m.register(s)
 	m.log.Info("session restarted", "id", s.ID, "name", s.Name, "shell", s.Shell, "pid", s.PID)
 	return info, nil
+}
+
+// claimRestart reserves id for one restart, refusing if the session is already
+// running or another restart is mid-flight.
+//
+// Checking that a session is stopped and publishing its replacement were the two
+// ends of a window with a fork+exec in the middle, and nothing held the id
+// across it: two restarts of the same session — two browser tabs, a double
+// click, any second client — both passed the check, both started a shell, and
+// register kept the last one. The other shell went on running, reachable through
+// no API, terminated by no shutdown, and still writing its scrollback over the
+// live session's snapshot under the id they share.
+//
+// The reservation covers the gap. It cannot be the sessions map itself: the
+// replacement does not exist yet, and the spawn that creates it must not run
+// under the manager lock, which every keystroke needs.
+func (m *Manager) claimRestart(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.restarting[id]; ok {
+		return ErrAlreadyRunning
+	}
+	if s, ok := m.sessions[id]; ok && s.Info().Status == StatusRunning {
+		return ErrAlreadyRunning
+	}
+	m.restarting[id] = struct{}{}
+	return nil
+}
+
+// releaseRestart ends the reservation, whether the restart succeeded or not.
+func (m *Manager) releaseRestart(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.restarting, id)
 }
 
 // restartable returns the metadata to restart id with, or an error explaining
