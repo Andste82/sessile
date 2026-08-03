@@ -14,6 +14,7 @@ vi.mock('@/api/client', async () => {
 
 const { api } = await import('@/api/client')
 const configMock = vi.mocked(api.config)
+const listSessionsMock = vi.mocked(api.listSessions)
 
 describe('fetchConfig', () => {
   beforeEach(() => {
@@ -99,5 +100,86 @@ describe('markStopped', () => {
     store.markStopped('gone')
 
     expect(store.sessions).toEqual([session({ id: 'a' })])
+  })
+})
+
+describe('markAllStopped', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  // A backend restart used to be noticed only by the terminal that happened to
+  // be on screen, through its own socket closing. Every other session kept the
+  // green dot from the last successful poll until it was clicked.
+  it('flips every session to stopped', () => {
+    const store = useSessionsStore()
+    store.sessions = [
+      session({ id: 'a' }),
+      session({ id: 'b', status: 'stopped', clientCount: 0 }),
+      session({ id: 'c', clientCount: 3 }),
+    ]
+
+    store.markAllStopped()
+
+    expect(store.sessions.map((s) => s.status)).toEqual(['stopped', 'stopped', 'stopped'])
+    expect(store.sessions.map((s) => s.clientCount)).toEqual([0, 0, 0])
+  })
+
+  // Rewriting the array on every failed poll would rerender the list — and
+  // reset the dashboard's session rows — five times a second while a backend
+  // stays down, with nothing to show for it.
+  it('leaves the list untouched when nothing is running', () => {
+    const store = useSessionsStore()
+    const stopped = [session({ id: 'a', status: 'stopped', clientCount: 0 })]
+    store.sessions = stopped
+    const before = store.sessions
+
+    store.markAllStopped()
+
+    expect(store.sessions).toBe(before)
+  })
+})
+
+describe('refreshSessions', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('replaces the list on success', async () => {
+    listSessionsMock.mockResolvedValue([session({ id: 'b', name: 'fresh' })])
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' })]
+
+    await store.refreshSessions()
+
+    expect(store.sessions).toEqual([session({ id: 'b', name: 'fresh' })])
+    expect(store.error).toBeNull()
+  })
+
+  // Nothing runs a shell but the backend, so an unreachable backend means no
+  // session is running — whatever the last successful poll said.
+  it('greys every session out when the backend cannot be reached', async () => {
+    listSessionsMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
+
+    await store.refreshSessions()
+
+    expect(store.sessions.map((s) => s.status)).toEqual(['stopped', 'stopped'])
+    expect(store.error).toBe('Failed to fetch')
+  })
+
+  // The sessions themselves are still there — only their status is unknown, so
+  // the rows stay put and the next successful poll fills the truth back in.
+  it('keeps the sessions in the list when the refresh fails', async () => {
+    listSessionsMock.mockRejectedValue(new ApiRequestError(502, 'internal', 'bad gateway'))
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
+
+    await store.refreshSessions()
+
+    expect(store.sessions.map((s) => s.id)).toEqual(['a', 'b'])
   })
 })
