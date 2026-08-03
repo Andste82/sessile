@@ -47,6 +47,7 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		apiGroup.GET("/sessions/:id", s.getSession)
 		apiGroup.DELETE("/sessions/:id", s.deleteSession)
 		apiGroup.PATCH("/sessions/:id", s.renameSession)
+		apiGroup.POST("/sessions/:id/restart", s.restartSession)
 		apiGroup.GET("/directories", s.listDirectories)
 	}
 

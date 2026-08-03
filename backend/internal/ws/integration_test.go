@@ -35,7 +35,7 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 		BufferSize: 512 << 10,
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, nil, log)
+	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	wsHandler := ws.NewHandler(mgr, cfg, log)
 	srv := api.NewServer(cfg, mgr, wsHandler, log)
 
@@ -88,7 +88,7 @@ func TestMultiClientMirroring(t *testing.T) {
 	root := t.TempDir()
 	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 512 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, nil, log)
+	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
@@ -135,7 +135,7 @@ func TestAttachStoppedSessionRejected(t *testing.T) {
 	root := t.TempDir()
 	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, nil, log)
+	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
@@ -172,6 +172,89 @@ func TestAttachStoppedSessionRejected(t *testing.T) {
 	if ce.Code != 4404 {
 		t.Fatalf("close code = %d, want 4404", ce.Code)
 	}
+}
+
+// TestRestartStoppedSessionReplaysScrollback is the end-to-end proof of the
+// restore path: a session that has stopped comes back under the same id, the
+// client that reattaches sees the output from before the stop, and the new shell
+// works. This is what a user experiences after a backend restart.
+func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	root := t.TempDir()
+	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	ts := httptest.NewServer(srv.Router(nil))
+	defer ts.Close()
+
+	id := createSession(t, ts.URL, `{"name":"restore","directory":".","shell":"sh"}`)
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
+
+	c1 := dialWS(t, wsURL)
+	assertAttached(t, c1, id)
+	writeInput(t, c1, "echo before-the-stop\n")
+	if !readUntil(t, c1, "before-the-stop", 5*time.Second) {
+		t.Fatal("did not observe output before stopping")
+	}
+	writeInput(t, c1, "exit\n")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, err := mgr.Get(id); err == nil && info.Status == session.StatusStopped {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = c1.Close()
+	if info, _ := mgr.Get(id); info.Status != session.StatusStopped {
+		t.Fatalf("session did not stop; status=%s", info.Status)
+	}
+
+	// Restarting an unknown session is a 404, a running one a 409.
+	if code := restartStatus(t, ts.URL, "11111111-2222-3333-4444-555555555555"); code != http.StatusNotFound {
+		t.Errorf("restart of unknown session = %d, want 404", code)
+	}
+	if code := restartStatus(t, ts.URL, id); code != http.StatusOK {
+		t.Fatalf("restart = %d, want 200", code)
+	}
+	if code := restartStatus(t, ts.URL, id); code != http.StatusConflict {
+		t.Errorf("restart of a running session = %d, want 409", code)
+	}
+
+	// Reattaching now replays the old output, then the separator, and the new
+	// shell takes commands.
+	c2 := dialWS(t, wsURL)
+	defer c2.Close()
+	assertAttached(t, c2, id)
+	// One read: the replay arrives as a single frame, so the separator and the
+	// restored output have to be asserted against the same accumulated bytes.
+	replay := readCollect(t, c2, "── restored ", 5*time.Second)
+	if !strings.Contains(replay, "before-the-stop") {
+		t.Fatalf("replay after restart lost the output from before the stop: %q", replay)
+	}
+	if !strings.Contains(replay, "── restored ") {
+		t.Fatalf("replay after restart has no restore separator: %q", replay)
+	}
+	if strings.Index(replay, "── restored ") < strings.Index(replay, "before-the-stop") {
+		t.Error("separator precedes the restored output; want old output first")
+	}
+	writeInput(t, c2, "echo after-the-restart\n")
+	if !readUntil(t, c2, "after-the-restart", 5*time.Second) {
+		t.Fatal("restarted shell does not accept input")
+	}
+}
+
+func restartStatus(t *testing.T, baseURL, id string) int {
+	t.Helper()
+	resp, err := http.Post(baseURL+"/api/sessions/"+id+"/restart", "application/json", nil)
+	if err != nil {
+		t.Fatalf("restart session: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
 }
 
 func sessionClientCount(t *testing.T, baseURL, id string) int {
@@ -255,17 +338,25 @@ func writeInput(t *testing.T, c *websocket.Conn, s string) {
 // A single read deadline is used because a gorilla read timeout is permanent.
 func readUntil(t *testing.T, c *websocket.Conn, substr string, timeout time.Duration) bool {
 	t.Helper()
+	return strings.Contains(readCollect(t, c, substr, timeout), substr)
+}
+
+// readCollect is readUntil that hands back everything it read. Callers asserting
+// on more than one substring need this: the bytes a plain readUntil consumes
+// past its match are gone, and an attach replay arrives as a single frame.
+func readCollect(t *testing.T, c *websocket.Conn, substr string, timeout time.Duration) string {
+	t.Helper()
 	var acc bytes.Buffer
 	_ = c.SetReadDeadline(time.Now().Add(timeout))
 	for {
 		mt, data, err := c.ReadMessage()
 		if err != nil {
-			return false
+			return acc.String()
 		}
 		if mt == websocket.BinaryMessage {
 			acc.Write(data)
 			if strings.Contains(acc.String(), substr) {
-				return true
+				return acc.String()
 			}
 		}
 	}

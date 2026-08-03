@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,33 @@ func capture(t *testing.T) *bytes.Buffer {
 	usageOut = &buf
 	t.Cleanup(func() { usageOut = old })
 	return &buf
+}
+
+// DataDir ends up in a shell's environment as HISTFILE, and that shell runs in
+// the session's directory rather than the server's. A relative --db that stayed
+// relative would send every session's history somewhere unwritable.
+func TestDataDirIsAbsolute(t *testing.T) {
+	root := t.TempDir()
+
+	for _, args := range [][]string{
+		{"--root", root}, // default db under root
+		{"--root", root, "--db", "data/sessions.db"},     // relative --db
+		{"--root", root, "--db", "./x/../data/state.db"}, // relative with traversal
+	} {
+		cfg, err := Parse(args)
+		if err != nil {
+			t.Fatalf("Parse(%v): %v", args, err)
+		}
+		if !filepath.IsAbs(cfg.DB) {
+			t.Errorf("Parse(%v).DB = %q, want an absolute path", args, cfg.DB)
+		}
+		if !filepath.IsAbs(cfg.DataDir) {
+			t.Errorf("Parse(%v).DataDir = %q, want an absolute path", args, cfg.DataDir)
+		}
+		if want := filepath.Dir(cfg.DB); cfg.DataDir != want {
+			t.Errorf("Parse(%v).DataDir = %q, want %q", args, cfg.DataDir, want)
+		}
+	}
 }
 
 // --version and --help are intent, not failure. Both must be distinguishable

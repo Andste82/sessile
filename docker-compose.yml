@@ -12,7 +12,8 @@ services:
     volumes:
       # Mount the directory tree sessions may open shells in.
       - ./workspace:/workspace
-      # Persist session metadata across restarts.
+      # Persist session metadata, scrollback snapshots and per-session shell
+      # history, so stopped sessions can be restarted with their state intact.
       - sessile-config:/config
     restart: unless-stopped
 

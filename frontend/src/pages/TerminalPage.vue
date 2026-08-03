@@ -16,6 +16,27 @@ const session = ref<Session | null>(null)
 const conn = ref<ConnStatus>('connecting')
 const loadError = ref<string | null>(null)
 
+const restarting = ref(false)
+const restartError = ref<string | null>(null)
+// A restart keeps the session id, so the id alone cannot re-key TerminalView.
+// Bumping this forces a remount, which is what makes useTerminal open a fresh
+// WebSocket and replay the restored scrollback.
+const reloadNonce = ref(0)
+
+async function restart() {
+  if (restarting.value) return
+  restarting.value = true
+  restartError.value = null
+  try {
+    session.value = await store.restartSession(id.value)
+    reloadNonce.value++
+  } catch (e) {
+    restartError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    restarting.value = false
+  }
+}
+
 async function loadSession(sessionId: string) {
   store.openTab(sessionId)
   loadError.value = null
@@ -46,7 +67,7 @@ watch(id, (newId) => loadSession(newId))
       <p v-if="loadError" class="p-6 text-sm text-rose-400">{{ loadError }}</p>
       <TerminalView
         v-else
-        :key="id"
+        :key="`${id}:${reloadNonce}`"
         :session-id="id"
         class="h-full p-2"
         @status="conn = $event"
@@ -54,12 +75,24 @@ watch(id, (newId) => loadSession(newId))
 
       <div
         v-if="conn === 'exited'"
-        class="pointer-events-none absolute inset-x-0 top-0 flex justify-center p-3"
+        class="absolute inset-x-0 top-0 flex justify-center p-3"
       >
-        <span
-          class="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-slate-300 shadow"
-          >Session ended — the shell process has exited.</span
+        <div
+          class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 rounded-md bg-slate-800 px-3 py-1.5 text-sm text-slate-300 shadow"
         >
+          <span>Session ended — the shell process has exited.</span>
+          <button
+            type="button"
+            class="rounded bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60"
+            :disabled="restarting"
+            @click="restart"
+          >
+            {{ restarting ? 'Restarting…' : 'Restart session' }}
+          </button>
+          <span v-if="restartError" class="w-full text-center text-xs text-rose-400">{{
+            restartError
+          }}</span>
+        </div>
       </div>
 
       <div

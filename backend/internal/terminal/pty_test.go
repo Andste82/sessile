@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -51,7 +52,7 @@ func TestShellEnvLocale(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := shellEnv(tc.parent)
+			got := shellEnv(tc.parent, nil)
 			if gotDefault := slices.Contains(got, defaultLocale); gotDefault != tc.wantDefault {
 				t.Errorf("shellEnv(%v) default locale = %v, want %v", tc.parent, gotDefault, tc.wantDefault)
 			}
@@ -72,8 +73,24 @@ func TestShellEnvLocale(t *testing.T) {
 func TestShellEnvDoesNotMutateParent(t *testing.T) {
 	parent := []string{"PATH=/usr/bin"}
 	before := slices.Clone(parent)
-	shellEnv(parent)
+	shellEnv(parent, []string{"HISTFILE=/tmp/h"})
 	if !slices.Equal(parent, before) {
 		t.Errorf("shellEnv mutated its argument: %v, want %v", parent, before)
+	}
+}
+
+// Extra assignments must come last: exec resolves duplicate names to the final
+// occurrence, which is what lets a session's HISTFILE override the server's.
+func TestShellEnvExtraOverridesParent(t *testing.T) {
+	got := shellEnv([]string{"HISTFILE=/home/op/.bash_history"}, []string{"HISTFILE=/data/history/abc"})
+
+	var last string
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "HISTFILE=") {
+			last = kv
+		}
+	}
+	if want := "HISTFILE=/data/history/abc"; last != want {
+		t.Errorf("last HISTFILE = %q, want %q", last, want)
 	}
 }

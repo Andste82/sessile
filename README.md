@@ -20,6 +20,9 @@ specification.
 - **Scrollback restoration.** Each session keeps a ring buffer of its raw output
   bytes; on (re)connect the buffer is replayed and xterm.js re-renders the ANSI
   stream — no server-side terminal emulation.
+- **Restart after a backend restart.** A stopped session can be brought back
+  under the same id with one click: same directory, same shell, its scrollback
+  replayed, and arrow-up still walking the commands typed in that session.
 - **Multi-client.** Several browsers can attach to the same session and see it
   mirrored live, with per-session client counts.
 - **Resilient UI.** Automatic reconnect with exponential backoff, a session tab
@@ -46,6 +49,12 @@ Browser (xterm.js) ⇄ WebSocket ⇄ Go backend ⇄ PTY ⇄ shell process
 - Because shells are children of the backend, **live sessions do not survive a
   backend restart.** On startup any session still marked `running` is reconciled
   to `stopped`.
+- A stopped session can be **restarted**: it gets a new shell under the same id,
+  in the same directory, with its scrollback and its command history restored.
+  The scrollback is snapshotted to `<db-dir>/scrollback/`, and each session's
+  shell is pointed at its own history file so arrow-up replays the commands
+  typed in *that* session. What does not come back is what was running — a
+  restarted session is a fresh shell, not a resumed one.
 
 ### Wire protocol
 
@@ -143,7 +152,9 @@ services:
     volumes:
       # The directory tree sessions may open shells in. Sessions cannot escape it.
       - ./workspace:/workspace
-      # Session metadata; keep it on a volume so sessions survive a restart.
+      # Session metadata, scrollback snapshots and per-session shell history.
+      # Keep it on a volume so sessions can be restarted after a container
+      # restart, with their output and command history intact.
       - sessile-config:/config
     # Defaults baked into the image; override to change the sandbox root, the
     # database path, or which shells are offered.
@@ -229,7 +240,11 @@ curl -s localhost:8080/api/sessions/<id>     # get one
 curl -s -X PATCH localhost:8080/api/sessions/<id> \
   -H 'Content-Type: application/json' -d '{"name":"API"}'
 
-# Delete (terminates the shell) -> 204
+# Restart a stopped session: new shell, same id, scrollback and history restored
+# -> 200 + session JSON (409 if it is still running)
+curl -s -X POST localhost:8080/api/sessions/<id>/restart
+
+# Delete (terminates the shell, drops its scrollback and history) -> 204
 curl -s -X DELETE localhost:8080/api/sessions/<id>
 ```
 
@@ -283,6 +298,14 @@ GitHub Actions runs the same checks (`go vet`, `go test`, the frontend build and
 - There is no built-in authentication. Deploy behind a reverse proxy or on a
   trusted network.
 - Live sessions do not survive a backend restart (see [How it works](#how-it-works)).
+  Their scrollback and command history do, and the session can be restarted from
+  the UI — but the processes that were running are gone.
+- Scrollback snapshots and history files sit next to the database, so whatever
+  volume holds `--db` also holds terminal output. Keep it off shared storage and
+  size it for `--buffer-size` per session.
+- Per-session command history is set through the shell's environment. An rc file
+  that assigns `HISTFILE` itself — oh-my-zsh does — wins over that, and such a
+  session keeps using the shared history file instead of its own.
 
 ## License
 

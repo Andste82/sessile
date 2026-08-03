@@ -26,6 +26,17 @@ function onCreated(session: Session) {
 async function onDelete(id: string) {
   await store.deleteSession(id)
 }
+
+// Restarting from the list opens the session too: the point of the button is to
+// get back into a session, and the terminal is where the restored scrollback is.
+async function onRestart(id: string) {
+  try {
+    await store.restartSession(id)
+    router.push(`/sessions/${id}`)
+  } catch (e) {
+    store.error = e instanceof Error ? e.message : String(e)
+  }
+}
 </script>
 
 <template>
@@ -70,6 +81,7 @@ async function onDelete(id: string) {
           :key="s.id"
           :session="s"
           @delete="onDelete"
+          @restart="onRestart"
         />
       </div>
     </main>
