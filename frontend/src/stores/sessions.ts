@@ -52,12 +52,17 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   // refreshSessions updates the list without toggling the loading flag, for
   // background polling (keeps client counts live).
+  //
+  // A failure is not left to sit on the stale list. The backend is the only
+  // thing that runs a shell, so if it cannot be reached, none of the sessions
+  // are running whatever the last successful poll said — see markAllStopped.
   async function refreshSessions() {
     try {
       sessions.value = await api.listSessions()
       error.value = null
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
+      markAllStopped()
     }
   }
 
@@ -113,6 +118,23 @@ export const useSessionsStore = defineStore('sessions', () => {
     )
   }
 
+  // Marks every session stopped, for when the backend itself has gone away.
+  //
+  // Only the terminal that happened to be on screen learned about a backend
+  // restart, through its own WebSocket closing; every other session kept the
+  // green dot from the last successful poll until the user clicked it. Since a
+  // shell only exists inside the backend process, an unreachable backend means
+  // none of them are running — and a session that comes back is corrected by
+  // the next successful poll, which is a fresh snapshot of the truth.
+  function markAllStopped() {
+    if (!sessions.value.some((s) => s.status === 'running' || s.clientCount > 0)) return
+    sessions.value = sessions.value.map((s) => ({
+      ...s,
+      status: 'stopped',
+      clientCount: 0,
+    }))
+  }
+
   // Gives a stopped session a new shell under the same id, with its scrollback
   // and command history restored. The id is unchanged, so any open tab keeps
   // pointing at the same session and only needs to reconnect.
@@ -141,6 +163,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     deleteSession,
     renameSession,
     markStopped,
+    markAllStopped,
     restartSession,
   }
 })

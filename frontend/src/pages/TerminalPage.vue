@@ -60,12 +60,21 @@ onMounted(async () => {
 // Handle navigating directly between tabs (component is reused).
 watch(id, (newId) => loadSession(newId))
 
-// The WebSocket is the only thing that learns a session ended while its
-// terminal is open — nothing polls the list from here. Push that into the store
-// so the tab and sidebar dots agree with the banner below.
+// The WebSocket is the first thing to learn that this session ended. Push that
+// into the store so the tab and sidebar dots agree with the banner below.
 watch(conn, (c) => {
   if (c !== 'exited') return
   store.markStopped(id.value)
+  session.value = store.byId(id.value) ?? session.value
+})
+
+// …and the first thing to learn that the backend as a whole went away or came
+// back — a socket drop beats the next poll tick by up to its whole interval.
+// The refresh decides which it was: it fails while the backend is down, which
+// greys every session out, and returns the real state once it is back.
+watch(conn, async (c) => {
+  if (c !== 'connected' && c !== 'disconnected') return
+  await store.refreshSessions()
   session.value = store.byId(id.value) ?? session.value
 })
 </script>

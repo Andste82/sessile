@@ -1,10 +1,22 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
 import { RouterView } from 'vue-router'
 import AppSidebar from '@/components/AppSidebar.vue'
 import BottomNav from '@/components/BottomNav.vue'
 import { useDocumentTitle } from '@/composables/useDocumentTitle'
+import { useSessionsStore } from '@/stores/sessions'
+
+const store = useSessionsStore()
 
 useDocumentTitle()
+
+// Polling lives here rather than on the dashboard because the session list is
+// on screen everywhere: the sidebar and the terminal tab bar both draw status
+// dots from it. Polled only from the dashboard, those dots kept whatever the
+// last visit left behind — a backend restart went unnoticed until the user
+// clicked the session.
+onMounted(() => store.startPolling(5000))
+onUnmounted(() => store.stopPolling())
 </script>
 
 <template>
