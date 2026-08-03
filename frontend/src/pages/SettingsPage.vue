@@ -5,7 +5,8 @@ import { useSessionsStore } from '@/stores/sessions'
 const store = useSessionsStore()
 
 onMounted(() => {
-  if (!store.config) store.fetchConfig()
+  // Deliberately not awaited: the page renders while the config loads.
+  if (!store.config) void store.fetchConfig()
 })
 </script>
 
@@ -28,6 +29,9 @@ onMounted(() => {
           <dt class="text-slate-400">Version</dt>
           <dd class="font-mono text-slate-200">{{ store.config.version }}</dd>
         </dl>
+        <!-- Without the error branch this said "Loading…" forever whenever the
+             config request failed. -->
+        <p v-else-if="store.error" class="text-sm text-rose-400">{{ store.error }}</p>
         <p v-else class="text-sm text-slate-500">Loading…</p>
       </section>
 
