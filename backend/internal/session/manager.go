@@ -267,13 +267,23 @@ func (m *Manager) readLoop(s *Session) {
 	close(s.exited)
 }
 
-// saveScrollback writes a session's current ring buffer to disk. Failures are
-// logged, never fatal: losing a snapshot costs history, not correctness.
+// saveScrollback writes a running session's ring buffer to disk, and is a no-op
+// for one that has stopped: its final snapshot was written by the read loop and
+// its buffer released, so saving again could only replace good output with an
+// empty file. Deciding that here rather than at each call site is what keeps the
+// decision atomic — see Session.snapshotRunning.
+//
+// Failures are logged, never fatal: losing a snapshot costs history, not
+// correctness.
 func (m *Manager) saveScrollback(s *Session) {
 	if m.scrollback == nil {
 		return
 	}
-	if err := m.scrollback.Save(s.ID, s.buffer.Snapshot()); err != nil {
+	data, ok := s.snapshotRunning()
+	if !ok {
+		return
+	}
+	if err := m.scrollback.Save(s.ID, data); err != nil {
 		m.log.Error("persist scrollback failed", "id", s.ID, "err", err)
 	}
 }
@@ -301,9 +311,7 @@ func (m *Manager) flushLoop() {
 			m.mu.RUnlock()
 
 			for _, s := range live {
-				if s.Info().Status == StatusRunning {
-					m.saveScrollback(s)
-				}
+				m.saveScrollback(s)
 			}
 		}
 	}
@@ -559,12 +567,8 @@ func (m *Manager) Shutdown() {
 		}
 		// Snapshot before terminating: once the shell is gone its final output
 		// is only in the ring buffer, and terminate blocks until it is reaped.
-		// Only for sessions still running — one that already stopped wrote its
-		// snapshot then and has since released the buffer, so saving again would
-		// replace a good snapshot with an empty one.
-		if s.Info().Status == StatusRunning {
-			m.saveScrollback(s)
-		}
+		// A session that already stopped is skipped inside saveScrollback.
+		m.saveScrollback(s)
 		s.terminate(killGrace)
 	}
 }
