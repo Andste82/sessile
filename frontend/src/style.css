@@ -27,6 +27,22 @@ body {
     sans-serif;
 }
 
+/* Characters that have both a text and an emoji presentation get the text one
+   (issue #46). ☠ ⚛ ☢ ☣ default to *text* presentation in Unicode, and every
+   program in the PTY counts them as one column — but our font stack has to end
+   in the colour emoji fonts (issue #27), and those are the only fonts on the
+   list that have these glyphs, so the browser drew them as square emoji two
+   cells wide inside a one-cell box. The following character then landed on the
+   right half of the glyph.
+
+   This is scoped to the terminal on purpose: it is the only place where a
+   glyph has a column count it must obey. Characters that carry U+FE0F are
+   unaffected by this property — an explicit request for emoji presentation
+   still gets it, and utils/unicode.ts gives those cells the second column. */
+.terminal-host .xterm {
+  font-variant-emoji: text;
+}
+
 /* The terminal owns every one-finger drag inside it: useTerminal.ts translates
    the drag into scrollback lines. `touch-action: none` stops the browser from
    claiming the gesture as a pan before our first touchmove can cancel it —
