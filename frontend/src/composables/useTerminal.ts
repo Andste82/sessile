@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { applyUnicodeVersion } from '@/utils/unicode'
+import { loadSymbolFont, symbolFontFamily } from '@/utils/fonts'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
 import { isCompositionArtifact, isImeKey, shouldFlushIme } from '@/utils/ime'
 import {
@@ -29,6 +30,12 @@ export type ConnStatus = 'connecting' | 'connected' | 'exited' | 'disconnected'
 // cannot change the cell size. Naming them matters anyway: without an emoji
 // font in the stack a browser is free to fall back to a proportional face
 // whose glyph overhangs the two cells we now reserve (issue #27).
+// The symbol face sits between the two groups: after the monospace faces, so it
+// can never be asked for a character they already have, and before the emoji
+// ones, so ☠ ⚛ ☢ ⌘ ■ get the monochrome glyph that fits their single cell
+// instead of a two-cell emoji (issue #46). It ships with the app — see
+// utils/fonts.ts for why leaving that to the machine did not work.
+const fontSize = 13
 const fontFamily = [
   'ui-monospace',
   'SFMono-Regular',
@@ -36,6 +43,7 @@ const fontFamily = [
   'Menlo',
   'Consolas',
   'monospace',
+  symbolFontFamily,
   '"Apple Color Emoji"',
   '"Segoe UI Emoji"',
   '"Noto Color Emoji"',
@@ -171,12 +179,20 @@ export function useTerminal() {
   const closeSessionEnded = 4000
   const closeSessionUnavailable = 4404
 
-  function open(el: HTMLElement) {
+  // Awaits the symbol font before building the terminal. xterm measures each
+  // character once and caches the width it works letter-spacing out from, so a
+  // symbol drawn before the font lands keeps the fallback's width until
+  // something clears that cache. The wait is bounded and, after the first
+  // visit, served from cache — see utils/fonts.ts.
+  async function open(el: HTMLElement) {
+    await loadSymbolFont(fontSize)
+    if (disposed) return // unmounted while the font was in flight
+
     const t = new Terminal({
       scrollback: 5000,
       cursorBlink: true,
       fontFamily,
-      fontSize: 13,
+      fontSize,
       theme,
       // Required for `unicode.activeVersion` below — xterm gates the whole
       // unicode handle behind this flag.

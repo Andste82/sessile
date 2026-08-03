@@ -16,9 +16,11 @@ const { status, mods, open, connect, dispose, toggleMod, pressSpecial, focus } =
 
 watch(status, (s) => emit('status', s))
 
-onMounted(() => {
+onMounted(async () => {
   if (host.value) {
-    open(host.value)
+    // Awaited: open waits for the terminal's symbol font (issue #46) and the
+    // socket has nothing to write into until it has built the terminal.
+    await open(host.value)
     connect(props.sessionId)
     // Mount *is* "the session became active": TerminalPage keys this component
     // on the route id, so switching sessions tears it down and builds a new
