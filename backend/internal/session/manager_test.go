@@ -2,12 +2,14 @@ package session
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -280,6 +282,69 @@ func TestRestartErrors(t *testing.T) {
 	}
 	if _, err := mgr.Restart(created.ID); err != ErrAlreadyRunning {
 		t.Errorf("Restart of running session = %v, want %v", err, ErrAlreadyRunning)
+	}
+}
+
+// TestConcurrentRestartStartsOneShell covers the window between deciding a
+// session may restart and publishing its replacement — a fork+exec wide, and
+// once entered by two callers at once it produced two shells under one id. The
+// map kept the second; the first kept running with nothing pointing at it.
+//
+// Two tabs on the same session are enough to reach this, so "exactly one wins"
+// has to hold under a real race, not just in sequence.
+func TestConcurrentRestartStartsOneShell(t *testing.T) {
+	mgr, _, _ := testManager(t)
+
+	created, err := mgr.Create("contended", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+	waitForStatus(t, mgr, created.ID, StatusStopped)
+
+	const callers = 4
+	var wg sync.WaitGroup
+	infos := make([]Info, callers)
+	errs := make([]error, callers)
+	start := make(chan struct{})
+	for i := range infos {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			infos[i], errs[i] = mgr.Restart(created.ID)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var winners []Info
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			winners = append(winners, infos[i])
+		case errors.Is(err, ErrAlreadyRunning):
+		default:
+			t.Errorf("Restart returned %v, want nil or %v", err, ErrAlreadyRunning)
+		}
+	}
+	if len(winners) != 1 {
+		t.Errorf("%d of %d concurrent restarts succeeded, want exactly 1", len(winners), callers)
+	}
+
+	live := liveSession(t, mgr, created.ID)
+	for _, w := range winners {
+		if w.PID == live.PID {
+			continue
+		}
+		// Signal 0 only checks that the pid is still there — no shell of ours
+		// should be, once the manager has stopped tracking it.
+		if syscall.Kill(w.PID, 0) == nil {
+			t.Errorf("orphaned shell: pid %d is still running but is not the session's (%d)",
+				w.PID, live.PID)
+		}
 	}
 }
 
