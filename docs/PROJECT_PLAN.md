@@ -74,6 +74,9 @@ affect the shell.
 **Consequence:** live sessions cannot survive a *backend* restart. On startup,
 any session marked `running` in SQLite is transitioned to `stopped`
 (the process is gone). This is accepted for v0.x — document it in the README.
+A stopped session is not a dead end, though: `POST /api/sessions/:id/restart`
+gives it a new shell under the same id, with its scrollback and command history
+restored from disk (§8). The processes it was running are still gone.
 
 ### The critical mechanism: output ring buffer
 Reconnect/restore works like this — implement it exactly:
@@ -256,8 +259,9 @@ with appropriate HTTP status (400 validation, 404 missing, 409 conflict,
 | `GET /api/sessions` | List all sessions | Includes `clientCount` per session |
 | `POST /api/sessions` | Create | Body below; 201 + session JSON |
 | `GET /api/sessions/:id` | Get one | |
-| `DELETE /api/sessions/:id` | Kill + remove permanently | 204 |
+| `DELETE /api/sessions/:id` | Kill + remove permanently | 204; also drops the session's scrollback snapshot and history file (§8) |
 | `PATCH /api/sessions/:id` | Rename (`{"name":"…"}`) | v0.3, stub not needed earlier |
+| `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (§8) |
 | `GET /api/directories` | Browse dirs under root; optional `?path=` (relative, validated by §4.5) navigates into subdirs | `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
 | `GET /api/config` | Root path, available shells, version | Shells = allowlist ∩ installed |
 | `GET /api/health` | `{"status":"ok"}` | For Docker healthcheck |
@@ -376,6 +380,51 @@ App config lives in flags/env (§9), not the DB — drop the config table from
 the original plan; it adds state with no benefit.
 
 On startup: `UPDATE sessions SET status='stopped' WHERE status='running';`
+
+### Scrollback and command history (restart restore)
+
+"Metadata only" above governs SQLite, and it still does. Two things live in
+files beside the database instead, because they are what makes a stopped
+session worth reopening:
+
+```
+<db-dir>/
+  sessions.db
+  scrollback/<session-id>.bin   # raw ring-buffer snapshot
+  history/<session-id>          # HISTFILE for bash/zsh sessions
+```
+
+The directory is `filepath.Dir(--db)`, resolved to an absolute path, and is
+deliberately **outside `--root`**: a shell that could read or rewrite its own
+history file inside the sandbox would make the restored history worthless, and
+a relative path would resolve against the *session's* directory once it reaches
+a shell's environment.
+
+- **Scrollback.** The ring buffer is written out when a shell exits, on
+  graceful shutdown, and on a timer (reusing `activityThrottle`) so a SIGKILLed
+  backend still restores output up to the last flush. It is not in SQLite: the
+  payload is opaque, up to `--buffer-size` per session and rewritten
+  repeatedly — exactly the write pattern that would make a single-connection
+  SQLite the bottleneck for the PTY read loop.
+- **Command history.** Each session's shell is pointed at its own history
+  through the environment: `HISTFILE` (+`HISTSIZE`/`HISTFILESIZE` and
+  `PROMPT_COMMAND=history -a`) for bash, `HISTFILE`+`HISTSIZE`+`SAVEHIST` for
+  zsh, `fish_history` for fish. Reusing the session id across a restart is what
+  makes arrow-up replay that session's own commands. bash and zsh flush from
+  the exit path SIGHUP runs — which is what the kernel delivers when the
+  backend dies and the PTY master closes — and fish appends after every
+  command.
+  Known limit, documented in the README: a user rc file that assigns `HISTFILE`
+  itself (oh-my-zsh does) wins over the environment, and such a session falls
+  back to the shared history file.
+
+`POST /api/sessions/:id/restart` (§6) spawns a new shell under the same id,
+name, directory and shell, re-running the §4.5 sandbox and allowlist checks.
+The new ring buffer is pre-seeded with the snapshot followed by a separator
+that leaves the alternate screen and resets attributes, cursor and autowrap —
+without it a session that stopped inside a full-screen program would leave the
+replacement shell drawing into an unreachable screen. Restart is always
+explicit: sessions are never respawned automatically on startup.
 
 ---
 

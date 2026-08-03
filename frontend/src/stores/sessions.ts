@@ -84,6 +84,15 @@ export const useSessionsStore = defineStore('sessions', () => {
     return updated
   }
 
+  // Gives a stopped session a new shell under the same id, with its scrollback
+  // and command history restored. The id is unchanged, so any open tab keeps
+  // pointing at the same session and only needs to reconnect.
+  async function restartSession(id: string) {
+    const restarted = await api.restartSession(id)
+    sessions.value = sessions.value.map((s) => (s.id === id ? restarted : s))
+    return restarted
+  }
+
   return {
     sessions,
     config,
@@ -101,5 +110,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     createSession,
     deleteSession,
     renameSession,
+    restartSession,
   }
 })

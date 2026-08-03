@@ -32,6 +32,7 @@ type Config struct {
 	Root        string   // sandbox root; all sessions run inside this tree
 	Addr        string   // listen address, e.g. ":8080"
 	DB          string   // path to the SQLite database file
+	DataDir     string   // directory holding the DB plus scrollback/history state
 	Shells      []string // shell allowlist
 	BufferSize  int      // per-session ring buffer size in bytes
 	LogLevel    string   // slog level: debug|info|warn|error
@@ -80,6 +81,19 @@ func Parse(args []string) (*Config, error) {
 	if dbPath == "" {
 		dbPath = filepath.Join(absRoot, ".tsm", "sessions.db")
 	}
+	// A relative --db is resolved here, against the server's working directory.
+	// It cannot be left relative: the data directory below ends up in a shell's
+	// environment as HISTFILE, and that shell runs in the session's directory,
+	// where a relative path would point somewhere else entirely.
+	dbPath, err = filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve db path: %w", err)
+	}
+	// Scrollback snapshots and per-session shell history live beside the
+	// database, deliberately outside --root: they are server state, and a shell
+	// that could read or rewrite its own history file inside the sandbox would
+	// make the restored history worthless.
+	dataDir := filepath.Dir(dbPath)
 
 	bufSize, err := strconv.Atoi(*bufferSize)
 	if err != nil || bufSize <= 0 {
@@ -104,6 +118,7 @@ func Parse(args []string) (*Config, error) {
 		Root:        absRoot,
 		Addr:        *addr,
 		DB:          dbPath,
+		DataDir:     dataDir,
 		Shells:      shellList,
 		BufferSize:  bufSize,
 		LogLevel:    *logLevel,

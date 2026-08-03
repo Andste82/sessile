@@ -55,4 +55,6 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ name }),
     }),
+  restartSession: (id: string) =>
+    request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),
 }

@@ -62,7 +62,7 @@ func run(args []string) error {
 	defer store.Close()
 	log.Info("store ready", "db", cfg.DB)
 
-	manager := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, store, log)
+	manager := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, cfg.DataDir, store, log)
 	wsHandler := ws.NewHandler(manager, cfg, log)
 
 	srv := api.NewServer(cfg, manager, wsHandler, log)

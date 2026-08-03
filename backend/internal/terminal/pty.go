@@ -42,10 +42,13 @@ func (p *PTY) Write(data []byte) error {
 // placed in its own session/process group (Setsid) so the whole tree can be
 // signalled on teardown (PROJECT_PLAN.md §4.6). shellPath must already be an
 // absolute, allowlisted path (resolved by the caller via exec.LookPath).
-func Start(shellPath, dir string, rows, cols uint16) (*PTY, error) {
+//
+// extraEnv is appended last and so overrides anything of the same name inherited
+// from the server; it carries the per-session history settings (§8).
+func Start(shellPath, dir string, rows, cols uint16, extraEnv []string) (*PTY, error) {
 	cmd := exec.Command(shellPath)
 	cmd.Dir = dir
-	cmd.Env = shellEnv(os.Environ())
+	cmd.Env = shellEnv(os.Environ(), extraEnv)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols})
@@ -56,8 +59,11 @@ func Start(shellPath, dir string, rows, cols uint16) (*PTY, error) {
 }
 
 // shellEnv builds the shell's environment from the server's own: TERM, because
-// the shell must know what it is drawing on, and a UTF-8 locale when the parent
-// has none.
+// the shell must know what it is drawing on, a UTF-8 locale when the parent has
+// none, and finally the caller's extra assignments.
+//
+// Order matters: exec resolves duplicate names to the last occurrence, so extra
+// wins over both the parent and the defaults set here.
 //
 // The locale is not cosmetic. The wire protocol is UTF-8 by definition — the
 // browser encodes keystrokes with TextEncoder and xterm.js decodes PTY bytes as
@@ -66,12 +72,12 @@ func Start(shellPath, dir string, rows, cols uint16) (*PTY, error) {
 // with a BEL and zsh renders it as <ffffffff>; musl is more forgiving, which is
 // why this only bites on the glibc images. An explicit locale always wins:
 // callers who really want C keep it.
-func shellEnv(parent []string) []string {
+func shellEnv(parent, extra []string) []string {
 	env := append(append([]string{}, parent...), "TERM=xterm-256color")
 	if !hasLocale(parent) {
 		env = append(env, defaultLocale)
 	}
-	return env
+	return append(env, extra...)
 }
 
 // hasLocale reports whether env configures character handling. An empty

@@ -10,6 +10,9 @@ var (
 	ErrNotFound = errors.New("session not found")
 	// ErrStopped is returned when attaching to a session whose shell has ended.
 	ErrStopped = errors.New("session is stopped")
+	// ErrAlreadyRunning is returned when restarting a session that still has a
+	// live shell.
+	ErrAlreadyRunning = errors.New("session is already running")
 	// ErrInvalidName is returned for names outside the 1–64 char range.
 	ErrInvalidName = errors.New("name must be 1-64 characters")
 	// ErrInvalidShell is returned when a shell is not in the allowlist or is

@@ -110,12 +110,24 @@ func (s *Server) renameSession(c *gin.Context) {
 	c.JSON(http.StatusOK, toJSON(info))
 }
 
+// restartSession gives a stopped session a new shell under the same id, with
+// its scrollback and command history restored (§8).
+func (s *Server) restartSession(c *gin.Context) {
+	info, err := s.manager.Restart(c.Param("id"))
+	if err != nil {
+		s.respondSessionError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, toJSON(info))
+}
+
 // respondSessionError maps domain errors to the unified error envelope.
 func (s *Server) respondSessionError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, session.ErrNotFound):
 		respondError(c, http.StatusNotFound, CodeNotFound, err.Error())
-	case errors.Is(err, session.ErrStopped):
+	case errors.Is(err, session.ErrStopped),
+		errors.Is(err, session.ErrAlreadyRunning):
 		respondError(c, http.StatusConflict, CodeConflict, err.Error())
 	case errors.Is(err, session.ErrInvalidName),
 		errors.Is(err, session.ErrInvalidShell):
