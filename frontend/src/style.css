@@ -1,5 +1,20 @@
 @import 'tailwindcss';
 
+/* The terminal's symbol face — see utils/fonts.ts for what it is here to fix.
+   Declared by hand rather than by importing the package's stylesheet so only
+   the woff2 ships: the .woff beside it is another 74 kB inside the binary, for
+   browsers that predate 2016 and cannot run this app anyway. Declaring it in
+   the app stylesheet rather than a route chunk means the family is known before
+   the first terminal mounts. */
+@font-face {
+  font-family: 'Noto Sans Symbols';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('@fontsource/noto-sans-symbols/files/noto-sans-symbols-symbols-400-normal.woff2')
+    format('woff2');
+}
+
 /* Dark theme is the default (PROJECT_PLAN.md §7). */
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -25,22 +40,6 @@ body {
   color: #e2e8f0; /* slate-200 */
   font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
     sans-serif;
-}
-
-/* Characters that have both a text and an emoji presentation get the text one
-   (issue #46). ☠ ⚛ ☢ ☣ default to *text* presentation in Unicode, and every
-   program in the PTY counts them as one column — but our font stack has to end
-   in the colour emoji fonts (issue #27), and those are the only fonts on the
-   list that have these glyphs, so the browser drew them as square emoji two
-   cells wide inside a one-cell box. The following character then landed on the
-   right half of the glyph.
-
-   This is scoped to the terminal on purpose: it is the only place where a
-   glyph has a column count it must obey. Characters that carry U+FE0F are
-   unaffected by this property — an explicit request for emoji presentation
-   still gets it, and utils/unicode.ts gives those cells the second column. */
-.terminal-host .xterm {
-  font-variant-emoji: text;
 }
 
 /* The terminal owns every one-finger drag inside it: useTerminal.ts translates
