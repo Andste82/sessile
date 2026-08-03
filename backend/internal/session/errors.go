@@ -13,6 +13,10 @@ var (
 	// ErrAlreadyRunning is returned when restarting a session that still has a
 	// live shell.
 	ErrAlreadyRunning = errors.New("session is already running")
+	// ErrRestarting is returned when deleting a session that is mid-restart: its
+	// shell is already starting, so honouring the delete would leave the process
+	// behind with nothing tracking it.
+	ErrRestarting = errors.New("session is restarting")
 	// ErrInvalidName is returned for names outside the 1–64 char range.
 	ErrInvalidName = errors.New("name must be 1-64 characters")
 	// ErrInvalidShell is returned when a shell is not in the allowlist or is

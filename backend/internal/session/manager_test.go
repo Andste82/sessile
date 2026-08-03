@@ -348,6 +348,47 @@ func TestConcurrentRestartStartsOneShell(t *testing.T) {
 	}
 }
 
+// TestDeleteDuringRestartIsRefused covers the other side of the reservation: a
+// delete that lands while a restart is between spawning its shell and
+// publishing it. Deleting now would drop the row and the state, and register
+// would then put the session back under the id just erased — running, with
+// nothing tracking it. The caller gets a conflict instead, and the delete works
+// once the restart has landed.
+//
+// The reservation is taken directly because the window it stands for is a
+// fork+exec inside Restart, which cannot be paused from the outside.
+func TestDeleteDuringRestartIsRefused(t *testing.T) {
+	mgr, store, _ := testManager(t)
+
+	created, err := mgr.Create("contested", ".", "sh")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.WriteInput(created.ID, []byte("exit\n")); err != nil {
+		t.Fatalf("WriteInput exit: %v", err)
+	}
+	waitForStatus(t, mgr, created.ID, StatusStopped)
+
+	if err := mgr.claimRestart(created.ID); err != nil {
+		t.Fatalf("claimRestart: %v", err)
+	}
+	if err := mgr.Delete(created.ID); !errors.Is(err, ErrRestarting) {
+		t.Errorf("Delete during a restart = %v, want %v", err, ErrRestarting)
+	}
+	if _, found, _ := store.Get(created.ID); !found {
+		t.Error("the refused delete removed the session's row anyway")
+	}
+
+	// Once the restart has let go, the delete goes through as usual.
+	mgr.releaseRestart(created.ID)
+	if err := mgr.Delete(created.ID); err != nil {
+		t.Fatalf("Delete after the restart finished: %v", err)
+	}
+	if _, found, _ := store.Get(created.ID); found {
+		t.Error("the session's row survived a successful delete")
+	}
+}
+
 // A restart re-runs the sandbox check, so a directory that has since been
 // removed must fail cleanly rather than at PTY start.
 func TestRestartRejectsVanishedDirectory(t *testing.T) {

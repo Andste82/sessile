@@ -127,7 +127,8 @@ func (s *Server) respondSessionError(c *gin.Context, err error) {
 	case errors.Is(err, session.ErrNotFound):
 		respondError(c, http.StatusNotFound, CodeNotFound, err.Error())
 	case errors.Is(err, session.ErrStopped),
-		errors.Is(err, session.ErrAlreadyRunning):
+		errors.Is(err, session.ErrAlreadyRunning),
+		errors.Is(err, session.ErrRestarting):
 		respondError(c, http.StatusConflict, CodeConflict, err.Error())
 	case errors.Is(err, session.ErrInvalidName),
 		errors.Is(err, session.ErrInvalidShell):

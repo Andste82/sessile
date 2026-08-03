@@ -432,8 +432,22 @@ func (m *Manager) List() ([]Info, error) {
 
 // Delete kills the process group, disconnects clients and removes the session
 // from memory and the store.
+//
+// A session with a restart in flight is refused with ErrRestarting rather than
+// deleted. Its replacement shell is already starting but not yet published, so a
+// delete that ran now would remove the row and the state and then watch register
+// put a session back under the id it just erased — one that no shutdown would
+// ever terminate. Refusing costs the caller a retry once the restart lands, and
+// the delete then does the whole job.
+//
+// The check shares the critical section that publishes and unpublishes
+// sessions, so a delete either sees the reservation or runs wholly outside it.
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
+	if _, restarting := m.restarting[id]; restarting {
+		m.mu.Unlock()
+		return ErrRestarting
+	}
 	s, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
