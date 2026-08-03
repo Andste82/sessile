@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // capture redirects the flag set's usage/error output into a buffer, so tests
@@ -44,6 +45,50 @@ func TestDataDirIsAbsolute(t *testing.T) {
 		if want := filepath.Dir(cfg.DB); cfg.DataDir != want {
 			t.Errorf("Parse(%v).DataDir = %q, want %q", args, cfg.DataDir, want)
 		}
+	}
+}
+
+// Retention deletes sessions that can now be restarted with their scrollback
+// and history, so the off switch has to be the default and a typo has to be an
+// error rather than a silently different window.
+func TestSessionRetention(t *testing.T) {
+	root := t.TempDir()
+
+	tests := []struct {
+		name    string
+		args    []string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "default is off", args: nil, want: 0},
+		{name: "explicit zero", args: []string{"--session-retention", "0"}, want: 0},
+		{name: "empty is off", args: []string{"--session-retention", ""}, want: 0},
+		{name: "hours", args: []string{"--session-retention", "720h"}, want: 720 * time.Hour},
+		{name: "minutes", args: []string{"--session-retention", "90m"}, want: 90 * time.Minute},
+		// Go durations have no day unit; "30d" is a plausible typo that must not
+		// be read as something else.
+		{name: "days are not a unit", args: []string{"--session-retention", "30d"}, wantErr: true},
+		{name: "negative", args: []string{"--session-retention", "-1h"}, wantErr: true},
+		{name: "garbage", args: []string{"--session-retention", "soon"}, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capture(t)
+			cfg, err := Parse(append([]string{"--root", root}, tc.args...))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Parse(%v) succeeded, want an error", tc.args)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Parse(%v): %v", tc.args, err)
+			}
+			if cfg.SessionRetention != tc.want {
+				t.Errorf("SessionRetention = %v, want %v", cfg.SessionRetention, tc.want)
+			}
+		})
 	}
 }
 

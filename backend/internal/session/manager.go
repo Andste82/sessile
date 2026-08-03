@@ -248,8 +248,10 @@ func (m *Manager) readLoop(s *Session) {
 				m.log.Error("persist stop failed", "id", s.ID, "err", err)
 			}
 		}
-		// Snapshot the final output: this is what a later Restart replays.
+		// Snapshot the final output — this is what a later Restart replays —
+		// then let the buffer go; nothing can read it again from here.
 		m.saveScrollback(s)
+		s.releaseBuffer()
 		m.log.Info("session stopped", "id", s.ID)
 	}
 	// Reap the shell process (single reaper), close the master, then signal
@@ -407,6 +409,35 @@ func (m *Manager) Delete(id string) error {
 	return nil
 }
 
+// PruneStopped discards stopped sessions that have been idle longer than
+// retention, along with their scrollback and history, and reports how many went.
+// A retention of zero disables it.
+//
+// Without this the sessions table only ever grows: every session ever created
+// leaves a row, and after this change a scrollback snapshot and a history file
+// too. It is off by default and meant to be called at startup, before any
+// session is live — a stopped session is no longer a dead end now that it can be
+// restarted with its output and command history, so discarding one on a timer is
+// an operator's decision, not a default.
+func (m *Manager) PruneStopped(retention time.Duration) (int, error) {
+	if retention <= 0 || m.store == nil {
+		return 0, nil
+	}
+	ids, err := m.store.DeleteStoppedBefore(timeNow().Add(-retention))
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		m.discardState(id)
+	}
+	if len(ids) > 0 {
+		// .String() because slog renders a Duration as raw nanoseconds, which is
+		// unreadable in the one line an operator sees this feature act.
+		m.log.Info("pruned stopped sessions", "count", len(ids), "retention", retention.String())
+	}
+	return len(ids), nil
+}
+
 // discardState removes the scrollback snapshot and command history of a deleted
 // session. Delete is documented as removing the session permanently (§6), which
 // has to include the state a Restart would otherwise resurrect.
@@ -522,7 +553,12 @@ func (m *Manager) Shutdown() {
 		}
 		// Snapshot before terminating: once the shell is gone its final output
 		// is only in the ring buffer, and terminate blocks until it is reaped.
-		m.saveScrollback(s)
+		// Only for sessions still running — one that already stopped wrote its
+		// snapshot then and has since released the buffer, so saving again would
+		// replace a good snapshot with an empty one.
+		if s.Info().Status == StatusRunning {
+			m.saveScrollback(s)
+		}
 		s.terminate(killGrace)
 	}
 }

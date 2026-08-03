@@ -103,3 +103,56 @@ func TestReconcileOnOpen(t *testing.T) {
 		t.Fatalf("status after reopen = %q, want stopped", got.Status)
 	}
 }
+
+// Pruning must be selective in two directions: only stopped sessions, and only
+// those idle past the cutoff. A running session is never a candidate no matter
+// how stale its last_activity is — the throttle in §4.6 lets that lag 30 s.
+func TestDeleteStoppedBefore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	rows := []struct {
+		id       string
+		status   session.Status
+		lastSeen time.Time
+	}{
+		{"stale-stopped", session.StatusStopped, now.Add(-48 * time.Hour)},
+		{"fresh-stopped", session.StatusStopped, now.Add(-1 * time.Hour)},
+		{"stale-running", session.StatusRunning, now.Add(-48 * time.Hour)},
+	}
+	for _, r := range rows {
+		in := newInfo(r.id, r.status)
+		in.LastActivity = r.lastSeen
+		if err := st.Insert(in); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	ids, err := st.DeleteStoppedBefore(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteStoppedBefore: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "stale-stopped" {
+		t.Fatalf("pruned %v, want [stale-stopped]", ids)
+	}
+
+	for _, id := range []string{"fresh-stopped", "stale-running"} {
+		if _, found, _ := st.Get(id); !found {
+			t.Errorf("%s was pruned but should have survived", id)
+		}
+	}
+	if _, found, _ := st.Get("stale-stopped"); found {
+		t.Error("stale-stopped survived pruning")
+	}
+
+	// Nothing left to prune reports no ids and no error.
+	ids, err = st.DeleteStoppedBefore(now.Add(-24 * time.Hour))
+	if err != nil || len(ids) != 0 {
+		t.Errorf("second prune = (%v, %v), want (nil, nil)", ids, err)
+	}
+}
