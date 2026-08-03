@@ -21,6 +21,19 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
+      # go vet says nothing about formatting, so without this two files drifted
+      # out of gofmt shape and stayed that way across several PRs.
+      # `gofmt -l` alone is not a check: it exits 0 even when it lists files.
+      - name: gofmt
+        working-directory: backend
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd — run 'gofmt -w' on them:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: go vet
         working-directory: backend
         run: go vet ./...
