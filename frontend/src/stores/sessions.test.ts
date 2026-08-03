@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { ApiRequestError } from '@/api/client'
+import type { Session } from '@/api/types'
 import { useSessionsStore } from './sessions'
 
 vi.mock('@/api/client', async () => {
@@ -53,5 +54,50 @@ describe('fetchConfig', () => {
 
     expect(store.config).toEqual({ root: '/srv', shells: ['bash'], version: '1.2.3' })
     expect(store.error).toBeNull()
+  })
+})
+
+function session(over: Partial<Session> = {}): Session {
+  return {
+    id: 'a',
+    name: 'a',
+    directory: '.',
+    shell: 'bash',
+    status: 'running',
+    pid: 42,
+    created: '2026-08-03T10:00:00Z',
+    lastActivity: '2026-08-03T10:00:00Z',
+    rows: 24,
+    cols: 80,
+    clientCount: 1,
+    ...over,
+  }
+}
+
+describe('markStopped', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  // The list is only polled from the dashboard, so a session that ends while
+  // its terminal is open has nothing else to correct its status dot.
+  it('flips the session to stopped and drops its client count', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
+
+    store.markStopped('a')
+
+    expect(store.sessions[0]).toMatchObject({ id: 'a', status: 'stopped', clientCount: 0 })
+    expect(store.sessions[1]).toMatchObject({ id: 'b', status: 'running', clientCount: 1 })
+  })
+
+  it('is a no-op for an id the list does not hold', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' })]
+
+    store.markStopped('gone')
+
+    expect(store.sessions).toEqual([session({ id: 'a' })])
   })
 })

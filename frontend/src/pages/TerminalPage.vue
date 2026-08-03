@@ -58,6 +58,15 @@ onMounted(async () => {
 
 // Handle navigating directly between tabs (component is reused).
 watch(id, (newId) => loadSession(newId))
+
+// The WebSocket is the only thing that learns a session ended while its
+// terminal is open — nothing polls the list from here. Push that into the store
+// so the tab and sidebar dots agree with the banner below.
+watch(conn, (c) => {
+  if (c !== 'exited') return
+  store.markStopped(id.value)
+  session.value = store.byId(id.value) ?? session.value
+})
 </script>
 
 <template>

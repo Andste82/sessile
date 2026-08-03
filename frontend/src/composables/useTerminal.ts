@@ -162,8 +162,11 @@ export function useTerminal() {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   const backoffSteps = [1000, 2000, 4000, 8000, 15000]
 
-  // WS close code the server sends for a missing/stopped session (§5). On this
-  // we stop retrying — the shell is gone (e.g. after a backend restart).
+  // WS close codes that mean the session is gone, not the connection (§5):
+  // 4404 when attaching to a missing or stopped session (e.g. after a backend
+  // restart), 4000 when a live one ended or was deleted under us. Retrying
+  // either only produces a 4404 one backoff step later.
+  const closeSessionEnded = 4000
   const closeSessionUnavailable = 4404
 
   function open(el: HTMLElement) {
@@ -641,11 +644,11 @@ export function useTerminal() {
   }
 
   // scheduleReconnect retries with backoff unless the session ended, the server
-  // reported it unavailable (4404), or the component was disposed.
+  // reported it gone (4000/4404), or the component was disposed.
   function scheduleReconnect(code?: number) {
     ws = null
     if (disposed || status.value === 'exited') return
-    if (code === closeSessionUnavailable) {
+    if (code === closeSessionEnded || code === closeSessionUnavailable) {
       status.value = 'exited'
       return
     }

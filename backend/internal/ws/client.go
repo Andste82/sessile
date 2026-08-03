@@ -104,11 +104,7 @@ func (c *Client) writePump() {
 		select {
 		case f := <-c.send:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			mt := websocket.BinaryMessage
-			if !f.binary {
-				mt = websocket.TextMessage
-			}
-			if err := c.conn.WriteMessage(mt, f.data); err != nil {
+			if err := c.writeFrame(f); err != nil {
 				return
 			}
 		case <-ticker.C:
@@ -117,13 +113,52 @@ func (c *Client) writePump() {
 				return
 			}
 		case <-c.done:
+			// One deadline for the flush and the close frame together, so a
+			// client that has stopped reading still costs at most writeWait to
+			// tear down — the bound the close frame alone had before.
+			deadline := time.Now().Add(writeWait)
+			c.flush(deadline)
 			code := c.closeCode
 			if code == 0 {
 				code = websocket.CloseNormalClosure
 			}
 			msg := websocket.FormatCloseMessage(code, c.closeReason)
-			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			_ = c.conn.SetWriteDeadline(deadline)
 			_ = c.conn.WriteMessage(websocket.CloseMessage, msg)
+			return
+		}
+	}
+}
+
+// writeFrame writes one queued message. The caller sets the write deadline.
+func (c *Client) writeFrame(f frame) error {
+	mt := websocket.BinaryMessage
+	if !f.binary {
+		mt = websocket.TextMessage
+	}
+	return c.conn.WriteMessage(mt, f.data)
+}
+
+// flush drains whatever is already queued before the close frame goes out.
+//
+// A control message followed by Close is one action in two steps — "the session
+// ended, here is why" (§5) — and the enqueue happens before done is closed. The
+// select above would otherwise pick between a ready send and a ready done at
+// random and drop the exit frame about half the time, leaving the client to
+// infer the reason from the close code alone.
+//
+// Bounded twice over: the loop stops at the first empty read, so a producer
+// racing the close cannot hold it open, and every write shares the caller's
+// deadline, so a stalled connection ends the flush instead of stretching it.
+func (c *Client) flush(deadline time.Time) {
+	_ = c.conn.SetWriteDeadline(deadline)
+	for {
+		select {
+		case f := <-c.send:
+			if err := c.writeFrame(f); err != nil {
+				return
+			}
+		default:
 			return
 		}
 	}
