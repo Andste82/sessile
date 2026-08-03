@@ -475,6 +475,12 @@ explicit: sessions are never respawned automatically on startup.
 - Prod: `npm run build` → output copied/embedded into Go binary via
   `//go:embed` of `frontend/dist` (a small `web/embed.go` in backend);
   SPA fallback: unknown non-`/api`, non-`/ws` GETs serve `index.html`.
+- Caching: `/assets/*` is content-hashed by the build, so it is served
+  `public, max-age=31536000, immutable`. `index.html` — one URL naming the
+  current bundles — and any unhashed file are served `no-cache` with an ETag,
+  so every load revalidates and the usual answer is a 304. Serving the index
+  with no cache headers lets a browser pick its own freshness lifetime and
+  keep running the previous frontend against an upgraded backend.
 - Makefile targets: `make dev-backend`, `make dev-frontend`, `make build`,
   `make test`, `make docker`.
 
