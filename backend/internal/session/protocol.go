@@ -9,8 +9,8 @@ package session
 // treats as a slow consumer and drops (PROJECT_PLAN.md §4.4).
 type Client interface {
 	ID() string
-	Send(data []byte) bool     // binary terminal bytes
-	SendControl(v any) bool    // text JSON control message
+	Send(data []byte) bool  // binary terminal bytes
+	SendControl(v any) bool // text JSON control message
 	Close(code int, reason string)
 }
 

@@ -9,9 +9,9 @@ import "sync"
 //
 // It is safe for concurrent use.
 type RingBuffer struct {
-	mu   sync.Mutex
-	buf  []byte
-	max  int
+	mu  sync.Mutex
+	buf []byte
+	max int
 }
 
 // NewRingBuffer returns a buffer retaining at most max bytes. max must be > 0.
