@@ -327,7 +327,14 @@ frontend/src/
   overlay; retry with exponential backoff (1 s → 2 s → 4 s → max 15 s).
   On reattach, call `terminal.reset()` before replay so buffer replay
   renders cleanly.
-- On `exit` control frame: banner "Session ended", disable input.
+- On `exit` control frame: banner "Session ended", disable input. The socket
+  stays open (§5) and an `attached` frame on it clears the banner — that is
+  how a restart from another client reaches this one.
+- While a session is stopped (`exit`, or a close of 4000/4404), keep asking to
+  attach every 3 s, flat rather than backing off: the session can come back
+  under the same id at any moment and this client must rejoin whether or not
+  the news reaches it any other way. The banner stays up across those attempts
+  — the socket opening proves nothing, only an `attached` frame does.
 - Focus: the terminal takes keyboard focus when a session becomes active —
   which is on mount, since the terminal component is keyed on the route id
   and a session switch remounts it. Pointer devices only (`hover: hover and

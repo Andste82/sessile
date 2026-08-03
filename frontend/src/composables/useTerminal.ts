@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { applyUnicodeVersion } from '@/utils/unicode'
 import { loadSymbolFont, symbolFontFamily } from '@/utils/fonts'
+import { planReconnect, type ConnStatus } from '@/utils/reconnect'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
 import { isCompositionArtifact, isImeKey, shouldFlushIme } from '@/utils/ime'
 import {
@@ -23,7 +24,9 @@ import {
   type SpecialKey,
 } from '@/utils/keys'
 
-export type ConnStatus = 'connecting' | 'connected' | 'exited' | 'disconnected'
+// Re-exported so the components that render a connection state keep importing
+// it from the composable that owns one.
+export type { ConnStatus }
 
 // Monospace stack first — xterm measures the cell from it, and every font here
 // has the digits it measures with, so the emoji fallbacks appended at the end
@@ -168,16 +171,6 @@ export function useTerminal() {
   let sessionId = ''
   let reconnectAttempts = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  const backoffSteps = [1000, 2000, 4000, 8000, 15000]
-
-  // WS close codes that mean the session is gone, not the connection (§5):
-  // 4404 when attaching to a missing or stopped session (e.g. after a backend
-  // restart), 4000 when one was deleted under us. Retrying either only produces
-  // a 4404 one backoff step later. A shell that merely exits no longer closes
-  // the connection — the session can come back under the same id, and this is
-  // the connection the server says so on.
-  const closeSessionEnded = 4000
-  const closeSessionUnavailable = 4404
 
   // Awaits the symbol font before building the terminal. xterm measures each
   // character once and caches the width it works letter-spacing out from, so a
@@ -637,13 +630,22 @@ export function useTerminal() {
 
   function openSocket() {
     if (disposed) return
-    if (status.value !== 'disconnected') status.value = 'connecting'
+    // Neither a reconnect nor a probe of a stopped session announces itself:
+    // "connecting" over a reconnect would replace the banner the user is
+    // reading, and a probe has nothing to announce until it succeeds.
+    if (status.value !== 'disconnected' && status.value !== 'exited') {
+      status.value = 'connecting'
+    }
     ws = new WebSocket(sessionWsURL(sessionId))
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
-      status.value = 'connected'
       reconnectAttempts = 0
+      // The socket opening proves nothing while the session is stopped: the
+      // server accepts the upgrade and then closes it with 4404. Only the
+      // attached frame says we are on a live session — handleControl acts on
+      // that — so a probe leaves "session ended" up until it arrives.
+      if (status.value !== 'exited') status.value = 'connected'
       // Push our current geometry so the PTY matches the viewport.
       sendResize()
     }
@@ -661,19 +663,19 @@ export function useTerminal() {
     }
   }
 
-  // scheduleReconnect retries with backoff unless the session ended, the server
-  // reported it gone (4000/4404), or the component was disposed.
+  // scheduleReconnect applies the policy in utils/reconnect.ts: backoff for a
+  // connection that dropped under a live session, a slow flat probe for one the
+  // server says is gone. A probe costs one refused upgrade every few seconds
+  // against a session nobody has restarted — the same order as the list poll
+  // already running beside it.
   function scheduleReconnect(code?: number) {
     ws = null
-    if (disposed || status.value === 'exited') return
-    if (code === closeSessionEnded || code === closeSessionUnavailable) {
-      status.value = 'exited'
-      return
-    }
-    status.value = 'disconnected'
-    const delay = backoffSteps[Math.min(reconnectAttempts, backoffSteps.length - 1)]
-    reconnectAttempts++
-    reconnectTimer = setTimeout(openSocket, delay)
+    if (disposed) return
+
+    const plan = planReconnect(status.value, code, reconnectAttempts)
+    status.value = plan.status
+    if (plan.status === 'disconnected') reconnectAttempts++
+    reconnectTimer = setTimeout(openSocket, plan.delayMs)
   }
 
   function handleControl(data: string) {
