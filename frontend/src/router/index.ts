@@ -26,7 +26,6 @@ export const router = createRouter({
   routes,
 })
 
-router.afterEach((to) => {
-  const title = (to.meta.title as string | undefined) ?? ''
-  document.title = title ? `sessile — ${title}` : 'sessile'
-})
+// The window title is not set here: on the terminal route it also depends on
+// the active session's name, which arrives after navigation. useDocumentTitle
+// (installed in App.vue) watches both.

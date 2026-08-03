@@ -44,6 +44,7 @@ async function loadSession(sessionId: string) {
   if (session.value) return
   try {
     session.value = await api.getSession(sessionId)
+    store.upsertSession(session.value)
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e)
   }
