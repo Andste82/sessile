@@ -3,6 +3,7 @@ package ws_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -171,6 +172,66 @@ func TestAttachStoppedSessionRejected(t *testing.T) {
 	}
 	if ce.Code != 4404 {
 		t.Fatalf("close code = %d, want 4404", ce.Code)
+	}
+}
+
+// TestExitFrameDeliveredBeforeClose is the end-to-end shape of a user typing
+// `exit`: the attached client gets the {"type":"exit"} control frame, then the
+// 4000 close (§5) — the pair the frontend needs to show "session ended" instead
+// of reconnecting. The invariant that makes the frame survive the close is
+// pinned deterministically in TestWritePumpFlushesQueuedFramesBeforeClose; this
+// test proves the two ends are wired to it.
+func TestExitFrameDeliveredBeforeClose(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	root := t.TempDir()
+	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	ts := httptest.NewServer(srv.Router(nil))
+	defer ts.Close()
+
+	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`)
+	c := dialWS(t, "ws"+strings.TrimPrefix(ts.URL, "http")+"/ws/sessions/"+id)
+	defer c.Close()
+	assertAttached(t, c, id)
+	writeInput(t, c, "exit\n")
+
+	sawExit, code := readUntilClose(t, c, 5*time.Second)
+	if !sawExit {
+		t.Fatalf("connection closed with code %d and no exit control frame", code)
+	}
+	if code != 4000 {
+		t.Errorf("close code = %d, want 4000", code)
+	}
+}
+
+// readUntilClose drains the connection until the server closes it, reporting
+// whether an exit control frame arrived first and the close code that ended it.
+func readUntilClose(t *testing.T, c *websocket.Conn, timeout time.Duration) (bool, int) {
+	t.Helper()
+	sawExit := false
+	_ = c.SetReadDeadline(time.Now().Add(timeout))
+	for {
+		mt, data, err := c.ReadMessage()
+		if err != nil {
+			var ce *websocket.CloseError
+			if !errors.As(err, &ce) {
+				t.Fatalf("read: %v", err)
+			}
+			return sawExit, ce.Code
+		}
+		if mt != websocket.TextMessage {
+			continue
+		}
+		var msg struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &msg); err == nil && msg.Type == "exit" {
+			sawExit = true
+		}
 	}
 }
 
