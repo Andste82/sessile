@@ -50,7 +50,8 @@ Do **not** add GORM, sqlc, zap, or viper.
 - `tailwindcss` (v4, via `@tailwindcss/vite` plugin)
 - `@headlessui/vue`, `@heroicons/vue`
 - `@vueuse/core`
-- Terminal: `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`
+- Terminal: `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`,
+  `@xterm/addon-unicode11`
   (note: the packages are scoped `@xterm/*`; the old unscoped `xterm` packages are deprecated)
 
 Dev mode: Vite dev server proxies `/api` and `/ws` to the Go backend (see §10).
@@ -315,6 +316,15 @@ frontend/src/
   and a session switch remounts it. Pointer devices only (`hover: hover and
   pointer: fine`): on a touchscreen, focusing opens the virtual keyboard, and
   it must not spring up on every session switch.
+- Character width: `@xterm/addon-unicode11` is loaded and
+  `unicode.activeVersion` set to `'11'` (which needs `allowProposedApi`).
+  xterm's built-in table is Unicode 6 and gives width 1 to everything above
+  U+FFFF outside CJK planes 2–3, so emoji were allotted one cell, drew two,
+  and the following character overwrote the right half. Unicode 11 is also
+  what the programs in the PTY assume — glibc's `wcwidth` has been Unicode 9+
+  for years — so the two ends agree on the column count. The font stack ends
+  in the platform emoji faces for the same reason: a correct cell count still
+  clips if the glyph is drawn from a proportional fallback.
 - IME / predictive keyboards: xterm's three composition paths (`_inputEvent`,
   `CompositionHelper.keydown` textarea diffing, `_finalizeComposition`) all
   leak intermediate states on mobile keyboards, so `useTerminal` owns the
