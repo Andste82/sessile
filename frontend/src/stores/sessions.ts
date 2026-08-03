@@ -25,8 +25,17 @@ export const useSessionsStore = defineStore('sessions', () => {
     () => (id: string) => sessions.value.find((s) => s.id === id) ?? null,
   )
 
+  // Records the failure instead of rejecting, like the session fetches do. Two
+  // of the three callers fire this without awaiting, so a rejection here went
+  // nowhere: the shell list stayed empty and the New session dialog offered
+  // nothing, with no indication why.
   async function fetchConfig() {
-    config.value = await api.config()
+    try {
+      config.value = await api.config()
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e)
+    }
   }
 
   async function fetchSessions() {

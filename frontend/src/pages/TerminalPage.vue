@@ -50,8 +50,9 @@ async function loadSession(sessionId: string) {
 }
 
 onMounted(async () => {
-  if (!store.config) store.fetchConfig()
-  if (store.sessions.length === 0) store.fetchSessions()
+  // Deliberately not awaited: the terminal must not wait on either.
+  if (!store.config) void store.fetchConfig()
+  if (store.sessions.length === 0) void store.fetchSessions()
   await loadSession(id.value)
 })
 
