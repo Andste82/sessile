@@ -23,8 +23,15 @@ function onCreated(session: Session) {
   router.push(`/sessions/${session.id}`)
 }
 
+// Deleting can now be refused with a conflict — a session that is mid-restart
+// keeps its row until the new shell is published — so this needs the same
+// reporting as restarting, rather than an unhandled rejection.
 async function onDelete(id: string) {
-  await store.deleteSession(id)
+  try {
+    await store.deleteSession(id)
+  } catch (e) {
+    store.error = e instanceof Error ? e.message : String(e)
+  }
 }
 
 // Restarting from the list opens the session too: the point of the button is to
