@@ -5,8 +5,14 @@ ROOT      ?= $(CURDIR)/sandbox
 VERSION   ?= dev
 LDFLAGS   := -s -w -X github.com/Andste82/sessile/backend/internal/config.Version=$(VERSION)
 
+# Where the SPA is embedded from. backend/web/embed.go has `//go:embed all:dist`,
+# so this directory must always contain an index.html or the backend does not
+# compile — hence the committed placeholder, and hence `clean` restoring it
+# rather than deleting the directory outright.
+EMBED_DIR := backend/web/dist
+
 .PHONY: help dev-backend dev-frontend test test-backend test-frontend build \
-        build-frontend build-backend docker docker-ubuntu clean tidy
+        build-frontend build-backend docker docker-ubuntu clean placeholder tidy
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -29,8 +35,10 @@ test-frontend: ## vitest
 
 build-frontend: ## Build the SPA and copy it into the backend embed dir
 	cd frontend && npm run build
-	rm -rf backend/web/dist
-	cp -r frontend/dist backend/web/dist
+	rm -rf $(EMBED_DIR)
+	cp -r frontend/dist $(EMBED_DIR)
+	@echo "note: $(EMBED_DIR)/index.html now holds the built SPA, not the"
+	@echo "      committed placeholder — run 'make clean' before committing."
 
 build-backend: ## Build the single Go binary (embeds the SPA)
 	cd backend && CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o ../bin/sessile ./cmd/server
@@ -48,5 +56,20 @@ docker-ubuntu: ## Build the ubuntu-based image (glibc, for glibc-linked programs
 tidy: ## go mod tidy
 	cd backend && go mod tidy
 
-clean: ## Remove build artifacts
-	rm -rf bin frontend/dist backend/web/dist
+clean: placeholder ## Remove build artifacts, leaving the tree buildable
+	rm -rf bin frontend/dist
+
+placeholder: ## Reset the embed dir to the committed placeholder
+	rm -rf $(EMBED_DIR)
+	@mkdir -p $(EMBED_DIR)
+	@printf '%s\n' \
+	  '<!doctype html>' \
+	  '<html>' \
+	  '  <head>' \
+	  '    <meta charset="utf-8" />' \
+	  '    <title>sessile</title>' \
+	  '  </head>' \
+	  '  <body>' \
+	  '    <p>Frontend not built. Run <code>make build</code> to embed the SPA.</p>' \
+	  '  </body>' \
+	  '</html>' > $(EMBED_DIR)/index.html
