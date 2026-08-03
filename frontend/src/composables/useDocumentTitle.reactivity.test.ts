@@ -16,7 +16,7 @@ vi.mock('vue-router', () => ({ useRoute: () => route }))
 // The test environment has no DOM; the composable only ever writes one field.
 ;(globalThis as { document?: unknown }).document = { title: '' }
 
-const { useDocumentTitle } = await import('./useDocumentTitle')
+const { useDocumentTitle, setActiveSessionName } = await import('./useDocumentTitle')
 const { useSessionsStore } = await import('@/stores/sessions')
 
 function session(over: Partial<Session> = {}): Session {
@@ -46,7 +46,73 @@ describe('useDocumentTitle in an app', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     navigate('dashboard', undefined, 'Sessions')
+    setActiveSessionName(null)
     document.title = ''
+  })
+
+  // The terminal page holds the session whether it came from the list or from
+  // fetching the id directly, so the title must not need the list at all. A
+  // list that has not been polled yet — or whose request failed — used to leave
+  // every terminal called "Sessile — Terminal".
+  it('names the session from the page even with an empty list', async () => {
+    const store = useSessionsStore()
+    const scope = effectScope()
+    scope.run(() => useDocumentTitle())
+
+    navigate('terminal', 'a', 'Terminal')
+    setActiveSessionName('build-server')
+    await nextTick()
+
+    expect(store.sessions).toHaveLength(0)
+    expect(document.title).toBe('Sessile • build-server')
+
+    scope.stop()
+  })
+
+  it('takes the page over the list when they disagree', async () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a', name: 'stale' })]
+    const scope = effectScope()
+    scope.run(() => useDocumentTitle())
+
+    navigate('terminal', 'a', 'Terminal')
+    setActiveSessionName('fresh')
+    await nextTick()
+    expect(document.title).toBe('Sessile • fresh')
+
+    scope.stop()
+  })
+
+  it('falls back to the list when the page has nothing yet', async () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' })]
+    const scope = effectScope()
+    scope.run(() => useDocumentTitle())
+
+    navigate('terminal', 'a', 'Terminal')
+    await nextTick()
+    expect(document.title).toBe('Sessile • build-server')
+
+    scope.stop()
+  })
+
+  // The page clears its name on the way out; nothing after it should inherit a
+  // session name from a terminal that is no longer on screen.
+  it('drops the page name when the terminal goes away', async () => {
+    const scope = effectScope()
+    scope.run(() => useDocumentTitle())
+
+    navigate('terminal', 'a', 'Terminal')
+    setActiveSessionName('build-server')
+    await nextTick()
+    expect(document.title).toBe('Sessile • build-server')
+
+    setActiveSessionName(null)
+    navigate('settings', undefined, 'Settings')
+    await nextTick()
+    expect(document.title).toBe('Sessile — Settings')
+
+    scope.stop()
   })
 
   it('names the session once the list arrives', async () => {
