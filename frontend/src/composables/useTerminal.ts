@@ -80,13 +80,12 @@ export function useTerminal() {
   const encoder = new TextEncoder()
   let disposed = false
 
-  // Touch scrolling (§ mobile): xterm appends .xterm-screen after
-  // .xterm-viewport, so the screen layer sits on top and the viewport never
-  // sees the touch — the backlog cannot scroll natively. We drive it ourselves
-  // from a one-finger drag and preventDefault() every move, which is what keeps
-  // browser gestures (pull-to-refresh, back-swipe, overscroll bounce) from
-  // firing mid-scroll. That requires non-passive listeners; the matching
-  // `touch-action: none` lives in style.css.
+  // Touch scrolling (§ mobile): we drive the backlog ourselves from a one-finger
+  // drag and preventDefault() every move, which is what keeps browser gestures
+  // (pull-to-refresh, back-swipe, overscroll bounce) from firing mid-scroll, and
+  // what buys the flick momentum below. That requires non-passive listeners; the
+  // matching `touch-action: none` lives in style.css. xterm scrolls on touch
+  // too, and the two must not both run — see the listeners in open().
   // IME state (§ mobile, issue #22): xterm has three ways of turning keyboard
   // composition into terminal input and all three are wrong for predictive
   // keyboards. `_inputEvent` forwards any `insertText` without asking whether a
@@ -216,9 +215,27 @@ export function useTerminal() {
     observer.observe(el)
 
     hostEl = el
+    // Capture, and stopped there (issue #64): xterm binds touch scrolling of its
+    // own to the .xterm element below us, and its cancel() does not stop
+    // propagation, so both scrollers ran on every move. They settle on different
+    // clocks — ours moves ydisp synchronously, xterm's moves the viewport's
+    // scrollTop and applies a rounded line delta from the scroll event the
+    // browser dispatches later, while xterm's rAF sync writes scrollTop back
+    // from ydisp in between. Whichever landed first decided whether a swipe
+    // scrolled once, twice, or (when the late delta cancelled ours) not at all.
+    // Taking the gesture in the capture phase leaves exactly one scroller.
+    //
+    // Every touchstart and touchmove is withheld, not only the ones we act on:
+    // xterm tracks the finger from one event to the next, so letting a single
+    // move through after swallowing its predecessors would hand it a stale
+    // position and a jump the size of the whole drag. Only touchmove is
+    // cancelled, so a tap still reaches xterm as the click that focuses the
+    // terminal and drives selection.
+    //
     // Non-passive: onTouchMove must be able to cancel the browser's own gesture.
-    el.addEventListener('touchstart', onTouchStart, { passive: false })
-    el.addEventListener('touchmove', onTouchMove, { passive: false })
+    const ownGesture = { passive: false, capture: true }
+    el.addEventListener('touchstart', onTouchStart, ownGesture)
+    el.addEventListener('touchmove', onTouchMove, ownGesture)
     el.addEventListener('touchend', onTouchEnd, { passive: true })
     el.addEventListener('touchcancel', onTouchCancel, { passive: true })
 
@@ -580,6 +597,7 @@ export function useTerminal() {
   }
 
   function onTouchStart(e: TouchEvent) {
+    e.stopPropagation()
     stopMomentum()
     touching = e.touches.length === 1
     if (!touching) return
@@ -589,6 +607,7 @@ export function useTerminal() {
   }
 
   function onTouchMove(e: TouchEvent) {
+    e.stopPropagation()
     if (!touching || e.touches.length !== 1) return
     // Own the gesture for the whole drag, in either direction and at either end
     // of the scrollback — otherwise the leftover movement becomes a browser
@@ -729,8 +748,9 @@ export function useTerminal() {
     observer?.disconnect()
     observer = null
     if (hostEl) {
-      hostEl.removeEventListener('touchstart', onTouchStart)
-      hostEl.removeEventListener('touchmove', onTouchMove)
+      // Capture flag included: it is part of what identifies the listener.
+      hostEl.removeEventListener('touchstart', onTouchStart, true)
+      hostEl.removeEventListener('touchmove', onTouchMove, true)
       hostEl.removeEventListener('touchend', onTouchEnd)
       hostEl.removeEventListener('touchcancel', onTouchCancel)
       hostEl.removeEventListener('compositionstart', onCompositionStart, true)
