@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import TerminalView from '@/components/TerminalView.vue'
 import TabBar from '@/components/TabBar.vue'
 import { useSessionsStore } from '@/stores/sessions'
 import { api, isAlreadyRunning } from '@/api/client'
-import { setActiveSessionName } from '@/composables/useDocumentTitle'
 import type { Session } from '@/api/types'
 import type { ConnStatus } from '@/composables/useTerminal'
 
@@ -69,13 +68,6 @@ onMounted(async () => {
 
 // Handle navigating directly between tabs (component is reused).
 watch(id, (newId) => loadSession(newId))
-
-// The window title names the session on screen, and this page is what knows
-// which that is — it holds the session whether it came from the list or from
-// fetching the id directly, so the title no longer waits on a list poll to
-// learn the name. Cleared on the way out so no other route inherits it.
-watch(() => session.value?.name ?? null, setActiveSessionName, { immediate: true })
-onUnmounted(() => setActiveSessionName(null))
 
 // The WebSocket is the first thing to learn that this session ended. Push that
 // into the store so the tab and sidebar dots agree with the banner below.

@@ -12,42 +12,24 @@ export const closeSessionUnavailable = 4404
 // Backoff for a connection that dropped with the session still running.
 export const backoffSteps = [1000, 2000, 4000, 8000, 15000]
 
-// How often a client sitting on a stopped session asks whether it is back.
-// Flat rather than backing off, because a restart is not more likely in the
-// first minute than in the tenth and the answer must not take minutes by then.
-export const exitedProbeDelay = 3000
-
-// …but not flat forever. A session that was deleted answers the same way as one
-// that is merely stopped, and a tab left open on one would ask every three
-// seconds for as long as the browser lives. After this many refusals the probe
-// eases off: a restart is then noticed in fifteen seconds instead of three,
-// which is still well inside how long it takes to look at the screen.
-export const exitedProbePatience = 20
-export const exitedProbeSlowDelay = 15000
-
 export interface ReconnectPlan {
-  /** What the UI should say while the next attempt is pending. */
+  /** What the UI should say from here on. */
   status: 'exited' | 'disconnected'
-  /** How long to wait before that attempt. */
-  delayMs: number
+  /** How long to wait before trying again, or null to stop trying. */
+  delayMs: number | null
 }
 
 /**
  * planReconnect decides what to do after a socket closes.
  *
- * A stopped session is not a dead end: it comes back under the same id,
- * restarted from this browser or any other one, and this client has to end up
- * attached to it either way. It is told so over its own socket when it still
- * has one — but a client that arrived after the session stopped never had one
- * to be told over, and any drop in between puts it back in exactly that state.
- * So it keeps asking. Whatever else fails to reach it, the next attach that
- * succeeds takes the "session ended" banner down, because that is what an
- * attached frame means.
- *
- * The status stays "exited" across those attempts. The socket opening proves
- * nothing while the session is stopped — the server accepts the upgrade and
- * then closes it with 4404 — so announcing a connection there would flicker the
- * banner off and back on every few seconds.
+ * A dropped connection under a live session is retried with backoff. A session
+ * the server says is gone is not retried at all: reconnecting would only earn
+ * another 4404, and this client does not need to ask. It is told — the server
+ * hands a stopped session's clients to the shell that replaces it, so an
+ * attached frame arrives on the socket it already has; and the session list is
+ * polled app-wide, so a terminal whose socket did not survive is reconnected by
+ * TerminalPage when the list says the session is running again. Two paths that
+ * already exist and cost nothing extra are enough.
  */
 export function planReconnect(
   current: ConnStatus,
@@ -56,10 +38,7 @@ export function planReconnect(
 ): ReconnectPlan {
   const sessionGone = code === closeSessionEnded || code === closeSessionUnavailable
   if (sessionGone || current === 'exited') {
-    return {
-      status: 'exited',
-      delayMs: attempt < exitedProbePatience ? exitedProbeDelay : exitedProbeSlowDelay,
-    }
+    return { status: 'exited', delayMs: null }
   }
   return {
     status: 'disconnected',

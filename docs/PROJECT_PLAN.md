@@ -330,11 +330,11 @@ frontend/src/
 - On `exit` control frame: banner "Session ended", disable input. The socket
   stays open (§5) and an `attached` frame on it clears the banner — that is
   how a restart from another client reaches this one.
-- While a session is stopped (`exit`, or a close of 4000/4404), keep asking to
-  attach every 3 s, flat rather than backing off: the session can come back
-  under the same id at any moment and this client must rejoin whether or not
-  the news reaches it any other way. The banner stays up across those attempts
-  — the socket opening proves nothing, only an `attached` frame does.
+- A close of 4000/4404 is not retried: another attempt only earns another
+  4404. A session that comes back reaches this client on the two paths that
+  already exist — the `attached` frame above for a socket that survived, and
+  the polled session list, which the terminal page watches so a terminal whose
+  socket did not survive reconnects when the list says the session runs again.
 - Focus: the terminal takes keyboard focus when a session becomes active —
   which is on mount, since the terminal component is keyed on the route id
   and a session switch remounts it. Pointer devices only (`hover: hover and
