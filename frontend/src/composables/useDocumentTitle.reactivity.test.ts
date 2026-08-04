@@ -57,12 +57,12 @@ describe('useDocumentTitle in an app', () => {
     // Opening a terminal before the list has loaded: the name is not known yet.
     navigate('terminal', 'a', 'Terminal')
     await nextTick()
-    expect(document.title).toBe('Sessile — Terminal')
+    expect(document.title).toBe('sessile — terminal')
 
     // …and the poll that fills the list has to correct it, with no navigation.
     store.sessions = [session({ id: 'a' })]
     await nextTick()
-    expect(document.title).toBe('Sessile • build-server')
+    expect(document.title).toBe('sessile • build-server')
 
     scope.stop()
   })
@@ -75,11 +75,11 @@ describe('useDocumentTitle in an app', () => {
 
     navigate('terminal', 'a', 'Terminal')
     await nextTick()
-    expect(document.title).toBe('Sessile • build-server')
+    expect(document.title).toBe('sessile • build-server')
 
     navigate('terminal', 'b', 'Terminal')
     await nextTick()
-    expect(document.title).toBe('Sessile • logs')
+    expect(document.title).toBe('sessile • logs')
 
     scope.stop()
   })
@@ -92,11 +92,11 @@ describe('useDocumentTitle in an app', () => {
 
     navigate('terminal', 'a', 'Terminal')
     await nextTick()
-    expect(document.title).toBe('Sessile • build-server')
+    expect(document.title).toBe('sessile • build-server')
 
     store.sessions = [session({ id: 'a', name: 'renamed' })]
     await nextTick()
-    expect(document.title).toBe('Sessile • renamed')
+    expect(document.title).toBe('sessile • renamed')
 
     scope.stop()
   })
@@ -109,11 +109,11 @@ describe('useDocumentTitle in an app', () => {
 
     navigate('terminal', 'a', 'Terminal')
     await nextTick()
-    expect(document.title).toBe('Sessile • build-server')
+    expect(document.title).toBe('sessile • build-server')
 
     navigate('dashboard', undefined, 'Sessions')
     await nextTick()
-    expect(document.title).toBe('Sessile — Sessions')
+    expect(document.title).toBe('sessile — sessions')
 
     scope.stop()
   })

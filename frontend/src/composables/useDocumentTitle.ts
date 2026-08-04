@@ -2,18 +2,24 @@ import { watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useSessionsStore } from '@/stores/sessions'
 
-const BRAND = 'Sessile'
+// Lower case, like the wordmark in the sidebar and the binary it ships as.
+const BRAND = 'sessile'
 
 // documentTitleFor builds the window title. A session name wins over the route
-// title: with several tabs open, "Sessile — Terminal" everywhere told the user
+// title: with several tabs open, "sessile — terminal" everywhere told the user
 // nothing about which terminal they were looking at.
+//
+// The route's own title is lower-cased here rather than at the route, which
+// keeps the routes readable and the styling of the title in one place. The
+// session name is left exactly as the user typed it — it is their text, not
+// ours to restyle.
 export function documentTitleFor(
   routeTitle: string | null | undefined,
   sessionName: string | null | undefined,
 ): string {
   const name = sessionName?.trim()
   if (name) return `${BRAND} • ${name}`
-  return routeTitle ? `${BRAND} — ${routeTitle}` : BRAND
+  return routeTitle ? `${BRAND} — ${routeTitle.toLowerCase()}` : BRAND
 }
 
 // activeName answers what the session on the terminal route is called.
