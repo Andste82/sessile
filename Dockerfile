@@ -59,7 +59,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 # tini reaps zombies (shells are grandchildren of PID 1).
 ENTRYPOINT ["/usr/bin/tini", "--", "sessile"]
-CMD ["--root=/workspace", "--db=/config/sessions.db", "--shells=bash"]
+CMD ["--root=/workspace", "--data-dir=/config", "--shells=bash"]
 
 # --- Stage 3b: alpine runtime (default) ------------------------------------
 # alpine, not scratch: sessions spawn real shells, so bash must be present.
@@ -79,4 +79,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 # tini reaps zombies (shells are grandchildren of PID 1).
 ENTRYPOINT ["/sbin/tini", "--", "sessile"]
-CMD ["--root=/workspace", "--db=/config/sessions.db", "--shells=bash"]
+CMD ["--root=/workspace", "--data-dir=/config", "--shells=bash"]

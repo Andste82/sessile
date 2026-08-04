@@ -414,7 +414,7 @@ session worth reopening:
   history/<session-id>          # HISTFILE for bash/zsh sessions
 ```
 
-The directory is `filepath.Dir(--db)`, resolved to an absolute path, and is
+The directory is `--data-dir`, resolved to an absolute path, and is
 deliberately **outside `--root`**: a shell that could read or rewrite its own
 history file inside the sandbox would make the restored history worthless, and
 a relative path would resolve against the *session's* directory once it reaches
@@ -461,7 +461,7 @@ explicit: sessions are never respawned automatically on startup.
 |---|---|---|
 | `--root` | `TSM_ROOT` | required |
 | `--addr` | `TSM_ADDR` | `:8080` |
-| `--db` | `TSM_DB` | `<root>/.tsm/sessions.db` → in Docker: `/config/sessions.db` |
+| `--data-dir` | `TSM_DATA_DIR` | `<root>/.tsm` → in Docker: `/config`. Holds `sessions.db`, `scrollback/`, `history/` |
 | `--shells` | `TSM_SHELLS` | `bash,zsh,fish` (allowlist) |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` (bytes) |
 | `--session-retention` | `TSM_SESSION_RETENTION` | `0` (keep forever); Go duration, e.g. `720h` |
@@ -498,7 +498,7 @@ explicit: sessions are never respawned automatically on startup.
    since sessions need real shells) — copy single binary.
    `EXPOSE 8080`; volumes `/config`, `/workspace`;
    `HEALTHCHECK` hitting `/api/health`;
-   default cmd: `server --root=/workspace --db=/config/sessions.db`.
+   default cmd: `server --root=/workspace --data-dir=/config`.
 
 ---
 

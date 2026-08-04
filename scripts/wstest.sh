@@ -14,7 +14,7 @@ command -v go >/dev/null || { echo "go not found on PATH"; exit 1; }
 
 ADDR="127.0.0.1:8099"
 ROOT="$(mktemp -d)"
-DB="$(mktemp -u).db"
+DATA_DIR="$(mktemp -d)"
 SHELL_NAME="sh"
 mkdir -p "$ROOT/project-a"
 
@@ -23,10 +23,10 @@ echo "== building server + wsclient =="
 ( cd backend && go build -o /tmp/sessile-wsclient ./cmd/wsclient )
 
 echo "== starting server (root=$ROOT) =="
-/tmp/sessile-wstest-server --root="$ROOT" --db="$DB" --addr="$ADDR" \
+/tmp/sessile-wstest-server --root="$ROOT" --data-dir="$DATA_DIR" --addr="$ADDR" \
   --shells="$SHELL_NAME,bash" --dev >/tmp/sessile-wstest.log 2>&1 &
 SRV=$!
-cleanup() { kill "$SRV" 2>/dev/null || true; rm -rf "$ROOT" "$DB"; }
+cleanup() { kill "$SRV" 2>/dev/null || true; rm -rf "$ROOT" "$DATA_DIR"; }
 trap cleanup EXIT
 
 # Wait for health.

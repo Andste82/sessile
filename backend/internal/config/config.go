@@ -32,8 +32,8 @@ var ErrVersionRequested = errors.New("version requested")
 type Config struct {
 	Root       string   // sandbox root; all sessions run inside this tree
 	Addr       string   // listen address, e.g. ":8080"
-	DB         string   // path to the SQLite database file
-	DataDir    string   // directory holding the DB plus scrollback/history state
+	DataDir    string   // directory holding every piece of server state
+	DB         string   // SQLite database file, always <DataDir>/sessions.db
 	Shells     []string // shell allowlist
 	BufferSize int      // per-session ring buffer size in bytes
 	// SessionRetention discards stopped sessions idle for longer than this on
@@ -44,6 +44,27 @@ type Config struct {
 	AllowOrigin      string // extra allowed WS origin (e.g. http://localhost:5173)
 }
 
+// errRemovedDB explains where --db went. The database is no longer separately
+// addressable: it is one of the things inside --data-dir.
+var errRemovedDB = errors.New(
+	"--db was removed: use --data-dir for the directory holding the database, " +
+		"scrollback and shell history (the database is always <data-dir>/sessions.db)")
+
+// removedDBFlag reports whether args mention the removed --db in any of the
+// spellings Go's flag package would have accepted.
+func removedDBFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false // everything after this is not a flag
+		}
+		name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if strings.HasPrefix(a, "-") && name == "db" {
+			return true
+		}
+	}
+	return false
+}
+
 // Parse builds a Config from the given argument list (excluding the program
 // name). Flags fall back to environment variables, then to defaults.
 func Parse(args []string) (*Config, error) {
@@ -52,7 +73,8 @@ func Parse(args []string) (*Config, error) {
 
 	root := fs.String("root", env("TSM_ROOT", ""), "sandbox root directory (required)")
 	addr := fs.String("addr", env("TSM_ADDR", ":8080"), "listen address")
-	db := fs.String("db", env("TSM_DB", ""), "SQLite database path (default <root>/.tsm/sessions.db)")
+	dataDir := fs.String("data-dir", env("TSM_DATA_DIR", ""),
+		"directory for server state: the database, scrollback snapshots and shell history (default <root>/.tsm)")
 	shells := fs.String("shells", env("TSM_SHELLS", "bash,zsh,fish"), "comma-separated shell allowlist")
 	bufferSize := fs.String("buffer-size", env("TSM_BUFFER_SIZE", "524288"), "per-session ring buffer size in bytes")
 	sessionRetention := fs.String("session-retention", env("TSM_SESSION_RETENTION", "0"),
@@ -61,6 +83,14 @@ func Parse(args []string) (*Config, error) {
 	dev := fs.Bool("dev", envBool("TSM_DEV", false), "dev mode (relaxes WS origin check)")
 	allowOrigin := fs.String("allow-origin", env("TSM_ALLOW_ORIGIN", ""), "additional allowed WebSocket origin")
 	showVersion := fs.Bool("version", false, "print version and exit")
+
+	// --db named a file and then silently claimed the directory around it for
+	// scrollback/ and history/. --data-dir names that directory instead. The
+	// flag package would answer the old spelling with "flag provided but not
+	// defined", which tells an operator it is gone but not what replaced it.
+	if removedDBFlag(args) {
+		return nil, errRemovedDB
+	}
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -83,23 +113,28 @@ func Parse(args []string) (*Config, error) {
 		return nil, fmt.Errorf("root %q is not an existing directory", absRoot)
 	}
 
-	dbPath := *db
-	if dbPath == "" {
-		dbPath = filepath.Join(absRoot, ".tsm", "sessions.db")
+	// Everything the server keeps lives under one directory it owns: the
+	// database, the scrollback snapshots and the per-session shell history. It
+	// is named directly rather than inferred from a file inside it, which is
+	// what --db used to do — pointing that at /var/lib/sessions.db quietly made
+	// /var/lib the state directory and put history/ and scrollback/ in it.
+	//
+	// Deliberately outside --root: a shell that could read or rewrite its own
+	// history file inside the sandbox would make the restored history
+	// worthless.
+	dir := *dataDir
+	if dir == "" {
+		dir = filepath.Join(absRoot, ".tsm")
 	}
-	// A relative --db is resolved here, against the server's working directory.
-	// It cannot be left relative: the data directory below ends up in a shell's
+	// A relative --data-dir is resolved here, against the server's working
+	// directory. It cannot be left relative: this path ends up in a shell's
 	// environment as HISTFILE, and that shell runs in the session's directory,
 	// where a relative path would point somewhere else entirely.
-	dbPath, err = filepath.Abs(dbPath)
+	dir, err = filepath.Abs(dir)
 	if err != nil {
-		return nil, fmt.Errorf("resolve db path: %w", err)
+		return nil, fmt.Errorf("resolve data-dir: %w", err)
 	}
-	// Scrollback snapshots and per-session shell history live beside the
-	// database, deliberately outside --root: they are server state, and a shell
-	// that could read or rewrite its own history file inside the sandbox would
-	// make the restored history worthless.
-	dataDir := filepath.Dir(dbPath)
+	dbPath := filepath.Join(dir, "sessions.db")
 
 	bufSize, err := strconv.Atoi(*bufferSize)
 	if err != nil || bufSize <= 0 {
@@ -133,8 +168,8 @@ func Parse(args []string) (*Config, error) {
 	return &Config{
 		Root:       absRoot,
 		Addr:       *addr,
+		DataDir:    dir,
 		DB:         dbPath,
-		DataDir:    dataDir,
 		Shells:     shellList,
 		BufferSize: bufSize,
 
