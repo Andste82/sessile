@@ -29,6 +29,26 @@ import {
 // it from the composable that owns one.
 export type { ConnStatus }
 
+/**
+ * ScrollDebug is what the ?debug=scroll overlay shows: the measurements a touch
+ * scroll depends on, and what the last gesture actually achieved. `unasked` is
+ * the number the bug hunt turns on — buffer scrolls this composable did not
+ * ask for, which is how xterm undoing a gesture would show up.
+ */
+export type ScrollDebug = {
+  rows: number
+  screenH: number
+  pitch: number
+  ydisp: number
+  ybase: number
+  moves: number
+  dragPx: number
+  linesAsked: number
+  linesMoved: number
+  unasked: number
+  bytes: number
+}
+
 // Monospace stack first — xterm measures the cell from it, and every font here
 // has the digits it measures with, so the emoji fallbacks appended at the end
 // cannot change the cell size. Naming them matters anyway: without an emoji
@@ -135,6 +155,18 @@ export function useTerminal() {
   // A finger that rested before lifting is a drag, not a flick.
   const flickMaxIdleMs = 100
 
+  // Scroll diagnostics (issue #64), off unless the page was opened with
+  // ?debug=scroll. What is left of that bug appears rarely, cannot be
+  // reproduced on demand, and happens on a phone with no console attached — so
+  // the terminal has to be able to describe its own state while it misbehaves.
+  const debug = ref<ScrollDebug | null>(null)
+  const debugging =
+    typeof location !== 'undefined' &&
+    new URLSearchParams(location.search).get('debug') === 'scroll'
+  // What the last scrollLines() asked for, so onScroll can tell our own scroll
+  // apart from one nobody here asked for.
+  let expectedY: number | null = null
+
   // Armed modifiers for the on-screen key bar (issue #10). Sticky until the
   // next key is sent, then cleared — so "tap Ctrl, then C" yields Ctrl-C.
   const mods = ref<Mods>({ ...noMods })
@@ -238,6 +270,30 @@ export function useTerminal() {
     el.addEventListener('touchmove', onTouchMove, ownGesture)
     el.addEventListener('touchend', onTouchEnd, { passive: true })
     el.addEventListener('touchcancel', onTouchCancel, { passive: true })
+
+    // The other half of "one scroller at a time" (issue #64). Blocking xterm's
+    // touch handling is not enough on its own: xterm also writes
+    // .xterm-viewport's scrollTop from ydisp on an animation frame, and reads
+    // it back on the scroll event the browser dispatches afterwards, turning it
+    // into a line delta of its own. It may skip exactly one such event, so the
+    // round trip only balances while writes and events alternate. A busy frame
+    // or a write landing mid-gesture breaks that, and the delta then computed
+    // from a scrollTop we have since scrolled past drags the buffer back where
+    // it came from — the leftover "one line per swipe, then fine again".
+    // While the finger or its momentum owns the terminal we are the only thing
+    // that may move the buffer, so the event never reaches xterm. Capture
+    // reaches it despite scroll not bubbling: the capture phase walks the
+    // ancestors of the target either way.
+    el.addEventListener('scroll', onViewportScroll, true)
+
+    if (debugging) {
+      t.onScroll((y) => {
+        if (y === expectedY) return // ours, already accounted for
+        if (debug.value && (touching || momentumFrame !== null))
+          debug.value = { ...debug.value, unasked: debug.value.unasked + 1 }
+      })
+      debug.value = emptyDebug()
+    }
 
     // Capture phase on the host: xterm binds its own composition and input
     // handlers directly to the helper textarea, and a capture listener on an
@@ -531,6 +587,32 @@ export function useTerminal() {
     )
   }
 
+  // onViewportScroll withholds a viewport scroll event from xterm for as long
+  // as the gesture owns the terminal — see the listener registration in open().
+  // Outside a gesture the event is xterm's own business: it is what turns a
+  // dragged scrollbar into a buffer scroll on a desktop.
+  function onViewportScroll(e: Event) {
+    if (touching || momentumFrame !== null) e.stopPropagation()
+  }
+
+  function emptyDebug(): ScrollDebug {
+    const t = term.value
+    const screen = t?.element?.querySelector<HTMLElement>('.xterm-screen')
+    return {
+      rows: t?.rows ?? 0,
+      screenH: screen?.clientHeight ?? 0,
+      pitch: Math.round(rowHeight() * 100) / 100,
+      ydisp: t?.buffer.active.viewportY ?? 0,
+      ybase: t?.buffer.active.baseY ?? 0,
+      moves: 0,
+      dragPx: 0,
+      linesAsked: 0,
+      linesMoved: 0,
+      unasked: 0,
+      bytes: 0,
+    }
+  }
+
   // rowHeight measures the rendered row pitch. .xterm-screen is sized to
   // exactly rows × rowHeight, unlike the host element, which keeps the few
   // leftover pixels FitAddon could not fill — using the host would make the
@@ -557,8 +639,20 @@ export function useTerminal() {
     if (lines === 0) return true
     touchAccum -= lines * pitch
     const before = t.buffer.active.viewportY
+    expectedY = Math.min(Math.max(before + lines, 0), t.buffer.active.baseY)
     t.scrollLines(lines)
-    if (t.buffer.active.viewportY !== before) return true
+    const after = t.buffer.active.viewportY
+    expectedY = null
+    if (debug.value)
+      debug.value = {
+        ...debug.value,
+        pitch: Math.round(pitch * 100) / 100,
+        ydisp: after,
+        ybase: t.buffer.active.baseY,
+        linesAsked: debug.value.linesAsked + lines,
+        linesMoved: debug.value.linesMoved + (after - before),
+      }
+    if (after !== before) return true
     // At an edge: drop the remainder so reversing direction responds instantly.
     touchAccum = 0
     return false
@@ -604,6 +698,9 @@ export function useTerminal() {
     touchLastY = e.touches[0].clientY
     touchAccum = 0
     lastMoveAt = e.timeStamp
+    // Each gesture is measured on its own: the overlay describes the swipe that
+    // just went wrong, not an average over the session.
+    if (debugging) debug.value = emptyDebug()
   }
 
   function onTouchMove(e: TouchEvent) {
@@ -621,6 +718,12 @@ export function useTerminal() {
     // Weighted toward the latest sample so the flick matches the finger's
     // speed at release, but smoothed enough to ignore jittery events.
     if (dt > 0) velocity = 0.7 * (dy / dt) + 0.3 * velocity
+    if (debug.value)
+      debug.value = {
+        ...debug.value,
+        moves: debug.value.moves + 1,
+        dragPx: Math.round(debug.value.dragPx + dy),
+      }
     scrollPixels(dy)
   }
 
@@ -684,7 +787,15 @@ export function useTerminal() {
       if (typeof ev.data === 'string') {
         handleControl(ev.data)
       } else {
-        term.value?.write(new Uint8Array(ev.data as ArrayBuffer))
+        const bytes = new Uint8Array(ev.data as ArrayBuffer)
+        // Counted only while a gesture is in flight: the question the overlay
+        // answers is whether output arriving mid-swipe is what breaks it.
+        if (debug.value && (touching || momentumFrame !== null))
+          debug.value = {
+            ...debug.value,
+            bytes: debug.value.bytes + bytes.length,
+          }
+        term.value?.write(bytes)
       }
     }
     ws.onclose = (ev) => scheduleReconnect(ev.code)
@@ -753,6 +864,7 @@ export function useTerminal() {
       hostEl.removeEventListener('touchmove', onTouchMove, true)
       hostEl.removeEventListener('touchend', onTouchEnd)
       hostEl.removeEventListener('touchcancel', onTouchCancel)
+      hostEl.removeEventListener('scroll', onViewportScroll, true)
       hostEl.removeEventListener('compositionstart', onCompositionStart, true)
       hostEl.removeEventListener('compositionend', onCompositionEnd, true)
       hostEl.removeEventListener('input', gateCompositionInput, true)
@@ -777,6 +889,7 @@ export function useTerminal() {
     status,
     term,
     mods,
+    debug,
     open,
     connect,
     dispose,

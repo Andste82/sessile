@@ -5,14 +5,24 @@ import { useTerminal, type ConnStatus } from '@/composables/useTerminal'
 import { useUiStore } from '@/stores/ui'
 import { hasFinePointer } from '@/utils/device'
 import KeyBar from './KeyBar.vue'
+import ScrollDebug from './ScrollDebug.vue'
 
 const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{ (e: 'status', s: ConnStatus): void }>()
 
 const ui = useUiStore()
 const host = ref<HTMLElement | null>(null)
-const { status, mods, open, connect, dispose, toggleMod, pressSpecial, focus } =
-  useTerminal()
+const {
+  status,
+  mods,
+  debug,
+  open,
+  connect,
+  dispose,
+  toggleMod,
+  pressSpecial,
+  focus,
+} = useTerminal()
 
 watch(status, (s) => emit('status', s))
 
@@ -36,7 +46,10 @@ onBeforeUnmount(() => dispose())
 
 <template>
   <div class="flex h-full w-full flex-col">
-    <div ref="host" class="terminal-host min-h-0 flex-1" />
+    <div class="relative min-h-0 flex-1">
+      <div ref="host" class="terminal-host h-full w-full" />
+      <ScrollDebug v-if="debug" :stats="debug" />
+    </div>
     <KeyBar
       v-if="ui.keyBarOpen"
       :mods="mods"
