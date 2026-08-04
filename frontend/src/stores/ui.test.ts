@@ -8,6 +8,23 @@ function withStorage(storage: unknown) {
   ;(globalThis as { localStorage?: unknown }).localStorage = storage
 }
 
+// Same for window: the store subscribes to `storage` on it, and the test needs
+// to hold on to the handler so it can play the other tab.
+function withWindow() {
+  const handlers: Record<string, (e: unknown) => void> = {}
+  ;(globalThis as { window?: unknown }).window = {
+    addEventListener: (type: string, fn: (e: unknown) => void) => {
+      handlers[type] = fn
+    },
+  }
+  return {
+    // Fires what another tab's write would deliver here.
+    storage(key: string | null, newValue: string | null) {
+      handlers.storage?.({ key, newValue })
+    },
+  }
+}
+
 function fakeStorage(initial: Record<string, string> = {}) {
   const data = { ...initial }
   return {
@@ -25,6 +42,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (globalThis as { localStorage?: unknown }).localStorage
+  delete (globalThis as { window?: unknown }).window
 })
 
 describe('clampFontSize', () => {
@@ -80,6 +98,58 @@ describe('terminal font size', () => {
     expect(ui.terminalFontSize).toBe(maxFontSize)
     ui.setTerminalFontSize(minFontSize - 5)
     expect(ui.terminalFontSize).toBe(minFontSize)
+  })
+
+  // Two tabs on the same session mirror each other, so one of them rendering at
+  // the old size until it is reloaded reads as the setting not having taken.
+  it('follows a size another tab wrote', () => {
+    const win = withWindow()
+    withStorage(fakeStorage())
+    const ui = useUiStore()
+
+    win.storage('sessile.terminalFontSize', '24')
+
+    expect(ui.terminalFontSize).toBe(24)
+  })
+
+  it('ignores another key', () => {
+    const win = withWindow()
+    withStorage(fakeStorage())
+    const ui = useUiStore()
+
+    win.storage('sessile.somethingElse', '24')
+
+    expect(ui.terminalFontSize).toBe(defaultFontSize)
+  })
+
+  it.each([
+    ['a cleared preference', 'sessile.terminalFontSize', null],
+    ['a cleared storage, which reports no key at all', null, null],
+  ])('falls back to the default on %s', (_label, key, newValue) => {
+    const win = withWindow()
+    withStorage(fakeStorage({ 'sessile.terminalFontSize': '24' }))
+    const ui = useUiStore()
+    expect(ui.terminalFontSize).toBe(24)
+
+    win.storage(key, newValue)
+
+    expect(ui.terminalFontSize).toBe(defaultFontSize)
+  })
+
+  // Applying an incoming value writes it straight back through the persisting
+  // watcher. setItem with the value already stored is a no-op that notifies
+  // nobody, so the two tabs cannot bounce it between them — but the write must
+  // at least carry the value that arrived, not the one it replaced.
+  it('writes back exactly what arrived', async () => {
+    const win = withWindow()
+    const storage = fakeStorage({ 'sessile.terminalFontSize': '13' })
+    withStorage(storage)
+    useUiStore()
+
+    win.storage('sessile.terminalFontSize', '24')
+    await Promise.resolve()
+
+    expect(storage.data['sessile.terminalFontSize']).toBe('24')
   })
 
   // A browser with storage blocked throws on access rather than returning null.

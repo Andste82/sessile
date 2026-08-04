@@ -67,5 +67,25 @@ export const useUiStore = defineStore('ui', () => {
     }
   })
 
+  // Two tabs on the same session is a normal way to use this app — they mirror
+  // each other (§5) — so a size set in one of them and not the other reads as
+  // the setting not having taken. `storage` fires in every tab *except* the one
+  // that wrote, which is exactly the set that needs telling.
+  //
+  // Applying it here writes the same string back through the watcher above.
+  // That is a no-op: setItem with the value already stored neither changes the
+  // entry nor notifies anyone, so this cannot bounce between tabs.
+  function onStorage(e: StorageEvent) {
+    // key === null is a clear() — the preference is gone, so fall back — and so
+    // is a removeItem's newValue, which clampFontSize already reads as "no
+    // usable value" and answers with the default.
+    if (e.key !== null && e.key !== fontSizeKey) return
+    terminalFontSize.value = e.key === null ? defaultFontSize : clampFontSize(e.newValue)
+  }
+
+  // Never removed: the store lives exactly as long as the page it listens for.
+  // Guarded because the store is also built in tests, where there is no window.
+  if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
+
   return { keyBarOpen, toggleKeyBar, terminalFontSize, setTerminalFontSize }
 })

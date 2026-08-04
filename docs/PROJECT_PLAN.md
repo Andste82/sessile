@@ -324,7 +324,9 @@ frontend/src/
   size depends on the screen in front of the user, so the same session opened
   on a phone and on a desktop wants two different answers. A change applies to
   open terminals immediately (`term.options.fontSize`, then a fit, so the PTY
-  is told the new column count).
+  is told the new column count), and to the app's other tabs through the
+  `storage` event — tabs mirror a session (§5), so one of them staying at the
+  old size reads as the setting not having taken.
 
 ### Terminal behavior (`useTerminal`)
 - Create `Terminal` with `scrollback: 5000`, load fit + web-links addons.
