@@ -37,6 +37,16 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
 - [ ] Terminal fills the available height on all widths (full-screen on phones,
       above the bottom nav).
 - [ ] Rotating the device / resizing refits xterm and the PTY resizes to match.
+- [ ] A one-finger drag scrolls the backlog with the finger — same distance, same
+      direction, every swipe. Not double speed, not one line, not nothing
+      (issue #64: two scrollers used to race, and the winner varied).
+- [ ] Repeat that drag while the session is producing output (`yes`, or a build):
+      scrolling stays as steady as it is on an idle session.
+- [ ] A flick keeps scrolling and coasts to a stop; a slow drag that pauses
+      before the finger lifts does not.
+- [ ] At the top and bottom of the scrollback the gesture stops there — no
+      pull-to-refresh, no back-swipe, no rubber-band on the page.
+- [ ] A tap still focuses the terminal and opens the keyboard.
 - [ ] "Disconnected — reconnecting…" overlay appears on connection loss and
       clears on reconnect.
 - [ ] "Session ended" banner appears when the shell exits.
