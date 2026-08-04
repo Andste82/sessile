@@ -6,26 +6,29 @@ describe('documentTitleFor', () => {
   // terminal tab was called "Terminal" and told the user nothing about which
   // session it held.
   it('prefers the session name over the route title', () => {
-    expect(documentTitleFor('Terminal', 'build-server')).toBe('Sessile • build-server')
+    expect(documentTitleFor('Terminal', 'build-server')).toBe('sessile • build-server')
   })
 
   it('falls back to the route title when there is no session', () => {
-    expect(documentTitleFor('Sessions', null)).toBe('Sessile — Sessions')
-    expect(documentTitleFor('Terminal', undefined)).toBe('Sessile — Terminal')
+    expect(documentTitleFor('Sessions', null)).toBe('sessile — sessions')
+    expect(documentTitleFor('Terminal', undefined)).toBe('sessile — terminal')
   })
 
   it('falls back to the brand alone with neither', () => {
-    expect(documentTitleFor(null, null)).toBe('Sessile')
-    expect(documentTitleFor('', '')).toBe('Sessile')
+    expect(documentTitleFor(null, null)).toBe('sessile')
+    expect(documentTitleFor('', '')).toBe('sessile')
   })
 
   // A session whose name is only whitespace would otherwise render as
-  // "Sessile • " — worse than the route title it replaced.
+  // "sessile • " — worse than the route title it replaced.
   it('ignores a blank session name', () => {
-    expect(documentTitleFor('Terminal', '   ')).toBe('Sessile — Terminal')
+    expect(documentTitleFor('Terminal', '   ')).toBe('sessile — terminal')
   })
 
+  // The brand and the route word are ours to style; a session name is the
+  // user's text and is left exactly as they typed it.
   it('keeps the session name verbatim', () => {
-    expect(documentTitleFor('Terminal', ' ~/src — notes ')).toBe('Sessile • ~/src — notes')
+    expect(documentTitleFor('Terminal', ' Build Server ')).toBe('sessile • Build Server')
+    expect(documentTitleFor('Terminal', ' ~/src — notes ')).toBe('sessile • ~/src — notes')
   })
 })
