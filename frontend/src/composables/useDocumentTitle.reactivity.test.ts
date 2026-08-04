@@ -57,7 +57,7 @@ describe('useDocumentTitle in an app', () => {
     // Opening a terminal before the list has loaded: the name is not known yet.
     navigate('terminal', 'a', 'Terminal')
     await nextTick()
-    expect(document.title).toBe('sessile — terminal')
+    expect(document.title).toBe('sessile • terminal')
 
     // …and the poll that fills the list has to correct it, with no navigation.
     store.sessions = [session({ id: 'a' })]
@@ -113,7 +113,7 @@ describe('useDocumentTitle in an app', () => {
 
     navigate('dashboard', undefined, 'Sessions')
     await nextTick()
-    expect(document.title).toBe('sessile — sessions')
+    expect(document.title).toBe('sessile • sessions')
 
     scope.stop()
   })
