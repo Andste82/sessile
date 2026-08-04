@@ -640,12 +640,15 @@ export function useTerminal() {
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
-      reconnectAttempts = 0
       // The socket opening proves nothing while the session is stopped: the
       // server accepts the upgrade and then closes it with 4404. Only the
       // attached frame says we are on a live session — handleControl acts on
-      // that — so a probe leaves "session ended" up until it arrives.
-      if (status.value !== 'exited') status.value = 'connected'
+      // that — so a probe leaves "session ended" up until it arrives, and its
+      // attempts have to go on counting or the probe would never ease off.
+      if (status.value !== 'exited') {
+        status.value = 'connected'
+        reconnectAttempts = 0
+      }
       // Push our current geometry so the PTY matches the viewport.
       sendResize()
     }
@@ -674,7 +677,9 @@ export function useTerminal() {
 
     const plan = planReconnect(status.value, code, reconnectAttempts)
     status.value = plan.status
-    if (plan.status === 'disconnected') reconnectAttempts++
+    // Counted for both plans: the backoff indexes its steps with it, and the
+    // probe uses it to decide it has been refused often enough to ease off.
+    reconnectAttempts++
     reconnectTimer = setTimeout(openSocket, plan.delayMs)
   }
 
@@ -689,8 +694,10 @@ export function useTerminal() {
         // someone — not necessarily this browser — started it again, and the
         // server moved us to the new shell. Saying so here is what takes the
         // "session ended" banner down everywhere, rather than only in the tab
-        // whose button was clicked.
+        // whose button was clicked. This is also the one place that proves a
+        // probe succeeded, so it is where its attempts stop counting.
         status.value = 'connected'
+        reconnectAttempts = 0
         break
       case 'exit':
         status.value = 'exited'

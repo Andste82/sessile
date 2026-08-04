@@ -69,16 +69,37 @@ describe('useDocumentTitle in an app', () => {
     scope.stop()
   })
 
-  it('takes the page over the list when they disagree', async () => {
+  // The list is polled, so it is the copy a rename from another browser reaches
+  // — and the tab bar beside the title is drawn from it. Letting the page's
+  // copy win would leave the two disagreeing until the terminal was reopened.
+  it('takes the list over the page when they disagree', async () => {
     const store = useSessionsStore()
-    store.sessions = [session({ id: 'a', name: 'stale' })]
+    store.sessions = [session({ id: 'a', name: 'renamed-elsewhere' })]
     const scope = effectScope()
     scope.run(() => useDocumentTitle())
 
     navigate('terminal', 'a', 'Terminal')
-    setActiveSessionName('fresh')
+    setActiveSessionName('what-the-page-loaded')
     await nextTick()
-    expect(document.title).toBe('Sessile • fresh')
+    expect(document.title).toBe('Sessile • renamed-elsewhere')
+
+    scope.stop()
+  })
+
+  it('follows a rename while the page holds its own copy', async () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' })]
+    const scope = effectScope()
+    scope.run(() => useDocumentTitle())
+
+    navigate('terminal', 'a', 'Terminal')
+    setActiveSessionName('build-server')
+    await nextTick()
+    expect(document.title).toBe('Sessile • build-server')
+
+    store.sessions = [session({ id: 'a', name: 'renamed' })]
+    await nextTick()
+    expect(document.title).toBe('Sessile • renamed')
 
     scope.stop()
   })

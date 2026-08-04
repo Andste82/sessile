@@ -13,9 +13,17 @@ export const closeSessionUnavailable = 4404
 export const backoffSteps = [1000, 2000, 4000, 8000, 15000]
 
 // How often a client sitting on a stopped session asks whether it is back.
-// Flat rather than backing off: a session can be restarted at any moment, hours
-// in, and the answer must not take minutes to arrive by then.
+// Flat rather than backing off, because a restart is not more likely in the
+// first minute than in the tenth and the answer must not take minutes by then.
 export const exitedProbeDelay = 3000
+
+// …but not flat forever. A session that was deleted answers the same way as one
+// that is merely stopped, and a tab left open on one would ask every three
+// seconds for as long as the browser lives. After this many refusals the probe
+// eases off: a restart is then noticed in fifteen seconds instead of three,
+// which is still well inside how long it takes to look at the screen.
+export const exitedProbePatience = 20
+export const exitedProbeSlowDelay = 15000
 
 export interface ReconnectPlan {
   /** What the UI should say while the next attempt is pending. */
@@ -48,7 +56,10 @@ export function planReconnect(
 ): ReconnectPlan {
   const sessionGone = code === closeSessionEnded || code === closeSessionUnavailable
   if (sessionGone || current === 'exited') {
-    return { status: 'exited', delayMs: exitedProbeDelay }
+    return {
+      status: 'exited',
+      delayMs: attempt < exitedProbePatience ? exitedProbeDelay : exitedProbeSlowDelay,
+    }
   }
   return {
     status: 'disconnected',
