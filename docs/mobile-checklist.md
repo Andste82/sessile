@@ -47,6 +47,12 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
 - [ ] At the top and bottom of the scrollback the gesture stops there — no
       pull-to-refresh, no back-swipe, no rubber-band on the page.
 - [ ] A tap still focuses the terminal and opens the keyboard.
+
+If a swipe does misbehave, reopen the page with `?debug=scroll` appended to the
+URL and repeat it: an overlay in the top right reports the measurements each
+scroll depends on. `pitch` should sit near the row height, `asked` should equal
+`moved`, and `unasked` should stay 0 — anything else names the culprit, and the
+component's comment says which.
 - [ ] "Disconnected — reconnecting…" overlay appears on connection loss and
       clears on reconnect.
 - [ ] "Session ended" banner appears when the shell exits.
