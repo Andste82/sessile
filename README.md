@@ -157,8 +157,8 @@ services:
       # restart, with their output and command history intact.
       - sessile-config:/config
     # Defaults baked into the image; override to change the sandbox root, the
-    # database path, or which shells are offered.
-    # command: ["--root=/workspace", "--db=/config/sessions.db", "--shells=bash,zsh"]
+    # state directory, or which shells are offered.
+    # command: ["--root=/workspace", "--data-dir=/config", "--shells=bash,zsh"]
     restart: unless-stopped
 
 volumes:
@@ -201,7 +201,7 @@ Every option is a CLI flag with an environment-variable fallback.
 |---|---|---|---|
 | `--root` | `TSM_ROOT` | *(required)* | Sandbox root; all sessions run inside this tree |
 | `--addr` | `TSM_ADDR` | `:8080` | Listen address |
-| `--db` | `TSM_DB` | `<root>/.tsm/sessions.db` | SQLite database path |
+| `--data-dir` | `TSM_DATA_DIR` | `<root>/.tsm` | Directory for all server state: `sessions.db`, `scrollback/` and `history/` |
 | `--shells` | `TSM_SHELLS` | `bash,zsh,fish` | Shell allowlist (only installed ones are offered) |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` | Per-session ring buffer size, in bytes |
 | `--session-retention` | `TSM_SESSION_RETENTION` | `0` | Discard stopped sessions idle longer than this on startup, with their scrollback and history. A Go duration — `720h`, not `30d`. `0` keeps them forever |
@@ -301,8 +301,8 @@ GitHub Actions runs the same checks (`go vet`, `go test`, the frontend build and
 - Live sessions do not survive a backend restart (see [How it works](#how-it-works)).
   Their scrollback and command history do, and the session can be restarted from
   the UI — but the processes that were running are gone.
-- Scrollback snapshots and history files sit next to the database, so whatever
-  volume holds `--db` also holds terminal output. Keep it off shared storage and
+- Scrollback snapshots and history files sit beside the database in
+  `--data-dir`, so that volume holds terminal output. Keep it off shared storage and
   size it for `--buffer-size` per session. Stopped sessions are kept forever
   unless you set `--session-retention`; the default never deletes anything,
   because a stopped session can still be restarted with its state.

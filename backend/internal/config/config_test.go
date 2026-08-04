@@ -22,29 +22,87 @@ func capture(t *testing.T) *bytes.Buffer {
 }
 
 // DataDir ends up in a shell's environment as HISTFILE, and that shell runs in
-// the session's directory rather than the server's. A relative --db that stayed
-// relative would send every session's history somewhere unwritable.
+// the session's directory rather than the server's. A relative --data-dir that
+// stayed relative would send every session's history somewhere unwritable.
 func TestDataDirIsAbsolute(t *testing.T) {
 	root := t.TempDir()
 
 	for _, args := range [][]string{
-		{"--root", root}, // default db under root
-		{"--root", root, "--db", "data/sessions.db"},     // relative --db
-		{"--root", root, "--db", "./x/../data/state.db"}, // relative with traversal
+		{"--root", root},                               // default: <root>/.tsm
+		{"--root", root, "--data-dir", "state"},        // relative
+		{"--root", root, "--data-dir", "./x/../state"}, // relative with traversal
 	} {
 		cfg, err := Parse(args)
 		if err != nil {
 			t.Fatalf("Parse(%v): %v", args, err)
 		}
-		if !filepath.IsAbs(cfg.DB) {
-			t.Errorf("Parse(%v).DB = %q, want an absolute path", args, cfg.DB)
-		}
 		if !filepath.IsAbs(cfg.DataDir) {
 			t.Errorf("Parse(%v).DataDir = %q, want an absolute path", args, cfg.DataDir)
 		}
-		if want := filepath.Dir(cfg.DB); cfg.DataDir != want {
-			t.Errorf("Parse(%v).DataDir = %q, want %q", args, cfg.DataDir, want)
+		if !filepath.IsAbs(cfg.DB) {
+			t.Errorf("Parse(%v).DB = %q, want an absolute path", args, cfg.DB)
 		}
+	}
+}
+
+// The database is not separately addressable any more: it is one of the things
+// inside the state directory, and every other one is found relative to that
+// same directory.
+func TestDatabaseLivesInTheDataDir(t *testing.T) {
+	root := t.TempDir()
+	dir := t.TempDir()
+
+	cfg, err := Parse([]string{"--root", root, "--data-dir", dir})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.DataDir != dir {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, dir)
+	}
+	if want := filepath.Join(dir, "sessions.db"); cfg.DB != want {
+		t.Errorf("DB = %q, want %q", cfg.DB, want)
+	}
+}
+
+// Without --data-dir the state goes under the sandbox root, where it went when
+// the default was spelled as a database path.
+func TestDataDirDefaultsUnderRoot(t *testing.T) {
+	root := t.TempDir()
+
+	cfg, err := Parse([]string{"--root", root})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if want := filepath.Join(root, ".tsm"); cfg.DataDir != want {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, want)
+	}
+}
+
+// --db named a file and then claimed the directory around it. Answering it with
+// the flag package's "flag provided but not defined" would say it is gone
+// without saying what replaced it, and the replacement takes a different kind
+// of value — a directory, not a file — so a silent rename would be wrong too.
+func TestRemovedDBFlagExplainsItself(t *testing.T) {
+	root := t.TempDir()
+
+	for _, args := range [][]string{
+		{"--root", root, "--db", "/tmp/x.db"},
+		{"--root", root, "--db=/tmp/x.db"},
+		{"--root", root, "-db", "/tmp/x.db"},
+		{"-db=/tmp/x.db"},
+	} {
+		_, err := Parse(args)
+		if err == nil {
+			t.Fatalf("Parse(%v) succeeded, want an error", args)
+		}
+		if !strings.Contains(err.Error(), "--data-dir") {
+			t.Errorf("Parse(%v) error = %q, want it to name --data-dir", args, err)
+		}
+	}
+
+	// A session directory that happens to be called "db" is not the flag.
+	if _, err := Parse([]string{"--root", root, "--shells", "bash", "--", "db"}); err != nil {
+		t.Errorf("Parse with a positional \"db\": %v", err)
 	}
 }
 
@@ -140,7 +198,7 @@ func TestHelpListsFlags(t *testing.T) {
 		t.Fatalf("Parse(--help) error = %v, want flag.ErrHelp", err)
 	}
 	usage := buf.String()
-	for _, want := range []string{"-root", "-addr", "-db", "-shells", "-version", "sessile"} {
+	for _, want := range []string{"-root", "-addr", "-data-dir", "-shells", "-version", "sessile"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage text missing %q; got:\n%s", want, usage)
 		}
