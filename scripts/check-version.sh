@@ -2,8 +2,10 @@
 # check-version.sh — guard against version drift before a release goes out.
 #
 # sessile has exactly one declared version: frontend/package.json. Everything
-# else (config.go, Makefile, Dockerfile, docker-compose.yml) carries a "dev"
-# placeholder and gets the real value injected from the git tag at build time.
+# else (config.go, Dockerfile, docker-compose.yml) carries a "dev" placeholder
+# and gets the real value injected from the git tag at build time. The Makefile
+# derives its default from `git describe`, so it is checked the other way round:
+# it must not name a version at all.
 #
 # This checks both halves of that contract:
 #   1. the tag being released matches the declared version, and
@@ -53,12 +55,20 @@ check_placeholder() {
 
 check_placeholder backend/internal/config/config.go \
   '^var Version = "dev"$' "config.go Version"
-check_placeholder Makefile \
-  '^VERSION[[:space:]]*\?=[[:space:]]*dev$' "Makefile VERSION default"
 check_placeholder Dockerfile \
   '^ARG VERSION=dev$' "Dockerfile VERSION arg"
 check_placeholder docker-compose.yml \
   '^[[:space:]]*image:[[:space:]]*sessile:\$\{VERSION:-dev\}$' "compose image tag"
+
+# The Makefile default is computed from git, not written down, so the check is
+# that no release version was written down next to it — the drift this guards
+# against is a number in the file, whatever the mechanism around it.
+if grep -Eq '^VERSION[[:space:]]*\??=[[:space:]]*v?[0-9]+\.[0-9]+' Makefile; then
+  err "Makefile VERSION default — found a hardcoded version. It is derived from 'git describe' so a release cannot drift from its tag; writing one in defeats that."
+fi
+if ! grep -q 'git describe' Makefile; then
+  err "Makefile no longer derives VERSION from 'git describe' — a build would then report a version nobody set."
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "version check FAILED" >&2

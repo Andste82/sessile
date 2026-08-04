@@ -490,6 +490,12 @@ explicit: sessions are never respawned automatically on startup.
   keep running the previous frontend against an upgraded backend.
 - Makefile targets: `make dev-backend`, `make dev-frontend`, `make build`,
   `make test`, `make docker`.
+- Version: injected at build time via `-ldflags -X …config.Version`. The
+  release passes it in from the git tag; otherwise the Makefile derives it from
+  `git describe --tags --always --dirty`, so a non-release build names the
+  commit it came from rather than calling itself "dev". The local image tag is
+  a separate knob (`IMAGE_TAG`, default `dev`) so it stays stable across
+  rebuilds.
 
 ### Docker (multi-stage)
 1. `node:22-alpine` → build frontend

@@ -176,6 +176,13 @@ make docker                    # alpine variant, tags sessile:dev
 make docker-ubuntu             # ubuntu variant, tags sessile:dev-ubuntu
 ```
 
+The image tag stays `dev` while its contents move, so `docker run sessile:dev`
+keeps meaning "the last one I built". What the build *reports* is another
+matter: Settings → Version shows `git describe` output for anything that is not
+a release — `0.1.4-31-ge0ec1de`, or with `-dirty` appended if the tree had
+uncommitted changes — so a screenshot of that page names the exact commit. A
+release is built with `VERSION` set from its tag and reports just `0.2.0`.
+
 The image is multi-stage — Node builds the SPA, Go builds a static binary, and
 the runtime layer adds `bash` for shells. Both variants share the builder
 stages and differ only in the final one (`--target runtime-alpine` /
