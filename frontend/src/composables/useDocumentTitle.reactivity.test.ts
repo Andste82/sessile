@@ -9,7 +9,7 @@ const route = reactive<{
   name: string
   params: Record<string, string>
   meta: Record<string, unknown>
-}>({ name: 'dashboard', params: {}, meta: { title: 'Sessions' } })
+}>({ name: 'dashboard', params: {}, meta: { title: 'Dashboard' } })
 
 vi.mock('vue-router', () => ({ useRoute: () => route }))
 
@@ -45,7 +45,7 @@ function navigate(name: string, id?: string, title?: string) {
 describe('useDocumentTitle in an app', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    navigate('dashboard', undefined, 'Sessions')
+    navigate('dashboard', undefined, 'Dashboard')
     document.title = ''
   })
 
@@ -57,7 +57,7 @@ describe('useDocumentTitle in an app', () => {
     // Opening a terminal before the list has loaded: the name is not known yet.
     navigate('terminal', 'a', 'Terminal')
     await nextTick()
-    expect(document.title).toBe('sessile • terminal')
+    expect(document.title).toBe('sessile • Terminal')
 
     // …and the poll that fills the list has to correct it, with no navigation.
     store.sessions = [session({ id: 'a' })]
@@ -111,9 +111,9 @@ describe('useDocumentTitle in an app', () => {
     await nextTick()
     expect(document.title).toBe('sessile • build-server')
 
-    navigate('dashboard', undefined, 'Sessions')
+    navigate('dashboard', undefined, 'Dashboard')
     await nextTick()
-    expect(document.title).toBe('sessile • sessions')
+    expect(document.title).toBe('sessile • Dashboard')
 
     scope.stop()
   })

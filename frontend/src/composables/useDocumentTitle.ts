@@ -14,15 +14,15 @@ const BRAND = 'sessile'
 // the title is not making: the part after the bullet is just what you are
 // looking at, whether that is a session or a page.
 //
-// The route's own title is lower-cased here rather than at the route, which
-// keeps the routes readable and the styling of the title in one place. The
-// session name is left exactly as the user typed it — it is their text, not
-// ours to restyle.
+// Both parts are taken as written. The route title used to be lower-cased for
+// looks, which made "sessile • settings" for a view the sidebar calls
+// "Settings" — the title should name the view the way the menu does, so the
+// two read as the same place. Only the brand stays lower case.
 export function documentTitleFor(
   routeTitle: string | null | undefined,
   sessionName: string | null | undefined,
 ): string {
-  const label = sessionName?.trim() || routeTitle?.trim().toLowerCase()
+  const label = sessionName?.trim() || routeTitle?.trim()
   return label ? `${BRAND} • ${label}` : BRAND
 }
 
