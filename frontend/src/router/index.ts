@@ -5,7 +5,10 @@ const routes = [
     path: '/',
     name: 'dashboard',
     component: () => import('@/pages/DashboardPage.vue'),
-    meta: { title: 'Sessions' },
+    // Titles here are what the sidebar calls the view, spelled the same way —
+    // the window title is how you tell tabs apart, so it has to match the
+    // label you clicked to get here. This route is "Dashboard" in the nav.
+    meta: { title: 'Dashboard' },
   },
   {
     path: '/sessions/:id',
