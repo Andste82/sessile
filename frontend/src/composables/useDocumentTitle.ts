@@ -5,9 +5,14 @@ import { useSessionsStore } from '@/stores/sessions'
 // Lower case, like the wordmark in the sidebar and the binary it ships as.
 const BRAND = 'sessile'
 
-// documentTitleFor builds the window title. A session name wins over the route
-// title: with several tabs open, "sessile — terminal" everywhere told the user
-// nothing about which terminal they were looking at.
+// documentTitleFor builds the window title: the brand, then whatever names the
+// view. A session name wins over the route's own — with several tabs open,
+// "sessile • terminal" everywhere told the user nothing about which terminal
+// they were looking at.
+//
+// One separator throughout, on every route. Two of them read as a distinction
+// the title is not making: the part after the bullet is just what you are
+// looking at, whether that is a session or a page.
 //
 // The route's own title is lower-cased here rather than at the route, which
 // keeps the routes readable and the styling of the title in one place. The
@@ -17,9 +22,8 @@ export function documentTitleFor(
   routeTitle: string | null | undefined,
   sessionName: string | null | undefined,
 ): string {
-  const name = sessionName?.trim()
-  if (name) return `${BRAND} • ${name}`
-  return routeTitle ? `${BRAND} — ${routeTitle.toLowerCase()}` : BRAND
+  const label = sessionName?.trim() || routeTitle?.trim().toLowerCase()
+  return label ? `${BRAND} • ${label}` : BRAND
 }
 
 // activeName answers what the session on the terminal route is called.
