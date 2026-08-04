@@ -305,6 +305,7 @@ frontend/src/
   api/          # typed fetch wrappers + TS interfaces mirroring §6
   composables/  # useTerminal.ts (xterm setup, WS wiring, fit, reconnect)
   stores/       # sessions.ts (Pinia): list, create, delete, polling
+                # ui.ts: view state + persisted client preferences
   components/   # Sidebar.vue, SessionListItem.vue, NewSessionDialog.vue,
                 # TerminalView.vue, StatusDot.vue, TabBar.vue
   pages/        # DashboardPage.vue, TerminalPage.vue, SettingsPage.vue
@@ -316,7 +317,14 @@ frontend/src/
   activity, client count), "New Session" button, root dir shown.
 - **Terminal** (`/sessions/:id`): full-height xterm, tab bar of open
   sessions, dark theme default.
-- **Settings** (`/settings`): read-only config display for now.
+- **Settings** (`/settings`): read-only server config display, plus the client
+  preferences the browser owns — currently the terminal font size (8–32 px,
+  default 13), with a live sample. Preferences live in `stores/ui.ts` and
+  persist to `localStorage` under `sessile.*`, not on the server: the readable
+  size depends on the screen in front of the user, so the same session opened
+  on a phone and on a desktop wants two different answers. A change applies to
+  open terminals immediately (`term.options.fontSize`, then a fit, so the PTY
+  is told the new column count).
 
 ### Terminal behavior (`useTerminal`)
 - Create `Terminal` with `scrollback: 5000`, load fit + web-links addons.
