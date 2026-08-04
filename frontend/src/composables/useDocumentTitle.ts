@@ -33,19 +33,19 @@ export function documentTitleFor(
   return routeTitle ? `${BRAND} — ${routeTitle}` : BRAND
 }
 
-// activeName answers what the session on the terminal route is called, from
-// whichever source knows first.
+// activeName answers what the session on the terminal route is called.
 //
-// The page's own copy leads because it is the one that cannot be missing: it is
-// the session the page is showing. The list is the fallback, and still worth
-// consulting — it is what carries a rename through, and it answers on the first
-// render of a session already in it, before the page has set anything.
+// The list leads where it has the session, because it is the copy that keeps up:
+// it is polled, so a rename from another browser reaches it, and the tab bar
+// beside the title is drawn from the same place — reading them from different
+// sources is how they come to disagree. The page's own copy is the fallback for
+// the case the list cannot cover: a session it does not hold yet, or at all.
 function activeName(
   route: { name: unknown; params: Record<string, unknown> },
   byId: (id: string) => { name: string } | null,
 ): string | null {
   if (route.name !== 'terminal') return null
-  return activeSessionName.value ?? byId(String(route.params.id))?.name ?? null
+  return byId(String(route.params.id))?.name ?? activeSessionName.value ?? null
 }
 
 // useDocumentTitle keeps document.title in sync with the active route and, on

@@ -27,8 +27,14 @@
   size-adjust: 65%;
   src: url('@fontsource/noto-sans-symbols-2/files/noto-sans-symbols-2-symbols-400-normal.woff2')
     format('woff2');
-  unicode-range: U+2022-2BFF, U+4DC0-4DFF, U+FFF9-102FB, U+10E60-10E7E,
-    U+1D2C0-1D378, U+1F000-1FBF9;
+  /* The gap at U+2800-28FF is Braille, and it is deliberate. This face has all
+     256 of them, but they tile: btop and friends draw plots by butting them
+     edge to edge, and a glyph scaled to 65% leaves a gap on every side. Left
+     out of the range, they come from the machine's own fallback at full size,
+     as they did before this font existed. Box drawing and block elements need
+     no such exclusion — neither face carries them. */
+  unicode-range: U+2022-27FF, U+2900-2BFF, U+4DC0-4DFF, U+FFF9-102FB,
+    U+10E60-10E7E, U+1D2C0-1D378, U+1F000-1FBF9;
 }
 
 /* The two Noto symbol faces divide the blocks between them rather than one
@@ -42,7 +48,9 @@
   size-adjust: 65%;
   src: url('@fontsource/noto-sans-symbols/files/noto-sans-symbols-symbols-400-normal.woff2')
     format('woff2');
-  unicode-range: U+2022-2922, U+1F100-1F773;
+  /* Same Braille gap, for a different reason: this face has none of them, so
+     including the block would only buy a 58 kB download that answers nothing. */
+  unicode-range: U+2022-27FF, U+2900-2922, U+1F100-1F773;
 }
 
 /* Dark theme is the default (PROJECT_PLAN.md §7). */

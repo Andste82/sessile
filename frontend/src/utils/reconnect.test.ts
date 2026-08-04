@@ -4,6 +4,8 @@ import {
   closeSessionEnded,
   closeSessionUnavailable,
   exitedProbeDelay,
+  exitedProbePatience,
+  exitedProbeSlowDelay,
   planReconnect,
 } from './reconnect'
 
@@ -49,12 +51,30 @@ describe('planReconnect', () => {
     })
   })
 
-  // Probing at a flat interval is the point: a session can be restarted hours
-  // after it stopped, and the client has to notice in seconds, not minutes.
+  // Probing at a flat interval is the point: a restart is no less likely in the
+  // tenth minute than in the first, so backing off would make the wait grow
+  // exactly where it is least wanted.
   it('does not back off between probes', () => {
-    const delays = [0, 1, 5, 50].map((n) => planReconnect('exited', undefined, n).delayMs)
+    const delays = [0, 1, 5, 15].map((n) => planReconnect('exited', undefined, n).delayMs)
     expect(new Set(delays).size).toBe(1)
     expect(delays[0]).toBe(exitedProbeDelay)
+  })
+
+  // A deleted session answers exactly like a stopped one, so a tab left open on
+  // it would ask every three seconds for as long as the browser lives. After
+  // enough refusals the probe eases off — still often enough to notice a
+  // restart while looking at the screen.
+  it('eases off once it has been refused long enough', () => {
+    expect(planReconnect('exited', undefined, exitedProbePatience - 1).delayMs).toBe(
+      exitedProbeDelay,
+    )
+    expect(planReconnect('exited', undefined, exitedProbePatience).delayMs).toBe(
+      exitedProbeSlowDelay,
+    )
+    expect(planReconnect('exited', undefined, 9999).delayMs).toBe(exitedProbeSlowDelay)
+    // Easing off must not turn into giving up, which is the bug this whole
+    // probe exists to fix.
+    expect(exitedProbeSlowDelay).toBeLessThanOrEqual(15000)
   })
 
   // The banner has to stay up across probes. Reporting a connection when the
