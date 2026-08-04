@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { applyUnicodeVersion } from '@/utils/unicode'
-import { loadSymbolFont, symbolFontFamily } from '@/utils/fonts'
+import { loadSymbolFont, symbolFontFamilies } from '@/utils/fonts'
 import { planReconnect, type ConnStatus } from '@/utils/reconnect'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
 import { isCompositionArtifact, isImeKey, shouldFlushIme } from '@/utils/ime'
@@ -33,10 +33,10 @@ export type { ConnStatus }
 // cannot change the cell size. Naming them matters anyway: without an emoji
 // font in the stack a browser is free to fall back to a proportional face
 // whose glyph overhangs the two cells we now reserve (issue #27).
-// The symbol face sits between the two groups: after the monospace faces, so it
-// can never be asked for a character they already have, and before the emoji
-// ones, so ☠ ⚛ ☢ ⌘ ■ get the monochrome glyph that fits their single cell
-// instead of a two-cell emoji (issue #46). It ships with the app — see
+// The symbol faces sit between the two groups: after the monospace ones, so
+// they can never be asked for a character those already have, and before the
+// emoji ones, so ☠ ⚛ ☢ ⌘ ■ get the monochrome glyph that fits their single cell
+// instead of a two-cell emoji (issue #46). They ship with the app — see
 // utils/fonts.ts for why leaving that to the machine did not work.
 const fontSize = 13
 const fontFamily = [
@@ -46,7 +46,7 @@ const fontFamily = [
   'Menlo',
   'Consolas',
   'monospace',
-  symbolFontFamily,
+  ...symbolFontFamilies,
   '"Apple Color Emoji"',
   '"Segoe UI Emoji"',
   '"Noto Color Emoji"',

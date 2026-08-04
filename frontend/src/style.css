@@ -1,18 +1,48 @@
 @import 'tailwindcss';
 
 /* The terminal's symbol face — see utils/fonts.ts for what it is here to fix.
+
+   size-adjust is the part that makes it usable in a terminal. A cell is about
+   0.6 em wide (that is what a monospace advance is), and these glyphs are drawn
+   at a median of 0.85 em, up to 0.96 em for ☠ ★ ●. Dropped in at full size they
+   overhang their cell by half again as much as it holds, which is the same
+   spilling this font is here to stop. Scaling the face to 65% brings the median
+   to 0.55 em and ☠ to exactly one cell. Every metric scales with it, so xterm
+   measures what is drawn and the column arithmetic stays honest.
+
+   unicode-range keeps the 380 kB out of the way of ordinary text: the browser
+   only fetches the file once a character in these blocks is actually on screen,
+   and never considers it for ASCII. The ranges are the blocks the file really
+   covers, read out of its cmap — the package's own metadata describes the
+   subset it was cut from, not what ended up in it.
+
    Declared by hand rather than by importing the package's stylesheet so only
-   the woff2 ships: the .woff beside it is another 74 kB inside the binary, for
-   browsers that predate 2016 and cannot run this app anyway. Declaring it in
-   the app stylesheet rather than a route chunk means the family is known before
-   the first terminal mounts. */
+   the woff2 ships: the .woff beside it is another 470 kB inside the binary, for
+   browsers that predate 2016 and cannot run this app anyway. */
+@font-face {
+  font-family: 'Noto Sans Symbols 2';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  size-adjust: 65%;
+  src: url('@fontsource/noto-sans-symbols-2/files/noto-sans-symbols-2-symbols-400-normal.woff2')
+    format('woff2');
+  unicode-range: U+2022-2BFF, U+4DC0-4DFF, U+FFF9-102FB, U+10E60-10E7E,
+    U+1D2C0-1D378, U+1F000-1FBF9;
+}
+
+/* The two Noto symbol faces divide the blocks between them rather than one
+   superseding the other: ☠ ☢ ⌘ ■ ★ are in Symbols 2, ⚛ ⛧ ⏣ ⌬ only in this one.
+   It is 58 kB against the other's 380 kB, and gated the same way. */
 @font-face {
   font-family: 'Noto Sans Symbols';
   font-style: normal;
   font-weight: 400;
   font-display: swap;
+  size-adjust: 65%;
   src: url('@fontsource/noto-sans-symbols/files/noto-sans-symbols-symbols-400-normal.woff2')
     format('woff2');
+  unicode-range: U+2022-2922, U+1F100-1F773;
 }
 
 /* Dark theme is the default (PROJECT_PLAN.md §7). */

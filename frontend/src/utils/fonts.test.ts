@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { loadSymbolFont, symbolFontFamily } from './fonts'
+import { loadSymbolFont, symbolFontFamilies } from './fonts'
 
 // document does not exist in the test environment, so each case installs the
 // shape loadSymbolFont reaches for and takes it away again.
@@ -13,18 +13,21 @@ afterEach(() => {
 })
 
 describe('loadSymbolFont', () => {
-  it('asks for the symbol family at the terminal font size', async () => {
+  it('asks for every symbol family at the terminal font size', async () => {
     const load = vi.fn().mockResolvedValue([])
     withDocument({ fonts: { load } })
 
     await loadSymbolFont(13)
 
-    expect(load).toHaveBeenCalledTimes(1)
-    const [spec, text] = load.mock.calls[0]
-    expect(spec).toBe(`13px ${symbolFontFamily}`)
-    // A font is only fetched when a character asks for it, so the sample has to
-    // be one this subset actually carries.
-    expect(text).toBe('☢')
+    // Both faces ship: they divide the symbol blocks between them.
+    expect(load).toHaveBeenCalledTimes(symbolFontFamilies.length)
+    expect(load.mock.calls.map(([spec]) => spec)).toEqual(
+      symbolFontFamilies.map((family) => `13px ${family}`),
+    )
+    // A font is only fetched when a character asks for it, so each sample has to
+    // be one that face actually carries — fonts.symbols.test.ts checks that
+    // against the files themselves.
+    expect(load.mock.calls.map(([, text]) => text)).toEqual(['☢', '⚛'])
   })
 
   // The terminal renders with whatever the machine has if this fails, which is
