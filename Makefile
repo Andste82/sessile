@@ -2,7 +2,19 @@
 .DEFAULT_GOAL := help
 
 ROOT      ?= $(CURDIR)/sandbox
-VERSION   ?= dev
+
+# The version compiled into the binary and shown on the Settings page. A build
+# from a tagged commit reports the tag; every other build reports the commit it
+# came from, so a screenshot of that page identifies the code exactly — "dev"
+# identified nothing. A release passes VERSION in from the tag and ?= keeps it.
+GIT_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null)
+VERSION   ?= $(if $(GIT_VERSION),$(patsubst v%,%,$(GIT_VERSION)),dev)
+
+# What a locally built image is tagged as — deliberately not the version. The
+# point of the dev image is that its name stays put while its contents move, so
+# `docker run sessile:dev-ubuntu` keeps meaning "the last one I built".
+IMAGE_TAG ?= dev
+
 LDFLAGS   := -s -w -X github.com/Andste82/sessile/backend/internal/config.Version=$(VERSION)
 
 # Where the SPA is embedded from. backend/web/embed.go has `//go:embed all:dist`,
@@ -47,11 +59,11 @@ build: build-frontend build-backend ## Full production build → ./bin/sessile
 	@echo "built ./bin/sessile"
 
 docker: ## Build the container image (alpine, the default variant)
-	docker build --build-arg VERSION=$(VERSION) -t sessile:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t sessile:$(IMAGE_TAG) .
 
 docker-ubuntu: ## Build the ubuntu-based image (glibc, for glibc-linked programs)
 	docker build --target runtime-ubuntu --build-arg VERSION=$(VERSION) \
-	  -t sessile:$(VERSION)-ubuntu .
+	  -t sessile:$(IMAGE_TAG)-ubuntu .
 
 tidy: ## go mod tidy
 	cd backend && go mod tidy

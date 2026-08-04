@@ -27,7 +27,9 @@ onMounted(() => {
           <dt class="text-slate-400">Shells</dt>
           <dd class="font-mono text-slate-200">{{ store.config.shells.join(', ') }}</dd>
           <dt class="text-slate-400">Version</dt>
-          <dd class="font-mono text-slate-200">{{ store.config.version }}</dd>
+          <!-- A release reports its tag; any other build reports the commit it
+               was made from, which is long enough to need wrapping. -->
+          <dd class="break-all font-mono text-slate-200">{{ store.config.version }}</dd>
         </dl>
         <!-- Without the error branch this said "Loading…" forever whenever the
              config request failed. -->
