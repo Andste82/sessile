@@ -1,8 +1,9 @@
-import { ref, shallowRef } from 'vue'
+import { ref, shallowRef, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { applyUnicodeVersion } from '@/utils/unicode'
+import { useUiStore } from '@/stores/ui'
 import { loadSymbolFont, symbolFontFamilies } from '@/utils/fonts'
 import { planReconnect, type ConnStatus } from '@/utils/reconnect'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
@@ -38,7 +39,7 @@ export type { ConnStatus }
 // emoji ones, so ☠ ⚛ ☢ ⌘ ■ get the monochrome glyph that fits their single cell
 // instead of a two-cell emoji (issue #46). They ship with the app — see
 // utils/fonts.ts for why leaving that to the machine did not work.
-const fontSize = 13
+// The size the stack is rendered at is the user's, and lives in the ui store.
 const fontFamily = [
   'ui-monospace',
   'SFMono-Regular',
@@ -70,6 +71,7 @@ const theme = {
 export function useTerminal() {
   const status = ref<ConnStatus>('connecting')
   const term = shallowRef<Terminal | null>(null)
+  const ui = useUiStore()
 
   let fit: FitAddon | null = null
   let ws: WebSocket | null = null
@@ -178,14 +180,17 @@ export function useTerminal() {
   // something clears that cache. The wait is bounded and, after the first
   // visit, served from cache — see utils/fonts.ts.
   async function open(el: HTMLElement) {
-    await loadSymbolFont(fontSize)
+    await loadSymbolFont(ui.terminalFontSize)
     if (disposed) return // unmounted while the font was in flight
 
     const t = new Terminal({
       scrollback: 5000,
       cursorBlink: true,
       fontFamily,
-      fontSize,
+      // Read after the await, so a size changed while the font was in flight is
+      // the one the terminal opens at — the watcher below has nothing to apply
+      // it to until then.
+      fontSize: ui.terminalFontSize,
       theme,
       // Required for `unicode.activeVersion` below — xterm gates the whole
       // unicode handle behind this flag.
@@ -233,6 +238,20 @@ export function useTerminal() {
 
     term.value = t
   }
+
+  // A size picked in Settings applies to the terminal that is already open —
+  // nobody wants to reopen a session to see whether the size they chose is the
+  // readable one. xterm re-measures the cell
+  // when the option changes, so the fit afterwards is what turns the new cell
+  // into a column count the PTY is told about.
+  watch(
+    () => ui.terminalFontSize,
+    (size) => {
+      if (!term.value) return
+      term.value.options.fontSize = size
+      doFit()
+    },
+  )
 
   // handleKeyEvent runs before xterm's own key handling; returning false means
   // "not mine, and do not cancel it". That is the whole fix for Ctrl+V: xterm
