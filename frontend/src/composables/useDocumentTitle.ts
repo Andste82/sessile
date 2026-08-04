@@ -1,25 +1,8 @@
-import { ref, watch } from 'vue'
+import { watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useSessionsStore } from '@/stores/sessions'
 
 const BRAND = 'Sessile'
-
-// The name of the session on screen, as the terminal page knows it.
-//
-// The page always has the session: it takes it from the list when it is there
-// and fetches it by id when it is not. Reading the list alone was the weak
-// link — the title had nothing to show until a poll had filled it in, and
-// nothing at all if that request never landed, which is a page-wide failure
-// showing up as a permanently generic window title.
-const activeSessionName = ref<string | null>(null)
-
-/**
- * setActiveSessionName tells the title which session is on screen. The terminal
- * page calls it with the session it has, and with null when it goes away.
- */
-export function setActiveSessionName(name: string | null) {
-  activeSessionName.value = name
-}
 
 // documentTitleFor builds the window title. A session name wins over the route
 // title: with several tabs open, "Sessile — Terminal" everywhere told the user
@@ -35,17 +18,18 @@ export function documentTitleFor(
 
 // activeName answers what the session on the terminal route is called.
 //
-// The list leads where it has the session, because it is the copy that keeps up:
-// it is polled, so a rename from another browser reaches it, and the tab bar
-// beside the title is drawn from the same place — reading them from different
-// sources is how they come to disagree. The page's own copy is the fallback for
-// the case the list cannot cover: a session it does not hold yet, or at all.
+// The list is the only source, and it is the right one: it is polled, so a
+// rename from another browser reaches it, and the tab bar beside the title is
+// drawn from it — reading them from different places is how they come to
+// disagree. It is also never behind the page, because the page puts what it
+// fetched into the list (TerminalPage.loadSession → upsertSession) rather than
+// keeping it to itself.
 function activeName(
   route: { name: unknown; params: Record<string, unknown> },
   byId: (id: string) => { name: string } | null,
 ): string | null {
   if (route.name !== 'terminal') return null
-  return byId(String(route.params.id))?.name ?? activeSessionName.value ?? null
+  return byId(String(route.params.id))?.name ?? null
 }
 
 // useDocumentTitle keeps document.title in sync with the active route and, on

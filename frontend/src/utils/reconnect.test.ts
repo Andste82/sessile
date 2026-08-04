@@ -3,9 +3,6 @@ import {
   backoffSteps,
   closeSessionEnded,
   closeSessionUnavailable,
-  exitedProbeDelay,
-  exitedProbePatience,
-  exitedProbeSlowDelay,
   planReconnect,
 } from './reconnect'
 
@@ -26,60 +23,26 @@ describe('planReconnect', () => {
     expect(planReconnect('disconnected', 1006, 99).delayMs).toBe(last)
   })
 
-  // Issue #42: a client that sat on "session ended" had given up for good, so
-  // when another browser restarted the session it stayed on a dead socket with
-  // the banner up — offering to start a session that was already running.
-  it('keeps asking after the server says the session is gone', () => {
+  // A session the server says is gone is not retried: another attempt only
+  // earns another 4404. Coming back is not this socket's job — the server pushes
+  // an attached frame onto the clients of a session it restarts, and the polled
+  // list reconnects a terminal whose socket did not survive.
+  it('stops retrying once the server says the session is gone', () => {
     for (const code of [closeSessionEnded, closeSessionUnavailable]) {
       expect(planReconnect('connecting', code, 0)).toEqual({
         status: 'exited',
-        delayMs: exitedProbeDelay,
+        delayMs: null,
       })
     }
   })
 
-  it('keeps asking on any later drop while exited', () => {
-    // The close code on a probe that is refused mid-handshake is not always
-    // 4404 — what matters is that the session was already known to be gone.
-    expect(planReconnect('exited', 1006, 0)).toEqual({
-      status: 'exited',
-      delayMs: exitedProbeDelay,
-    })
-    expect(planReconnect('exited', undefined, 7)).toEqual({
-      status: 'exited',
-      delayMs: exitedProbeDelay,
-    })
+  it('stays stopped on any later drop while exited', () => {
+    expect(planReconnect('exited', 1006, 0).delayMs).toBeNull()
+    expect(planReconnect('exited', undefined, 7).delayMs).toBeNull()
   })
 
-  // Probing at a flat interval is the point: a restart is no less likely in the
-  // tenth minute than in the first, so backing off would make the wait grow
-  // exactly where it is least wanted.
-  it('does not back off between probes', () => {
-    const delays = [0, 1, 5, 15].map((n) => planReconnect('exited', undefined, n).delayMs)
-    expect(new Set(delays).size).toBe(1)
-    expect(delays[0]).toBe(exitedProbeDelay)
-  })
-
-  // A deleted session answers exactly like a stopped one, so a tab left open on
-  // it would ask every three seconds for as long as the browser lives. After
-  // enough refusals the probe eases off — still often enough to notice a
-  // restart while looking at the screen.
-  it('eases off once it has been refused long enough', () => {
-    expect(planReconnect('exited', undefined, exitedProbePatience - 1).delayMs).toBe(
-      exitedProbeDelay,
-    )
-    expect(planReconnect('exited', undefined, exitedProbePatience).delayMs).toBe(
-      exitedProbeSlowDelay,
-    )
-    expect(planReconnect('exited', undefined, 9999).delayMs).toBe(exitedProbeSlowDelay)
-    // Easing off must not turn into giving up, which is the bug this whole
-    // probe exists to fix.
-    expect(exitedProbeSlowDelay).toBeLessThanOrEqual(15000)
-  })
-
-  // The banner has to stay up across probes. Reporting a connection when the
-  // socket opens would take it down every few seconds and put it back when the
-  // server closed the upgrade it had just accepted.
+  // Whatever else happens, a session the server has declared gone reads as
+  // ended — never as a connection in progress.
   it('never reports anything but exited once the session is gone', () => {
     expect(planReconnect('exited', 1006, 0).status).toBe('exited')
     expect(planReconnect('connected', closeSessionUnavailable, 0).status).toBe('exited')

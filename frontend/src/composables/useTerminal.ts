@@ -630,25 +630,15 @@ export function useTerminal() {
 
   function openSocket() {
     if (disposed) return
-    // Neither a reconnect nor a probe of a stopped session announces itself:
-    // "connecting" over a reconnect would replace the banner the user is
-    // reading, and a probe has nothing to announce until it succeeds.
-    if (status.value !== 'disconnected' && status.value !== 'exited') {
-      status.value = 'connecting'
-    }
+    // A reconnect does not announce itself: "connecting" would replace the
+    // overlay the user is already reading.
+    if (status.value !== 'disconnected') status.value = 'connecting'
     ws = new WebSocket(sessionWsURL(sessionId))
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
-      // The socket opening proves nothing while the session is stopped: the
-      // server accepts the upgrade and then closes it with 4404. Only the
-      // attached frame says we are on a live session — handleControl acts on
-      // that — so a probe leaves "session ended" up until it arrives, and its
-      // attempts have to go on counting or the probe would never ease off.
-      if (status.value !== 'exited') {
-        status.value = 'connected'
-        reconnectAttempts = 0
-      }
+      status.value = 'connected'
+      reconnectAttempts = 0
       // Push our current geometry so the PTY matches the viewport.
       sendResize()
     }
@@ -667,18 +657,17 @@ export function useTerminal() {
   }
 
   // scheduleReconnect applies the policy in utils/reconnect.ts: backoff for a
-  // connection that dropped under a live session, a slow flat probe for one the
-  // server says is gone. A probe costs one refused upgrade every few seconds
-  // against a session nobody has restarted — the same order as the list poll
-  // already running beside it.
+  // connection that dropped under a live session, and nothing at all for one
+  // the server says is gone — that one is reconnected by the attached frame a
+  // restart pushes, or by TerminalPage when the polled list says the session is
+  // running again.
   function scheduleReconnect(code?: number) {
     ws = null
     if (disposed) return
 
     const plan = planReconnect(status.value, code, reconnectAttempts)
     status.value = plan.status
-    // Counted for both plans: the backoff indexes its steps with it, and the
-    // probe uses it to decide it has been refused often enough to ease off.
+    if (plan.delayMs === null) return
     reconnectAttempts++
     reconnectTimer = setTimeout(openSocket, plan.delayMs)
   }
@@ -694,10 +683,8 @@ export function useTerminal() {
         // someone — not necessarily this browser — started it again, and the
         // server moved us to the new shell. Saying so here is what takes the
         // "session ended" banner down everywhere, rather than only in the tab
-        // whose button was clicked. This is also the one place that proves a
-        // probe succeeded, so it is where its attempts stop counting.
+        // whose button was clicked.
         status.value = 'connected'
-        reconnectAttempts = 0
         break
       case 'exit':
         status.value = 'exited'
