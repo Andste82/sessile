@@ -40,6 +40,11 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
 - [ ] A one-finger drag scrolls the backlog with the finger — same distance, same
       direction, every swipe. Not double speed, not one line, not nothing
       (issue #64: two scrollers used to race, and the winner varied).
+- [ ] **Start the drag on a character**, in the middle of a line of output, not
+      on empty space. That gesture is the one issue #64 died on: xterm rebuilds
+      a row's spans whenever it redraws the row, and the swipe used to stop the
+      moment the character it began on was deleted. Landing on empty space
+      worked all along, so a swipe that starts there proves nothing.
 - [ ] Repeat that drag while the session is producing output (`yes`, or a build):
       scrolling stays as steady as it is on an idle session.
 - [ ] A flick keeps scrolling and coasts to a stop; a slow drag that pauses
@@ -47,12 +52,6 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
 - [ ] At the top and bottom of the scrollback the gesture stops there — no
       pull-to-refresh, no back-swipe, no rubber-band on the page.
 - [ ] A tap still focuses the terminal and opens the keyboard.
-
-If a swipe does misbehave, reopen the page with `?debug=scroll` appended to the
-URL and repeat it: an overlay in the top right reports the measurements each
-scroll depends on. `pitch` should sit near the row height, `asked` should equal
-`moved`, and `unasked` should stay 0 — anything else names the culprit, and the
-component's comment says which.
 - [ ] "Disconnected — reconnecting…" overlay appears on connection loss and
       clears on reconnect.
 - [ ] "Session ended" banner appears when the shell exits.

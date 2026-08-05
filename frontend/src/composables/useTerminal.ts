@@ -29,31 +29,6 @@ import {
 // it from the composable that owns one.
 export type { ConnStatus }
 
-/**
- * ScrollDebug is what the ?debug=scroll overlay shows: the measurements a touch
- * scroll depends on, and what the last gesture actually achieved. `unasked` is
- * the number the bug hunt turns on — buffer scrolls this composable did not
- * ask for, which is how xterm undoing a gesture would show up.
- */
-export type ScrollDebug = {
-  rows: number
-  screenH: number
-  pitch: number
-  ydisp: number
-  ybase: number
-  raw: number
-  moves: number
-  fingers: number
-  captured: number
-  uncancelable: number
-  cancels: number
-  dragPx: number
-  linesAsked: number
-  linesMoved: number
-  unasked: number
-  bytes: number
-}
-
 // Monospace stack first — xterm measures the cell from it, and every font here
 // has the digits it measures with, so the emoji fallbacks appended at the end
 // cannot change the cell size. Naming them matters anyway: without an emoji
@@ -148,7 +123,6 @@ export function useTerminal() {
 
   let touching = false
   let pointerId: number | null = null // the finger the gesture follows
-  const pointers = new Set<number>() // every finger currently down
   let touchLastY = 0
   let touchAccum = 0 // sub-line remainder in px, so drags track the finger 1:1
   let velocity = 0 // px/ms, smoothed — drives the flick momentum
@@ -161,18 +135,6 @@ export function useTerminal() {
   const momentumMinVelocity = 0.02
   // A finger that rested before lifting is a drag, not a flick.
   const flickMaxIdleMs = 100
-
-  // Scroll diagnostics (issue #64), off unless the page was opened with
-  // ?debug=scroll. What is left of that bug appears rarely, cannot be
-  // reproduced on demand, and happens on a phone with no console attached — so
-  // the terminal has to be able to describe its own state while it misbehaves.
-  const debug = ref<ScrollDebug | null>(null)
-  const debugging =
-    typeof location !== 'undefined' &&
-    new URLSearchParams(location.search).get('debug') === 'scroll'
-  // What the last scrollLines() asked for, so onScroll can tell our own scroll
-  // apart from one nobody here asked for.
-  let expectedY: number | null = null
 
   // Armed modifiers for the on-screen key bar (issue #10). Sticky until the
   // next key is sent, then cleared — so "tap Ctrl, then C" yields Ctrl-C.
@@ -297,15 +259,6 @@ export function useTerminal() {
     // reaches it despite scroll not bubbling: the capture phase walks the
     // ancestors of the target either way.
     el.addEventListener('scroll', onViewportScroll, true)
-
-    if (debugging) {
-      t.onScroll((y) => {
-        if (y === expectedY) return // ours, already accounted for
-        if (debug.value && (touching || momentumFrame !== null))
-          debug.value = { ...debug.value, unasked: debug.value.unasked + 1 }
-      })
-      debug.value = emptyDebug()
-    }
 
     // Capture phase on the host: xterm binds its own composition and input
     // handlers directly to the helper textarea, and a capture listener on an
@@ -607,29 +560,6 @@ export function useTerminal() {
     if (touching || momentumFrame !== null) e.stopPropagation()
   }
 
-  function emptyDebug(): ScrollDebug {
-    const t = term.value
-    const screen = t?.element?.querySelector<HTMLElement>('.xterm-screen')
-    return {
-      rows: t?.rows ?? 0,
-      screenH: screen?.clientHeight ?? 0,
-      pitch: Math.round(rowHeight() * 100) / 100,
-      ydisp: t?.buffer.active.viewportY ?? 0,
-      ybase: t?.buffer.active.baseY ?? 0,
-      raw: 0,
-      moves: 0,
-      fingers: 0,
-      captured: 0,
-      uncancelable: 0,
-      cancels: 0,
-      dragPx: 0,
-      linesAsked: 0,
-      linesMoved: 0,
-      unasked: 0,
-      bytes: 0,
-    }
-  }
-
   // rowHeight measures the rendered row pitch. .xterm-screen is sized to
   // exactly rows × rowHeight, unlike the host element, which keeps the few
   // leftover pixels FitAddon could not fill — using the host would make the
@@ -656,20 +586,8 @@ export function useTerminal() {
     if (lines === 0) return true
     touchAccum -= lines * pitch
     const before = t.buffer.active.viewportY
-    expectedY = Math.min(Math.max(before + lines, 0), t.buffer.active.baseY)
     t.scrollLines(lines)
-    const after = t.buffer.active.viewportY
-    expectedY = null
-    if (debug.value)
-      debug.value = {
-        ...debug.value,
-        pitch: Math.round(pitch * 100) / 100,
-        ydisp: after,
-        ybase: t.buffer.active.baseY,
-        linesAsked: debug.value.linesAsked + lines,
-        linesMoved: debug.value.linesMoved + (after - before),
-      }
-    if (after !== before) return true
+    if (t.buffer.active.viewportY !== before) return true
     // At an edge: drop the remainder so reversing direction responds instantly.
     touchAccum = 0
     return false
@@ -729,19 +647,12 @@ export function useTerminal() {
   function onPointerDown(e: PointerEvent) {
     if (e.pointerType === 'mouse') return // desktop selection stays xterm's
     stopMomentum()
-    // Each gesture is measured on its own: the overlay describes the swipe that
-    // just went wrong, not an average over the session.
-    if (debugging) debug.value = emptyDebug()
-    pointers.add(e.pointerId)
-    if (debug.value && pointers.size > debug.value.fingers)
-      debug.value = { ...debug.value, fingers: pointers.size }
     // A second finger is not a new gesture: a palm or the base of a thumb
     // landing mid-swipe must not take it over, or end it.
     if (pointerId !== null) return
     pointerId = e.pointerId
     try {
       hostEl?.setPointerCapture(e.pointerId)
-      if (debug.value) debug.value = { ...debug.value, captured: 1 }
     } catch {
       // Refused: the gesture still works for as long as what is under the
       // finger lives, which is all it ever did before.
@@ -755,7 +666,6 @@ export function useTerminal() {
 
   function onPointerMove(e: PointerEvent) {
     if (e.pointerType === 'mouse' || e.pointerId !== pointerId) return
-    if (debug.value) debug.value = { ...debug.value, raw: debug.value.raw + 1 }
     if (!touching) return
     const dy = touchLastY - e.clientY
     touchLastY = e.clientY
@@ -764,18 +674,11 @@ export function useTerminal() {
     // Weighted toward the latest sample so the flick matches the finger's
     // speed at release, but smoothed enough to ignore jittery events.
     if (dt > 0) velocity = 0.7 * (dy / dt) + 0.3 * velocity
-    if (debug.value)
-      debug.value = {
-        ...debug.value,
-        moves: debug.value.moves + 1,
-        dragPx: Math.round(debug.value.dragPx + dy),
-      }
     scrollPixels(dy)
   }
 
   function onPointerUp(e: PointerEvent) {
     if (e.pointerType === 'mouse') return
-    pointers.delete(e.pointerId)
     if (e.pointerId !== pointerId) return
     pointerId = null
     if (!touching) return
@@ -786,9 +689,6 @@ export function useTerminal() {
 
   function onPointerCancel(e: PointerEvent) {
     if (e.pointerType === 'mouse') return
-    pointers.delete(e.pointerId)
-    if (debug.value)
-      debug.value = { ...debug.value, cancels: debug.value.cancels + 1 }
     if (e.pointerId !== pointerId) return
     pointerId = null
     touching = false
@@ -807,11 +707,6 @@ export function useTerminal() {
 
   function onTouchMove(e: TouchEvent) {
     e.stopPropagation()
-    if (debug.value && !e.cancelable)
-      debug.value = {
-        ...debug.value,
-        uncancelable: debug.value.uncancelable + 1,
-      }
     if (e.cancelable) e.preventDefault()
   }
 
@@ -853,15 +748,7 @@ export function useTerminal() {
       if (typeof ev.data === 'string') {
         handleControl(ev.data)
       } else {
-        const bytes = new Uint8Array(ev.data as ArrayBuffer)
-        // Counted only while a gesture is in flight: the question the overlay
-        // answers is whether output arriving mid-swipe is what breaks it.
-        if (debug.value && (touching || momentumFrame !== null))
-          debug.value = {
-            ...debug.value,
-            bytes: debug.value.bytes + bytes.length,
-          }
-        term.value?.write(bytes)
+        term.value?.write(new Uint8Array(ev.data as ArrayBuffer))
       }
     }
     ws.onclose = (ev) => scheduleReconnect(ev.code)
@@ -957,7 +844,6 @@ export function useTerminal() {
     status,
     term,
     mods,
-    debug,
     open,
     connect,
     dispose,
