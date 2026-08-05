@@ -91,3 +91,19 @@ body {
   touch-action: none;
   overscroll-behavior: contain;
 }
+
+/* Keep the terminal's own layering inside the terminal. xterm stacks its parts
+   with z-index — helpers at 5, decorations at 6 and 7, the overview ruler at 8
+   — and the WebGL renderer adds a canvas per layer, each with a z-index of its
+   own. `.xterm` is positioned but has no z-index, so it opens no stacking
+   context of its own and all of that competes with whatever sits beside the
+   terminal: the "session ended" and "reconnecting" overlays paint below a
+   canvas that covers the whole terminal, which then swallows the click that
+   was meant for the restart button.
+
+   `isolation: isolate` makes the host a stacking context without touching
+   layout, so the terminal's z-indexes are resolved among themselves and an
+   overlay after it in the document is above all of them. */
+.terminal-host {
+  isolation: isolate;
+}
