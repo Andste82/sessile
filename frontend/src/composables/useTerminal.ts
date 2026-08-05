@@ -44,6 +44,7 @@ export type ScrollDebug = {
   raw: number
   moves: number
   fingers: number
+  captured: number
   uncancelable: number
   cancels: number
   dragPx: number
@@ -146,7 +147,8 @@ export function useTerminal() {
   let beforeInputHandledPaste = false
 
   let touching = false
-  let touchId: number | null = null // the finger the gesture follows
+  let pointerId: number | null = null // the finger the gesture follows
+  const pointers = new Set<number>() // every finger currently down
   let touchLastY = 0
   let touchAccum = 0 // sub-line remainder in px, so drags track the finger 1:1
   let velocity = 0 // px/ms, smoothed — drives the flick momentum
@@ -273,8 +275,13 @@ export function useTerminal() {
     const ownGesture = { passive: false, capture: true }
     el.addEventListener('touchstart', onTouchStart, ownGesture)
     el.addEventListener('touchmove', onTouchMove, ownGesture)
-    el.addEventListener('touchend', onTouchEnd, { passive: true })
-    el.addEventListener('touchcancel', onTouchCancel, { passive: true })
+
+    // The gesture itself — see onPointerDown for why it cannot be the touch
+    // events above.
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointermove', onPointerMove)
+    el.addEventListener('pointerup', onPointerUp)
+    el.addEventListener('pointercancel', onPointerCancel)
 
     // The other half of "one scroller at a time" (issue #64). Blocking xterm's
     // touch handling is not enough on its own: xterm also writes
@@ -612,6 +619,7 @@ export function useTerminal() {
       raw: 0,
       moves: 0,
       fingers: 0,
+      captured: 0,
       uncancelable: 0,
       cancels: 0,
       dragPx: 0,
@@ -699,65 +707,58 @@ export function useTerminal() {
     momentumFrame = requestAnimationFrame(step)
   }
 
-  // findTouch returns the finger this gesture is following, or null once that
-  // finger has left the screen.
-  function findTouch(e: TouchEvent): Touch | null {
-    if (touchId === null) return null
-    for (let i = 0; i < e.touches.length; i++) {
-      if (e.touches[i].identifier === touchId) return e.touches[i]
-    }
-    return null
-  }
-
-  // anchor starts following a finger from wherever it is now, scrolling
-  // nothing: the distance since the last event belongs to the finger that left,
-  // not to this one.
-  function anchor(t: Touch, at: number) {
-    touchId = t.identifier
-    touchLastY = t.clientY
-    touchAccum = 0
-    velocity = 0
-    lastMoveAt = at
-    touching = true
-  }
-
-  function onTouchStart(e: TouchEvent) {
-    e.stopPropagation()
+  // The gesture runs on pointer events rather than touch events, because of the
+  // way xterm renders (issue #64). A touch event is delivered to whatever was
+  // under the finger when it landed, for the whole gesture — and xterm's DOM
+  // renderer rebuilds a row's children every time it draws it:
+  //
+  //   rowElement.replaceChildren(...rowFactory.createRow(...))
+  //
+  // Scrolling draws rows. So a finger that came down on a character is holding
+  // a <span> that the first scrolled line deletes, and every event after that
+  // is delivered to it while it hangs detached from the document, where neither
+  // our listener nor xterm's can see it. The view follows the finger for a few
+  // pixels and then stops dead. A finger that came down on empty space — the
+  // row itself, or past the end of the text — holds an element that survives,
+  // and that swipe tracks the finger the whole way. Which of the two you get is
+  // decided by where the finger landed, which is why one session gave both.
+  //
+  // setPointerCapture takes that decision away from the DOM: every later event
+  // for this pointer is delivered to the host element, whatever becomes of what
+  // was underneath it.
+  function onPointerDown(e: PointerEvent) {
+    if (e.pointerType === 'mouse') return // desktop selection stays xterm's
     stopMomentum()
     // Each gesture is measured on its own: the overlay describes the swipe that
     // just went wrong, not an average over the session.
     if (debugging) debug.value = emptyDebug()
-    countFingers(e)
-    // A finger landing while another is already being followed does not start a
-    // gesture. The swipe in progress used to freeze until the screen cleared,
-    // so a palm or the base of a thumb touching down could end it a line in.
-    if (findTouch(e)) return
-    if (e.touches.length > 0) anchor(e.touches[0], e.timeStamp)
+    pointers.add(e.pointerId)
+    if (debug.value && pointers.size > debug.value.fingers)
+      debug.value = { ...debug.value, fingers: pointers.size }
+    // A second finger is not a new gesture: a palm or the base of a thumb
+    // landing mid-swipe must not take it over, or end it.
+    if (pointerId !== null) return
+    pointerId = e.pointerId
+    try {
+      hostEl?.setPointerCapture(e.pointerId)
+      if (debug.value) debug.value = { ...debug.value, captured: 1 }
+    } catch {
+      // Refused: the gesture still works for as long as what is under the
+      // finger lives, which is all it ever did before.
+    }
+    touchLastY = e.clientY
+    touchAccum = 0
+    velocity = 0
+    lastMoveAt = e.timeStamp
+    touching = true
   }
 
-  function onTouchMove(e: TouchEvent) {
-    e.stopPropagation()
-    countFingers(e)
-    if (debug.value)
-      debug.value = {
-        ...debug.value,
-        raw: debug.value.raw + 1,
-        uncancelable: debug.value.uncancelable + (e.cancelable ? 0 : 1),
-      }
+  function onPointerMove(e: PointerEvent) {
+    if (e.pointerType === 'mouse' || e.pointerId !== pointerId) return
+    if (debug.value) debug.value = { ...debug.value, raw: debug.value.raw + 1 }
     if (!touching) return
-    // Own the gesture for the whole drag, in either direction and at either end
-    // of the scrollback — otherwise the leftover movement becomes a browser
-    // pull-to-refresh or edge back-swipe.
-    if (e.cancelable) e.preventDefault()
-    const t = findTouch(e)
-    // Our finger is gone without a touchend reaching us: carry on with whatever
-    // is still down rather than sitting out the rest of the swipe.
-    if (!t) {
-      if (e.touches.length > 0) anchor(e.touches[0], e.timeStamp)
-      return
-    }
-    const dy = touchLastY - t.clientY
-    touchLastY = t.clientY
+    const dy = touchLastY - e.clientY
+    touchLastY = e.clientY
     const dt = e.timeStamp - lastMoveAt
     lastMoveAt = e.timeStamp
     // Weighted toward the latest sample so the flick matches the finger's
@@ -772,30 +773,46 @@ export function useTerminal() {
     scrollPixels(dy)
   }
 
-  function onTouchEnd(e: TouchEvent) {
-    // Fingers still down: the gesture goes on, on one of them.
-    if (e.touches.length > 0) {
-      if (!findTouch(e)) anchor(e.touches[0], e.timeStamp)
-      return
-    }
+  function onPointerUp(e: PointerEvent) {
+    if (e.pointerType === 'mouse') return
+    pointers.delete(e.pointerId)
+    if (e.pointerId !== pointerId) return
+    pointerId = null
     if (!touching) return
     touching = false
-    touchId = null
     if (e.timeStamp - lastMoveAt > flickMaxIdleMs) velocity = 0
     startMomentum()
   }
 
-  function onTouchCancel() {
-    touching = false
-    touchId = null
+  function onPointerCancel(e: PointerEvent) {
+    if (e.pointerType === 'mouse') return
+    pointers.delete(e.pointerId)
     if (debug.value)
       debug.value = { ...debug.value, cancels: debug.value.cancels + 1 }
+    if (e.pointerId !== pointerId) return
+    pointerId = null
+    touching = false
     stopMomentum()
   }
 
-  function countFingers(e: TouchEvent) {
-    if (debug.value && e.touches.length > debug.value.fingers)
-      debug.value = { ...debug.value, fingers: e.touches.length }
+  // The touch listeners drive nothing now. They are what keeps xterm's own
+  // touch scrolling out of the gesture (see open()) and what stops the browser
+  // turning leftover travel into a pull-to-refresh at the ends of the backlog.
+  // They see only the events whose target is still in the document — but the
+  // ones that die detached are invisible to xterm as well, so nothing gets
+  // through unblocked.
+  function onTouchStart(e: TouchEvent) {
+    e.stopPropagation()
+  }
+
+  function onTouchMove(e: TouchEvent) {
+    e.stopPropagation()
+    if (debug.value && !e.cancelable)
+      debug.value = {
+        ...debug.value,
+        uncancelable: debug.value.uncancelable + 1,
+      }
+    if (e.cancelable) e.preventDefault()
   }
 
   function doFit() {
@@ -911,8 +928,10 @@ export function useTerminal() {
       // Capture flag included: it is part of what identifies the listener.
       hostEl.removeEventListener('touchstart', onTouchStart, true)
       hostEl.removeEventListener('touchmove', onTouchMove, true)
-      hostEl.removeEventListener('touchend', onTouchEnd)
-      hostEl.removeEventListener('touchcancel', onTouchCancel)
+      hostEl.removeEventListener('pointerdown', onPointerDown)
+      hostEl.removeEventListener('pointermove', onPointerMove)
+      hostEl.removeEventListener('pointerup', onPointerUp)
+      hostEl.removeEventListener('pointercancel', onPointerCancel)
       hostEl.removeEventListener('scroll', onViewportScroll, true)
       hostEl.removeEventListener('compositionstart', onCompositionStart, true)
       hostEl.removeEventListener('compositionend', onCompositionEnd, true)
