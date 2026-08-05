@@ -119,7 +119,7 @@ watch(
 
       <div
         v-if="conn === 'exited'"
-        class="absolute inset-x-0 top-0 flex justify-center p-3"
+        class="absolute inset-x-0 top-0 z-10 flex justify-center p-3"
       >
         <div
           class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 rounded-md bg-slate-800 px-3 py-1.5 text-sm text-slate-300 shadow"
@@ -141,7 +141,7 @@ watch(
 
       <div
         v-else-if="conn === 'disconnected'"
-        class="absolute inset-0 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm"
+        class="absolute inset-0 z-10 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm"
       >
         <div class="flex items-center gap-3 rounded-lg bg-slate-800 px-5 py-3 text-sm text-slate-200 shadow-lg">
           <span class="h-4 w-4 animate-spin rounded-full border-2 border-slate-500 border-t-emerald-400" />
