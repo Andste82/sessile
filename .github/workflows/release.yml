@@ -21,6 +21,7 @@ jobs:
   version:
     name: Resolve version
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
@@ -51,6 +52,7 @@ jobs:
     name: Binary (${{ matrix.goos }}/${{ matrix.goarch }})
     needs: version
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -112,6 +114,9 @@ jobs:
     name: Image ${{ matrix.variant }} (multi-arch -> GHCR)
     needs: version
     runs-on: ubuntu-latest
+    # A wedged emulated build gives no output and no error, so without this it
+    # burns the 6h default before anyone finds out. A healthy build is minutes.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -166,6 +171,7 @@ jobs:
     name: Verify pushed ${{ matrix.variant }} image
     needs: [version, image]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -209,6 +215,7 @@ jobs:
     name: Publish GitHub release
     needs: [version, binaries, verify-image]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # pattern is required: build-push-action also uploads a "*.dockerbuild"
       # build record, and pulling that one in fails the download step.
