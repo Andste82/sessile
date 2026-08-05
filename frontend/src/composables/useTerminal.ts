@@ -41,7 +41,11 @@ export type ScrollDebug = {
   pitch: number
   ydisp: number
   ybase: number
+  raw: number
   moves: number
+  fingers: number
+  uncancelable: number
+  cancels: number
   dragPx: number
   linesAsked: number
   linesMoved: number
@@ -142,6 +146,7 @@ export function useTerminal() {
   let beforeInputHandledPaste = false
 
   let touching = false
+  let touchId: number | null = null // the finger the gesture follows
   let touchLastY = 0
   let touchAccum = 0 // sub-line remainder in px, so drags track the finger 1:1
   let velocity = 0 // px/ms, smoothed — drives the flick momentum
@@ -604,7 +609,11 @@ export function useTerminal() {
       pitch: Math.round(rowHeight() * 100) / 100,
       ydisp: t?.buffer.active.viewportY ?? 0,
       ybase: t?.buffer.active.baseY ?? 0,
+      raw: 0,
       moves: 0,
+      fingers: 0,
+      uncancelable: 0,
+      cancels: 0,
       dragPx: 0,
       linesAsked: 0,
       linesMoved: 0,
@@ -690,29 +699,65 @@ export function useTerminal() {
     momentumFrame = requestAnimationFrame(step)
   }
 
+  // findTouch returns the finger this gesture is following, or null once that
+  // finger has left the screen.
+  function findTouch(e: TouchEvent): Touch | null {
+    if (touchId === null) return null
+    for (let i = 0; i < e.touches.length; i++) {
+      if (e.touches[i].identifier === touchId) return e.touches[i]
+    }
+    return null
+  }
+
+  // anchor starts following a finger from wherever it is now, scrolling
+  // nothing: the distance since the last event belongs to the finger that left,
+  // not to this one.
+  function anchor(t: Touch, at: number) {
+    touchId = t.identifier
+    touchLastY = t.clientY
+    touchAccum = 0
+    velocity = 0
+    lastMoveAt = at
+    touching = true
+  }
+
   function onTouchStart(e: TouchEvent) {
     e.stopPropagation()
     stopMomentum()
-    touching = e.touches.length === 1
-    if (!touching) return
-    touchLastY = e.touches[0].clientY
-    touchAccum = 0
-    lastMoveAt = e.timeStamp
     // Each gesture is measured on its own: the overlay describes the swipe that
     // just went wrong, not an average over the session.
     if (debugging) debug.value = emptyDebug()
+    countFingers(e)
+    // A finger landing while another is already being followed does not start a
+    // gesture. The swipe in progress used to freeze until the screen cleared,
+    // so a palm or the base of a thumb touching down could end it a line in.
+    if (findTouch(e)) return
+    if (e.touches.length > 0) anchor(e.touches[0], e.timeStamp)
   }
 
   function onTouchMove(e: TouchEvent) {
     e.stopPropagation()
-    if (!touching || e.touches.length !== 1) return
+    countFingers(e)
+    if (debug.value)
+      debug.value = {
+        ...debug.value,
+        raw: debug.value.raw + 1,
+        uncancelable: debug.value.uncancelable + (e.cancelable ? 0 : 1),
+      }
+    if (!touching) return
     // Own the gesture for the whole drag, in either direction and at either end
     // of the scrollback — otherwise the leftover movement becomes a browser
     // pull-to-refresh or edge back-swipe.
     if (e.cancelable) e.preventDefault()
-    const y = e.touches[0].clientY
-    const dy = touchLastY - y
-    touchLastY = y
+    const t = findTouch(e)
+    // Our finger is gone without a touchend reaching us: carry on with whatever
+    // is still down rather than sitting out the rest of the swipe.
+    if (!t) {
+      if (e.touches.length > 0) anchor(e.touches[0], e.timeStamp)
+      return
+    }
+    const dy = touchLastY - t.clientY
+    touchLastY = t.clientY
     const dt = e.timeStamp - lastMoveAt
     lastMoveAt = e.timeStamp
     // Weighted toward the latest sample so the flick matches the finger's
@@ -728,25 +773,29 @@ export function useTerminal() {
   }
 
   function onTouchEnd(e: TouchEvent) {
-    // A multi-finger touch dropping back to one finger: re-anchor on the
-    // survivor and keep scrolling rather than stranding the gesture.
-    if (e.touches.length === 1) {
-      touching = true
-      touchLastY = e.touches[0].clientY
-      touchAccum = 0
-      velocity = 0
-      lastMoveAt = e.timeStamp
+    // Fingers still down: the gesture goes on, on one of them.
+    if (e.touches.length > 0) {
+      if (!findTouch(e)) anchor(e.touches[0], e.timeStamp)
       return
     }
     if (!touching) return
     touching = false
+    touchId = null
     if (e.timeStamp - lastMoveAt > flickMaxIdleMs) velocity = 0
     startMomentum()
   }
 
   function onTouchCancel() {
     touching = false
+    touchId = null
+    if (debug.value)
+      debug.value = { ...debug.value, cancels: debug.value.cancels + 1 }
     stopMomentum()
+  }
+
+  function countFingers(e: TouchEvent) {
+    if (debug.value && e.touches.length > debug.value.fingers)
+      debug.value = { ...debug.value, fingers: e.touches.length }
   }
 
   function doFit() {
