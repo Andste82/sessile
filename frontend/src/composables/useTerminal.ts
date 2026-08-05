@@ -2,6 +2,7 @@ import { ref, shallowRef, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { applyUnicodeVersion } from '@/utils/unicode'
 import { useUiStore } from '@/stores/ui'
 import { loadSymbolFont, symbolFontFamilies } from '@/utils/fonts'
@@ -174,6 +175,31 @@ export function useTerminal() {
   let reconnectAttempts = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+  // loadWebgl swaps the DOM renderer for the GPU one, which is what VS Code's
+  // terminal runs on. It has to happen after open(): the addon needs the
+  // element the terminal was opened into.
+  //
+  // Every failure path ends in the DOM renderer, which is xterm's default and
+  // stays correct — it is the slow one, not the wrong one. loadAddon throws
+  // where there is no WebGL2 context to be had (old devices, a blocklisted
+  // driver, a browser with acceleration switched off), and a context can also
+  // be taken away later: mobile browsers reclaim GPU memory from backgrounded
+  // tabs, and a phone left on the terminal overnight comes back to a dead
+  // context. onContextLoss is the only warning of that, and an addon disposed
+  // there hands rendering back rather than leaving a terminal that has stopped
+  // painting.
+  function loadWebgl(t: Terminal) {
+    try {
+      const addon = new WebglAddon()
+      // Disposing here hands rendering back to the DOM renderer, which picks
+      // the buffer up as it stands.
+      addon.onContextLoss(() => addon.dispose())
+      t.loadAddon(addon)
+    } catch {
+      // No WebGL2 context to be had. The DOM renderer is already in place.
+    }
+  }
+
   // Awaits the symbol font before building the terminal. xterm measures each
   // character once and caches the width it works letter-spacing out from, so a
   // symbol drawn before the font lands keeps the fallback's width until
@@ -203,6 +229,7 @@ export function useTerminal() {
     // built-in table is not the one we want.
     applyUnicodeVersion(t)
     t.open(el)
+    loadWebgl(t)
     fit.fit()
 
     t.onData((d) => {
