@@ -44,9 +44,17 @@ type Session struct {
 	// runtime-only
 	pty         *terminal.PTY
 	buffer      *RingBuffer
-	clients     map[Client]struct{}
+	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
 	exited      chan struct{} // closed by the read loop once the shell is reaped
+}
+
+// clientGeom is the terminal size one attached client reports. A client that
+// has not sent a resize frame yet has none, and takes no part in the size the
+// session settles on.
+type clientGeom struct {
+	rows, cols uint16
+	known      bool
 }
 
 // Info is a snapshot of a session's public fields, safe to hand to the API and
@@ -98,14 +106,85 @@ func (s *Session) attach(c Client) {
 	if len(replay) > 0 {
 		c.Send(replay)
 	}
-	s.clients[c] = struct{}{}
+	// No geometry yet: the client sends its own the moment its socket opens,
+	// and until then it must not drag the session down to a size nobody has.
+	s.clients[c] = clientGeom{}
 }
 
-// detach removes c from the client set.
+// detach removes c from the client set and gives the size it was holding down
+// back to the clients that remain.
 func (s *Session) detach(c Client) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.clients, c)
+	rows, cols, ok := s.smallestLocked()
+	s.mu.Unlock()
+	if ok {
+		s.applySize(rows, cols)
+	}
+}
+
+// resize records what c can display and sizes the session to the smallest
+// window attached to it — see Manager.Resize for why the smallest one wins.
+//
+// A resize from a client that is not attached is ignored rather than applied:
+// it has no window to fit, and honouring it would let a closed connection set a
+// size nobody can see.
+func (s *Session) resize(c Client, rows, cols uint16) error {
+	s.mu.Lock()
+	if _, attached := s.clients[c]; !attached {
+		s.mu.Unlock()
+		return nil
+	}
+	s.clients[c] = clientGeom{rows: rows, cols: cols, known: true}
+	rows, cols, ok := s.smallestLocked()
+	s.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	return s.applySize(rows, cols)
+}
+
+// smallestLocked returns the largest size every attached client can display —
+// the smallest reported rows and the smallest reported cols, taken
+// independently, since a phone in portrait and a wide desktop window each
+// constrain a different axis. ok is false while nobody has reported a size,
+// where the session keeps whatever it has rather than falling back to a default
+// that no window asked for.
+//
+// s.mu must be held.
+func (s *Session) smallestLocked() (rows, cols uint16, ok bool) {
+	for _, g := range s.clients {
+		if !g.known {
+			continue
+		}
+		if !ok || g.rows < rows {
+			rows = g.rows
+		}
+		if !ok || g.cols < cols {
+			cols = g.cols
+		}
+		ok = true
+	}
+	return rows, cols, ok
+}
+
+// applySize resizes the PTY, and records the size on the session, if it is not
+// the size already in force. Resizing raises SIGWINCH, so repeating one costs
+// every full-screen program a redraw it does not need.
+func (s *Session) applySize(rows, cols uint16) error {
+	s.mu.Lock()
+	unchanged := s.Rows == rows && s.Cols == cols
+	s.mu.Unlock()
+	if unchanged {
+		return nil
+	}
+	if err := s.pty.Resize(rows, cols); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.Rows, s.Cols = rows, cols
+	s.mu.Unlock()
+	return nil
 }
 
 // broadcast appends data to the ring buffer and fans it out to every attached

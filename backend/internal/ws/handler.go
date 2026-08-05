@@ -135,7 +135,7 @@ func (h *Handler) handleControl(client *Client, id string, data []byte) {
 		if msg.Rows == 0 || msg.Cols == 0 {
 			return
 		}
-		if err := h.mgr.Resize(id, msg.Rows, msg.Cols); err != nil {
+		if err := h.mgr.Resize(id, client, msg.Rows, msg.Cols); err != nil {
 			h.log.Warn("resize failed", "id", id, "err", err)
 		}
 	default:
