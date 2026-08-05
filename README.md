@@ -24,9 +24,24 @@ specification.
   under the same id with one click: same directory, same shell, its scrollback
   replayed, and arrow-up still walking the commands typed in that session.
 - **Multi-client.** Several browsers can attach to the same session and see it
-  mirrored live, with per-session client counts.
+  mirrored live, with per-session client counts. The session is sized to the
+  smallest window attached to it, so its output fits every one of them — a
+  larger window has unused space, as a tmux client does, and gets it back when
+  the smaller one disconnects.
 - **Resilient UI.** Automatic reconnect with exponential backoff, a session tab
   bar, and a responsive layout that adapts from desktop to mobile.
+- **Usable by touch.** A one-finger drag scrolls the backlog and keeps coasting
+  after a flick. Where a program draws its own screen — `less`, `htop`, an
+  editor — the drag reaches the program instead, exactly as a mouse wheel does
+  on a desktop, since the alternate screen has no scrollback to move. An
+  on-screen bar supplies what a phone keyboard has no keys for: Ctrl, Alt and
+  Shift as sticky modifiers, plus Esc, Tab, the arrows, Home/End, PgUp/PgDn and
+  Del.
+- **GPU rendering.** The terminal draws through WebGL, the renderer VS Code's
+  terminal uses. Where no WebGL context can be had — an old device, a
+  blocklisted driver, or a context a mobile browser reclaims from a backgrounded
+  tab — it falls back to xterm's DOM renderer, which is slower but no less
+  correct.
 - **Single binary or container.** The frontend is embedded into a static,
   CGO-free Go binary; a small multi-stage container image is also provided.
 
@@ -46,6 +61,12 @@ Browser (xterm.js) ⇄ WebSocket ⇄ Go backend ⇄ PTY ⇄ shell process
   rather than allowed to stall the others.
 - **SQLite stores metadata only** (id, name, directory, shell, status,
   timestamps). The live PTY, ring buffer and geometry are runtime state.
+- **One PTY, one size.** Every attached client reports the geometry it can
+  display, and the PTY is sized to the smallest rows and the smallest cols among
+  them, per axis — a phone held upright constrains the width, a shallow desktop
+  window the height. Sizing to whichever client resized last would leave the
+  others rendering output the program never wrote for: lines wrapping in the
+  wrong place, and full-screen programs erasing rows they never drew.
 - Because shells are children of the backend, **live sessions do not survive a
   backend restart.** On startup any session still marked `running` is reconciled
   to `stopped`.
@@ -69,7 +90,8 @@ The WebSocket carries two kinds of frames:
 
 - **Backend:** Go, Gin, gorilla/websocket, creack/pty, modernc.org/sqlite
   (pure Go, builds with `CGO_ENABLED=0`).
-- **Frontend:** Vue 3 + TypeScript + Vite + Tailwind CSS + Pinia + @xterm/xterm.
+- **Frontend:** Vue 3 + TypeScript + Vite + Tailwind CSS + Pinia + @xterm/xterm
+  (with the `fit`, `web-links`, `unicode11` and `webgl` addons).
 
 Go 1.25+ is required (a pure-Go dependency needs it).
 
@@ -101,7 +123,7 @@ Released images are published to GitHub Container Registry for `linux/amd64`
 and `linux/arm64`. Nothing to build:
 
 ```bash
-docker pull ghcr.io/andste82/sessile:latest     # or pin a release: :0.1.2
+docker pull ghcr.io/andste82/sessile:latest     # or pin a release tag
 
 mkdir -p workspace
 docker run -d --name sessile -p 8080:8080 \
@@ -110,8 +132,10 @@ docker run -d --name sessile -p 8080:8080 \
   ghcr.io/andste82/sessile:latest
 ```
 
-Then open <http://localhost:8080>. Prefer a pinned tag like `:0.1.2` over
-`:latest` for anything you care about — `:latest` moves with every release.
+Then open <http://localhost:8080>. Prefer a pinned release tag over `:latest`
+for anything you care about — `:latest` moves with every release. The tags on
+offer are on the [releases
+page](https://github.com/Andste82/sessile/releases).
 
 ### Which variant?
 
@@ -120,8 +144,8 @@ they differ only in the userland your **shells** get:
 
 | Tag | Base | Size | libc | Coreutils |
 |---|---|---|---|---|
-| `:0.1.2`, `:latest` | Alpine | ~32 MB | musl | BusyBox |
-| `:0.1.2-ubuntu`, `:latest-ubuntu` | Ubuntu 24.04 | ~107 MB | glibc | GNU |
+| `:<version>`, `:latest` | Alpine | ~34 MB | musl | BusyBox |
+| `:<version>-ubuntu`, `:latest-ubuntu` | Ubuntu 24.04 | ~112 MB | glibc | GNU |
 
 Sessile itself is a static, CGO-free binary and runs the same on both. The
 difference matters for what *you* run inside a session:
@@ -145,7 +169,8 @@ Save as `docker-compose.yml` and run `docker compose up -d`:
 ```yaml
 services:
   sessile:
-    image: ghcr.io/andste82/sessile:0.1.2
+    # Pin a release tag from the releases page rather than tracking :latest.
+    image: ghcr.io/andste82/sessile:latest
     container_name: sessile
     ports:
       - "8080:8080"
@@ -179,9 +204,10 @@ make docker-ubuntu             # ubuntu variant, tags sessile:dev-ubuntu
 The image tag stays `dev` while its contents move, so `docker run sessile:dev`
 keeps meaning "the last one I built". What the build *reports* is another
 matter: Settings → Version shows `git describe` output for anything that is not
-a release — `0.1.4-31-ge0ec1de`, or with `-dirty` appended if the tree had
-uncommitted changes — so a screenshot of that page names the exact commit. A
-release is built with `VERSION` set from its tag and reports just `0.2.0`.
+a release: the last tag, the number of commits since it and the short hash,
+with `-dirty` appended if the tree had uncommitted changes — so a screenshot of
+that page names the exact commit. A release is built with `VERSION` set from
+its tag and reports just the tag.
 
 The image is multi-stage — Node builds the SPA, Go builds a static binary, and
 the runtime layer adds `bash` for shells. Both variants share the builder
@@ -190,9 +216,12 @@ stages and differ only in the final one (`--target runtime-alpine` /
 `/api/health` healthcheck and run `tini` as PID 1, which reaps the zombies that
 shells leave behind as grandchildren of PID 1.
 
-Two volumes: `/workspace` (the session root) and `/config` (SQLite metadata).
-The container runs as root, so treat it as having shell access to itself and
-keep it behind a trusted boundary.
+Two volumes: `/workspace` (the session root) and `/config` (all server state —
+the database, scrollback snapshots and per-session shell history). The image
+offers `bash` only, rather than the binary's `bash,zsh,fish`, since that is what
+it installs; add `--shells=` to the command if you install more. The container
+runs as root, so treat it as having shell access to itself and keep it behind a
+trusted boundary.
 
 Check what you are running:
 
@@ -213,6 +242,7 @@ Every option is a CLI flag with an environment-variable fallback.
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` | Per-session ring buffer size, in bytes |
 | `--session-retention` | `TSM_SESSION_RETENTION` | `0` | Discard stopped sessions idle longer than this on startup, with their scrollback and history. A Go duration — `720h`, not `30d`. `0` keeps them forever |
 | `--log-level` | `TSM_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `--allow-origin` | `TSM_ALLOW_ORIGIN` | *(none)* | One additional origin accepted for WebSocket upgrades, for a reverse proxy serving the UI under another name |
 | `--dev` | `TSM_DEV` | `false` | Relax the WebSocket origin check for the Vite dev server |
 
 `--version` prints the version and exits; `--help` lists every flag. Neither
@@ -220,7 +250,7 @@ needs `--root`.
 
 ```console
 $ sessile --version
-sessile 0.1.2
+sessile <version>
 ```
 
 The running server reports the same value at `GET /api/config`, and the UI shows
@@ -279,6 +309,7 @@ frontend/
     api/             typed REST client, shared types, WS protocol codec
     composables/     useTerminal (xterm + WebSocket wiring)
     stores/          Pinia session store
+    utils/           gesture routing, key encoding, clipboard, IME, fonts
     components/      sidebar, tab bar, terminal view, dialogs
     pages/           dashboard, terminal, settings
 docs/                design specification and manual checklists
@@ -291,8 +322,16 @@ make test            # go vet + go test ./...  and  vitest
 ```
 
 The backend suite covers the ring buffer, the directory sandbox, the SQLite
-store, and full create → attach → I/O → replay → delete flows against a real
-PTY. `scripts/wstest.sh` runs the same WebSocket walkthrough by hand.
+store, session sizing across several clients, and full create → attach → I/O →
+replay → delete flows against a real PTY. `scripts/wstest.sh` runs the same
+WebSocket walkthrough by hand. The frontend suite covers the pure logic — the
+WS codec, the REST client, key and clipboard encoding, IME handling, gesture
+routing — and deliberately stops there; there is no E2E framework.
+
+What no suite here can answer is how a gesture behaves under a thumb, so
+[`docs/mobile-checklist.md`](docs/mobile-checklist.md) carries the manual
+passes: scrolling idle and under load, momentum, the backlog's ends, and
+whether a full-screen program scrolls.
 
 GitHub Actions runs the same checks (`go vet`, `go test`, the frontend build and
 `vitest`) on every push and pull request — see
