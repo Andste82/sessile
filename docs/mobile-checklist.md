@@ -52,6 +52,12 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
 - [ ] At the top and bottom of the scrollback the gesture stops there — no
       pull-to-refresh, no back-swipe, no rubber-band on the page.
 - [ ] A tap still focuses the terminal and opens the keyboard.
+- [ ] Run a full-screen program — `less /etc/services`, `htop`, or an editor —
+      and drag: it scrolls, the same as a mouse wheel does on a desktop. The
+      alternate screen has no scrollback, so the drag reaches the program as
+      cursor keys or as a mouse report instead.
+- [ ] Leaving that program returns the drag to the backlog, with the scrollback
+      where it was.
 - [ ] "Disconnected — reconnecting…" overlay appears on connection loss and
       clears on reconnect.
 - [ ] "Session ended" banner appears when the shell exits.

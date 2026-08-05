@@ -340,6 +340,13 @@ frontend/src/
 - Fit on mount + on `ResizeObserver` change; after fit, send `resize`
   control frame.
 - `terminal.onData(d => ws.send(encoder.encode(d)))` (binary).
+- Touch scrolling routes the same way a mouse wheel does on a desktop, which is
+  the behaviour to match (`utils/gesture.ts`): the backlog scrolls for a shell,
+  and for a program drawing its own screen — the alternate screen, or any mouse
+  tracking mode above x10 — the drag is dispatched to xterm as a `wheel` event,
+  which encodes it as a mouse report or as cursor keys. Without that second
+  path a TUI does not react to being scrolled at all, since the alternate
+  screen has no scrollback to move.
 - On WS close (not user-initiated): show a "Disconnected — reconnecting…"
   overlay; retry with exponential backoff (1 s → 2 s → 4 s → max 15 s).
   On reattach, call `terminal.reset()` before replay so buffer replay
