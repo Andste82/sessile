@@ -51,7 +51,7 @@ Do **not** add GORM, sqlc, zap, or viper.
 - `@headlessui/vue`, `@heroicons/vue`
 - `@vueuse/core`
 - Terminal: `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`,
-  `@xterm/addon-unicode11`
+  `@xterm/addon-unicode11`, `@xterm/addon-webgl`
   (note: the packages are scoped `@xterm/*`; the old unscoped `xterm` packages are deprecated)
 
 Dev mode: Vite dev server proxies `/api` and `/ws` to the Go backend (see §10).
@@ -330,6 +330,13 @@ frontend/src/
 
 ### Terminal behavior (`useTerminal`)
 - Create `Terminal` with `scrollback: 5000`, load fit + web-links addons.
+- Rendering: load `@xterm/addon-webgl` after `terminal.open()` — the renderer
+  VS Code's terminal uses. Every failure path falls back to xterm's DOM
+  renderer, which is the slow one, not the wrong one: `loadAddon` throws where
+  no WebGL2 context can be had (old devices, blocklisted drivers, acceleration
+  switched off), and a context can be withdrawn later, since mobile browsers
+  reclaim GPU memory from backgrounded tabs. Dispose the addon in
+  `onContextLoss`, or the terminal stops painting instead of getting slower.
 - Fit on mount + on `ResizeObserver` change; after fit, send `resize`
   control frame.
 - `terminal.onData(d => ws.send(encoder.encode(d)))` (binary).
