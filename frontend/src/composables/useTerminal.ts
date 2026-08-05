@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { applyUnicodeVersion } from '@/utils/unicode'
+import { scrollTargetFor, type MouseTracking } from '@/utils/gesture'
 import { useUiStore } from '@/stores/ui'
 import { loadSymbolFont, symbolFontFamilies } from '@/utils/fonts'
 import { planReconnect, type ConnStatus } from '@/utils/reconnect'
@@ -125,6 +126,7 @@ export function useTerminal() {
   let touching = false
   let pointerId: number | null = null // the finger the gesture follows
   let touchLastY = 0
+  let touchLastX = 0
   let touchAccum = 0 // sub-line remainder in px, so drags track the finger 1:1
   let velocity = 0 // px/ms, smoothed — drives the flick momentum
   let lastMoveAt = 0
@@ -620,6 +622,52 @@ export function useTerminal() {
     return false
   }
 
+  // scrollBy sends a drag wherever the terminal's current state says it belongs
+  // — the same fork a desktop makes on a mouse wheel, which is the behaviour to
+  // match: a shell scrolls its backlog, and a program drawing its own screen
+  // gets told to scroll instead. Without the second half, a TUI on a phone
+  // simply does not react to being scrolled, because the alternate screen has
+  // no scrollback for us to move.
+  //
+  // Returns false when the scroll went nowhere, which is what stops momentum
+  // spinning against the end of a backlog.
+  function scrollBy(dy: number): boolean {
+    const t = term.value
+    if (!t) return false
+    const target = scrollTargetFor(
+      t.buffer.active.type,
+      t.modes.mouseTrackingMode as MouseTracking
+    )
+    if (target === 'backlog') return scrollPixels(dy)
+    sendWheel(dy)
+    // A program is free to ignore the scroll, and there is no way to ask
+    // whether it did, so a flick coasts its full decay rather than stopping on
+    // a signal we cannot read.
+    return true
+  }
+
+  // sendWheel hands the drag to xterm as a wheel event, which is the road the
+  // desktop already takes. xterm turns it into a mouse report for a program
+  // that asked for mouse tracking, or into cursor keys for one on the alternate
+  // screen — respecting application-cursor mode, the active mouse protocol, and
+  // its own sub-line accumulator. Encoding it here instead would mean a second
+  // copy of all three, free to drift from the one the wheel uses.
+  //
+  // Pixel delta and the finger's position: xterm reads the coordinates to fill
+  // in the row and column a mouse report carries.
+  function sendWheel(dy: number) {
+    term.value?.element?.dispatchEvent(
+      new WheelEvent('wheel', {
+        deltaY: dy,
+        deltaMode: 0, // pixels; xterm keeps the sub-line remainder itself
+        clientX: touchLastX,
+        clientY: touchLastY,
+        bubbles: true,
+        cancelable: true,
+      })
+    )
+  }
+
   function stopMomentum() {
     if (momentumFrame !== null) {
       cancelAnimationFrame(momentumFrame)
@@ -638,7 +686,7 @@ export function useTerminal() {
       // Clamp dt so a backgrounded tab does not resume with a huge jump.
       const dt = Math.min(now - last, 32)
       last = now
-      if (!scrollPixels(velocity * dt)) {
+      if (!scrollBy(velocity * dt)) {
         velocity = 0
         return
       }
@@ -685,6 +733,7 @@ export function useTerminal() {
       // finger lives, which is all it ever did before.
     }
     touchLastY = e.clientY
+    touchLastX = e.clientX
     touchAccum = 0
     velocity = 0
     lastMoveAt = e.timeStamp
@@ -696,12 +745,13 @@ export function useTerminal() {
     if (!touching) return
     const dy = touchLastY - e.clientY
     touchLastY = e.clientY
+    touchLastX = e.clientX
     const dt = e.timeStamp - lastMoveAt
     lastMoveAt = e.timeStamp
     // Weighted toward the latest sample so the flick matches the finger's
     // speed at release, but smoothed enough to ignore jittery events.
     if (dt > 0) velocity = 0.7 * (dy / dt) + 0.3 * velocity
-    scrollPixels(dy)
+    scrollBy(dy)
   }
 
   function onPointerUp(e: PointerEvent) {
