@@ -275,7 +275,7 @@ func (m *Manager) spawn(id, name, dir, shell string, created time.Time) (*Sessio
 		Cols:         defaultCols,
 		pty:          pty,
 		buffer:       NewRingBuffer(m.bufferSize),
-		clients:      make(map[Client]struct{}),
+		clients:      make(map[Client]clientGeom),
 		lastPersist:  now,
 		exited:       make(chan struct{}),
 	}, nil
@@ -623,7 +623,9 @@ func (m *Manager) Attach(id string, c Client) (Info, error) {
 	return s.Info(), nil
 }
 
-// Detach removes a client from a session.
+// Detach removes a client from a session. The session is resized afterwards:
+// the client that leaves may have been the one holding the size down, and the
+// windows that remain should get their space back.
 func (m *Manager) Detach(id string, c Client) {
 	m.mu.RLock()
 	s, ok := m.sessions[id]
@@ -652,21 +654,27 @@ func (m *Manager) WriteInput(id string, data []byte) error {
 	return s.pty.Write(data)
 }
 
-// Resize applies a new terminal size (last resize wins, §5).
-func (m *Manager) Resize(id string, rows, cols uint16) error {
+// Resize records what one client can display and sizes the PTY to the smallest
+// of them (§5).
+//
+// One PTY serves every attached client, and each renders it in a window of its
+// own — a phone beside a desktop is the ordinary case here, not a corner one.
+// Sizing to whoever spoke last leaves the others rendering a width the program
+// is not writing for: lines wrap where they should not, and a full-screen
+// program cleaning up after itself moves the cursor over rows that are not the
+// ones it drew, which is how the leftovers appear. The smallest size fits in
+// every window, which is the same answer tmux reaches for the same reason.
+//
+// A client whose window is larger than the session simply has unused space,
+// exactly as a tmux client does.
+func (m *Manager) Resize(id string, c Client, rows, cols uint16) error {
 	m.mu.RLock()
 	s, ok := m.sessions[id]
 	m.mu.RUnlock()
 	if !ok {
 		return ErrNotFound
 	}
-	if err := s.pty.Resize(rows, cols); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.Rows, s.Cols = rows, cols
-	s.mu.Unlock()
-	return nil
+	return s.resize(c, rows, cols)
 }
 
 // Shutdown marks all running sessions stopped in the store, disconnects clients

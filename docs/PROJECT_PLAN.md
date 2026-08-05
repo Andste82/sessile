@@ -231,9 +231,21 @@ Server → Client:
 {"type":"error","message":"…"}
 ```
 
-- Resize policy: **last resize wins** (any client resizing applies to the
-  PTY via `pty.Setsize` and is stored on the session). Keep it simple; do
-  not implement smallest-client negotiation.
+- Resize policy: **the smallest attached client wins**. Each client's reported
+  geometry is remembered, and the PTY is sized to the smallest rows and the
+  smallest cols across every attached client that has reported one, taken per
+  axis. Detaching releases that client's constraint; a client that has not
+  reported yet constrains nothing.
+
+  This reverses the original "last resize wins, do not implement
+  smallest-client negotiation". That rule assumed clients of one size, and
+  mirroring a session between a phone and a desktop — the case §5 exists for —
+  breaks under it: whichever window resized last sets the width, and every
+  other window renders output the program did not write for. Lines wrap where
+  they should not, and a full-screen program cleaning up after itself moves the
+  cursor over rows it never drew, leaving its screen behind. The smallest size
+  fits every window, which is the answer tmux reaches from the same starting
+  point. A client with a larger window has unused space, as a tmux client does.
 - Keep-alive: server sends WS ping every 30 s, expects pong within 10 s
   (gorilla ping/pong handlers). No JSON-level heartbeat needed.
 - Attach sequence, in order: upgrade → send `attached` control frame →
