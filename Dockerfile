@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # --- Stage 1: build the frontend -------------------------------------------
-FROM node:22-alpine AS frontend
+# Pinned to BUILDPLATFORM: the SPA is a pile of static files and is identical
+# whatever the target arch, so there is nothing to gain from building it under
+# emulation — and plenty to lose. Emulated, `npm ci` spawns node workers whose
+# JIT output QEMU can kill with SIGILL; npm never reaps the corpse and the build
+# hangs until the job times out. Build native, copy the result into the target.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend
 WORKDIR /app/frontend
 # Install deps first for better layer caching.
 COPY frontend/package.json frontend/package-lock.json ./
@@ -10,17 +15,23 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stage 2: build the Go binary (embeds the frontend) --------------------
-FROM golang:1.25-alpine AS backend
+# Same reasoning as stage 1, and Go needs no emulation to cross-compile: the
+# build runs native and GOOS/GOARCH come from the target. CGO is already off,
+# so this is a plain cross-compile with no toolchain to install.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend
 # Placeholder: a bare `docker build .` must not claim to be a released version.
 # The release workflow passes the real value from the git tag.
 ARG VERSION=dev
+# Supplied by BuildKit; declared here so they reach the RUN below.
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /app/backend
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 COPY backend/ ./
 # Overlay the freshly-built SPA into the embed directory.
 COPY --from=frontend /app/frontend/dist ./web/dist
-RUN CGO_ENABLED=0 go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -ldflags="-s -w -X github.com/Andste82/sessile/backend/internal/config.Version=${VERSION}" \
       -o /sessile ./cmd/server
 
