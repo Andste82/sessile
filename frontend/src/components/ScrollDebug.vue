@@ -7,9 +7,9 @@ import type { ScrollDebug } from '@/composables/useTerminal'
 // on are put on the screen next to the terminal that is getting them wrong.
 //
 // What to read, when a swipe moves one line instead of tracking the finger:
-//   raw ≈ 1 for a long swipe -> the browser stopped sending us the gesture. If
-//     cancels or uncanc is also up, it took the gesture for itself; touch-action
-//     did not hold for whatever was under the finger.
+//   raw ≈ 1 for a long swipe -> the gesture stopped reaching us. captured 0
+//     means pointer capture was refused, which is what used to let xterm delete
+//     the element the events were being delivered to.
 //   raw high but moves low -> the events arrived and we dropped them, and
 //     fingers says whether a second contact was the reason.
 //   pitch far from the row height (~font size + a little) -> we are measuring
@@ -31,9 +31,9 @@ defineProps<{ stats: ScrollDebug }>()
     <div>pitch {{ stats.pitch }}px</div>
     <div>ydisp {{ stats.ydisp }} / {{ stats.ybase }}</div>
     <div>raw {{ stats.raw }} · moves {{ stats.moves }}</div>
-    <div :class="stats.cancels + stats.uncancelable > 0 ? 'text-rose-400' : ''">
-      fingers {{ stats.fingers }} · uncanc {{ stats.uncancelable }} · cancels
-      {{ stats.cancels }}
+    <div :class="stats.captured ? '' : 'text-rose-400'">
+      fingers {{ stats.fingers }} · captured {{ stats.captured }} · uncanc
+      {{ stats.uncancelable }} · cancels {{ stats.cancels }}
     </div>
     <div>drag {{ stats.dragPx }}px</div>
     <div>asked {{ stats.linesAsked }} · moved {{ stats.linesMoved }}</div>
