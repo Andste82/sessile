@@ -1,6 +1,6 @@
-![Sessile Logo](./assets/sessile_logo.png)
+![sessile logo](./assets/sessile_logo.png)
 
-# Sessile
+# sessile
 
 A lightweight, browser-based **persistent terminal session manager** — think
 *tmux + the VS Code integrated terminal, in the browser*.
@@ -147,8 +147,8 @@ they differ only in the userland your **shells** get:
 | `:<version>`, `:latest` | Alpine | ~34 MB | musl | BusyBox |
 | `:<version>-ubuntu`, `:latest-ubuntu` | Ubuntu 24.04 | ~112 MB | glibc | GNU |
 
-Sessile itself is a static, CGO-free binary and runs the same on both. The
-difference matters for what *you* run inside a session:
+The sessile binary itself is static and CGO-free, and runs the same on both.
+The difference matters for what *you* run inside a session:
 
 - **Alpine** (default) is small and fine when sessions only use the shell and
   the tools you install yourself.
