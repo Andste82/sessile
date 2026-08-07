@@ -44,6 +44,7 @@ type Session struct {
 	// runtime-only
 	pty         *terminal.PTY
 	buffer      *RingBuffer
+	vt          vtScanner // terminal modes seen in the output stream (§4.7)
 	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
 	exited      chan struct{} // closed by the read loop once the shell is reaped
@@ -194,6 +195,12 @@ func (s *Session) broadcast(data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, _ = s.buffer.Write(data)
+	// The scanner runs here rather than on its own goroutine because this is
+	// already the one place every output byte passes, under the lock that makes
+	// the session's view of itself consistent. It is a byte loop over bytes the
+	// ring buffer just copied anyway, so there is nothing to queue and nothing
+	// that can be dropped — unlike the client fan-out below (§4.7).
+	s.vt.Feed(data)
 	s.LastActivity = timeNow()
 	for c := range s.clients {
 		if !c.Send(data) {
