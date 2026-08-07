@@ -1,10 +1,43 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useSessionsStore } from '@/stores/sessions'
 import { useUiStore, minFontSize, maxFontSize, defaultFontSize } from '@/stores/ui'
+import { isApplePlatform } from '@/utils/clipboard'
 
 const store = useSessionsStore()
 const ui = useUiStore()
+
+// The help below names the keys this browser actually listens for, so it is
+// worth knowing which platform we are on: the copy and paste chords are Cmd on
+// Apple keyboards and Ctrl everywhere else (see utils/clipboard.ts).
+const apple = isApplePlatform(navigator)
+
+// Each row: what you want to do, the keys that do it, and — where a key needs
+// one — the caveat a beginner would otherwise have to discover by being bitten.
+const clipboardHelp = computed(() => [
+  {
+    what: 'Copy',
+    keys: apple ? ['⌘ C'] : ['Ctrl + Shift + C', 'Ctrl + Insert'],
+    note: ui.copyOnSelect
+      ? 'Or just select the text with the mouse — copy on select is on.'
+      : 'Right-click offers Copy too.',
+  },
+  {
+    what: 'Paste',
+    keys: apple ? ['⌘ V'] : ['Ctrl + V', 'Shift + Insert'],
+    note: 'On a phone, use the keyboard’s own paste button.',
+  },
+  {
+    what: 'Interrupt',
+    // Ctrl even on Apple keyboards: this one is the terminal's, not the
+    // system's, and ⌘C is the copy above.
+    keys: ['Ctrl + C'],
+    note: 'Always stops the running program. It never copies, selection or not.',
+  },
+])
+
+const kbd =
+  'rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-xs text-slate-200'
 
 onMounted(() => {
   // Deliberately not awaited: the page renders while the config loads.
@@ -99,6 +132,54 @@ const stepBtn =
             Reset
           </button>
         </div>
+      </section>
+
+      <section class="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-6">
+        <h2 class="mb-4 text-sm font-medium uppercase tracking-wide text-slate-400">
+          Copy &amp; paste
+        </h2>
+
+        <label class="flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            class="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-emerald-400"
+            :checked="ui.copyOnSelect"
+            @change="ui.setCopyOnSelect(($event.target as HTMLInputElement).checked)"
+          />
+          <span>
+            <span class="text-sm text-slate-200">Copy on select</span>
+            <span class="mt-1 block text-xs text-slate-500">
+              Text you select with the mouse goes to the clipboard straight
+              away, so copying needs no key at all. It replaces whatever was on
+              the clipboard before.
+            </span>
+          </span>
+        </label>
+
+        <!-- The short version of the terminal clipboard rules. Two of them
+             surprise everybody the first time: Ctrl+C does not copy, and
+             Ctrl+Shift+C is the browser's own shortcut. -->
+        <dl class="mt-5 grid grid-cols-[5.5rem_1fr] items-baseline gap-x-4 gap-y-3 text-sm">
+          <template v-for="row in clipboardHelp" :key="row.what">
+            <dt class="text-slate-400">{{ row.what }}</dt>
+            <dd>
+              <span class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <template v-for="(key, i) in row.keys" :key="key">
+                  <span v-if="i > 0" class="text-xs text-slate-500">or</span>
+                  <kbd :class="kbd">{{ key }}</kbd>
+                </template>
+              </span>
+              <span class="mt-1 block text-xs text-slate-500">{{ row.note }}</span>
+            </dd>
+          </template>
+        </dl>
+
+        <p v-if="!apple" class="mt-4 text-xs text-slate-500">
+          Heads-up: <kbd :class="kbd">Ctrl + Shift + C</kbd> also opens the
+          browser’s developer tools, and no page can stop it. The text is
+          copied anyway — but copy on select and
+          <kbd :class="kbd">Ctrl + Insert</kbd> keep the devtools out of it.
+        </p>
       </section>
 
       <section class="rounded-lg border border-slate-700 bg-slate-800/50 p-6">
