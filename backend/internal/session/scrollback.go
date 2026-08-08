@@ -141,45 +141,8 @@ func restoreSeparator(at time.Time, inAltScreen bool) []byte {
 	return []byte(b.String())
 }
 
-// altScreenModes are the DEC private modes that switch to the alternate screen
-// buffer: the original 47, 1047 (clears on exit) and 1049 (saves and restores
-// the cursor as well). Programs use all three, sometimes in the same sequence.
-var altScreenModes = map[string]bool{"47": true, "1047": true, "1049": true}
-
-// endsInAltScreen reports whether data leaves the terminal in the alternate
-// screen buffer, by replaying the alternate-screen mode switches it contains
-// and keeping the last one to win.
-//
-// A snapshot is the tail of a ring buffer, so it can begin mid-sequence and the
-// switch that entered the alternate screen may have been cut off the front. In
-// that case this reports false and the separator simply does not reset a mode
-// the terminal was in — the same outcome as before this check existed, and
-// still no worse than overwriting the history in every ordinary session.
-func endsInAltScreen(data []byte) bool {
-	alt := false
-	for i := 0; i+2 < len(data); i++ {
-		if data[i] != 0x1b || data[i+1] != '[' || data[i+2] != '?' {
-			continue
-		}
-		// Private-mode parameters are digits and semicolons; anything else means
-		// this is not a mode set/reset and the scan resumes at the next byte.
-		j := i + 3
-		for j < len(data) && (data[j] >= '0' && data[j] <= '9' || data[j] == ';') {
-			j++
-		}
-		if j >= len(data) || (data[j] != 'h' && data[j] != 'l') {
-			continue
-		}
-		set := data[j] == 'h'
-		for _, p := range strings.Split(string(data[i+3:j]), ";") {
-			if altScreenModes[p] {
-				alt = set
-			}
-		}
-		i = j // the loop's i++ moves past the final byte
-	}
-	return alt
-}
+// endsInAltScreen lives in vtscan.go: the mode parsing it needs is the same
+// parsing the activity scanner does, and one stream format deserves one parser.
 
 // validID reports whether id is safe to use as a path element: non-empty, no
 // separators, no "." or ".." and no characters outside the UUID alphabet. It

@@ -41,9 +41,25 @@ type Session struct {
 	LastActivity time.Time
 	Rows, Cols   uint16
 
+	// derived activity, refreshed by the manager's sampler (§4.7). Empty
+	// activity means the session is not running.
+	activity      Activity
+	activitySince time.Time
+	fgCommand     string // foreground program name
+	fgCwd         string // its working directory, relative to root
+
+	// outputBytes counts every byte broadcast; the sampler compares it against
+	// sampledBytes to tell whether output kept coming, and outputRun is how
+	// many samples in a row it has. Only the comparison matters, so the counter
+	// wrapping after 16 exabytes is not a case worth handling.
+	outputBytes  uint64
+	sampledBytes uint64
+	outputRun    int
+
 	// runtime-only
 	pty         *terminal.PTY
 	buffer      *RingBuffer
+	vt          vtScanner // terminal modes seen in the output stream (§4.7)
 	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
 	exited      chan struct{} // closed by the read loop once the shell is reaped
@@ -71,6 +87,13 @@ type Info struct {
 	LastActivity time.Time
 	Rows, Cols   uint16
 	ClientCount  int
+
+	// Derived, never persisted (§4.7). Activity is empty for a stopped
+	// session; Command and Cwd are empty where they cannot be determined.
+	Activity      Activity
+	ActivitySince time.Time
+	Command       string
+	Cwd           string
 }
 
 // Info returns a copy of the session's public fields.
@@ -82,17 +105,21 @@ func (s *Session) Info() Info {
 
 func (s *Session) infoLocked() Info {
 	return Info{
-		ID:           s.ID,
-		Name:         s.Name,
-		Directory:    s.Directory,
-		Shell:        s.Shell,
-		Status:       s.Status,
-		PID:          s.PID,
-		Created:      s.Created,
-		LastActivity: s.LastActivity,
-		Rows:         s.Rows,
-		Cols:         s.Cols,
-		ClientCount:  len(s.clients),
+		ID:            s.ID,
+		Name:          s.Name,
+		Directory:     s.Directory,
+		Shell:         s.Shell,
+		Status:        s.Status,
+		PID:           s.PID,
+		Created:       s.Created,
+		LastActivity:  s.LastActivity,
+		Rows:          s.Rows,
+		Cols:          s.Cols,
+		ClientCount:   len(s.clients),
+		Activity:      s.activity,
+		ActivitySince: s.activitySince,
+		Command:       s.fgCommand,
+		Cwd:           s.fgCwd,
 	}
 }
 
@@ -195,6 +222,13 @@ func (s *Session) broadcast(data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, _ = s.buffer.Write(data)
+	// The scanner runs here rather than on its own goroutine because this is
+	// already the one place every output byte passes, under the lock that makes
+	// the session's view of itself consistent. It is a byte loop over bytes the
+	// ring buffer just copied anyway, so there is nothing to queue and nothing
+	// that can be dropped — unlike the client fan-out below (§4.7).
+	s.vt.Feed(data)
+	s.outputBytes += uint64(len(data))
 	s.LastActivity = timeNow()
 	for c := range s.clients {
 		if !c.Send(data) {
@@ -276,6 +310,13 @@ func (s *Session) markDiscarded() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.discarded = true
+}
+
+// isDiscarded reports whether Delete has already removed this session.
+func (s *Session) isDiscarded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.discarded
 }
 
 // releaseBuffer drops the scrollback of a stopped session.

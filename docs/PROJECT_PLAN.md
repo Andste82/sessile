@@ -16,11 +16,13 @@ verify each milestone's acceptance criteria before moving on.
 - Web UI (responsive SPA) to create, list, attach, and kill sessions
 - Multiple simultaneous clients attached to the same session
 - Scrollback restoration on reconnect
+- Per-session activity state derived from the session's own PTY (§4.7), so the
+  dashboard can say which session is working and which is waiting for input
 
 ### Explicitly Out of Scope (do NOT build these, even partially)
 - File manager, SFTP, upload/download
 - Docker/Kubernetes management
-- RDP/VNC, monitoring, server inventory
+- RDP/VNC, host monitoring (CPU/RAM/disk/service dashboards), server inventory
 - Script execution framework
 - Remote SSH sessions (future — design must not block it, but write zero SSH code now)
 
@@ -85,7 +87,9 @@ Reconnect/restore works like this — implement it exactly:
    (default 512 KiB, configurable).
 2. A single goroutine per session reads from the PTY and, for each chunk:
    a. appends it to the ring buffer,
-   b. broadcasts it to all attached clients.
+   b. feeds it to the mode scanner (§4.7) — a byte loop over bytes already
+      being copied, which keeps three booleans and stores nothing,
+   c. broadcasts it to all attached clients.
 3. When a client attaches, the server first sends the **entire current ring
    buffer contents** as one or more binary frames, then streams live output.
 4. xterm.js re-renders ANSI sequences from that replay, restoring colors,
@@ -112,13 +116,19 @@ backend/
     ws/                     # WebSocket endpoint + client pumps
       handler.go
       client.go             # read pump / write pump per client
+      events.go             # /ws/events: session state fan-out (see §5)
       protocol.go           # message types (see §5)
     session/
       manager.go            # SessionManager (the core component)
       session.go            # Session struct + lifecycle
       ringbuffer.go
+      vtscan.go             # escape-sequence scanner — modes only (§4.7)
+      activity.go           # activity classification + sampler (§4.7)
+      events.go             # subscriber fan-out for /ws/events
     terminal/
       pty.go                # PTY start/resize/kill wrappers
+      foreground_linux.go   # TIOCGPGRP + /proc lookup (§4.7)
+      foreground_other.go   # build fallback: reports nothing
     storage/
       sqlite.go             # open + migrate
       sessions.go           # CRUD queries
@@ -208,6 +218,103 @@ outside root, and valid nested paths.
   SIGTERM child process groups, close WS connections, then exit.
 - Start shells with `Setsid`/process group so `Delete` can kill the whole tree.
 
+### 4.7 Session activity (app-agnostic, no emulation)
+
+A running session reports one of three derived states — `busy`, `waiting`,
+`idle` — plus the name of the program in the foreground and its working
+directory. Nothing here knows about any particular program: adding support for
+a new TUI means adding no code.
+
+This is the design tmux arrives at, minus the part tmux needs and we do not.
+tmux resolves `#{pane_current_command}` with `tcgetpgrp()` on the pty master
+plus a `/proc` lookup (`osdep-linux.c`), and drives `monitor-activity` /
+`monitor-bell` / `monitor-silence` from arriving bytes alone. Neither reads
+tmux's screen grid. We take both and stop there — see §14.2.
+
+**Three inputs, in order of how much they can be trusted:**
+
+1. **Foreground process group** — `ioctl(TIOCGPGRP)` on the pty **master**,
+   then `/proc/<pgid>/comm` and `/proc/<pgid>/cwd`. Exact, not inferred: the
+   kernel is the authority on which program owns the terminal. When the
+   foreground group is the session's own shell, the shell is at its prompt.
+   Sampled once a second, not per byte.
+
+   Take the fd through `File.SyscallConn()`, never `File.Fd()` — `Fd()` pulls
+   the file out of the runtime poller and switches it to blocking mode, which
+   would quietly break the read loop and `CloseFile()`.
+
+   `cwd` is a path the user did not supply but the UI displays, so it goes
+   through the §4.5 sandbox like any other: made relative to root, dropped if
+   it resolves outside. A session whose shell has `cd`-ed out of root shows its
+   stored `directory` instead.
+
+2. **Output cadence** — time since the last byte left the PTY. No inspection of
+   content whatsoever.
+
+3. **Bracketed paste mode** (`ESC[?2004h` / `l`) — scanned out of the byte
+   stream by `vtscan.go`. This is the narrow signal for "something is reading a
+   line right now": readline, ZLE, fish's reader and Ink-based apps all set it
+   while reading and clear it before running. Also scanned: the alternate
+   screen modes (already needed by `scrollback.go`) and BEL.
+
+**Classification** — `classify()` in `activity.go` is a pure function over a
+snapshot of those inputs, so the whole table below is a unit test:
+
+| # | Condition | State |
+|---|---|---|
+| 1 | bytes within `busyWindow` (1.5 s) | `busy` |
+| 2 | bracketed paste on, foreground **is** the shell | `idle` |
+| 3 | bracketed paste on, foreground is **not** the shell, quiet ≥ `waitQuiet` (2.5 s) | `waiting` |
+| 4 | foreground **is** the shell | `idle` |
+| 5 | BEL within `bellWindow` (60 s) | `waiting` |
+| 6 | otherwise | `busy` |
+
+Ahead of all six sits one piece of hysteresis: a session that is already
+`waiting`, whose foreground program is still reading a line, stays `waiting`
+unless output is **sustained** — present in two consecutive samples rather than
+just recent. Programs that are waiting still repaint, and against a real Claude
+Code session each repaint otherwise dropped the indicator to `busy` for four
+seconds, several times a minute. The asymmetry is deliberate: entering the state
+needs positive evidence and a dwell, and so does leaving it. An indicator that
+flickers is worse than one that is a second late.
+
+Sustained is counted in sample intervals, not bytes. "Did output keep coming" is
+a property every program has; "did more than N bytes arrive" is a threshold that
+would need tuning per program, which is the thing this section exists to avoid.
+
+Rule 3's dwell time is what keeps a slow-redrawing program from oscillating:
+htop repaints every 1.5 s, so a threshold at the `busy` boundary alone would
+flip it back and forth. Rule 6 is the deliberate default — a program that is
+running, silent and not visibly prompting is working, not asking. That is why
+cursor visibility (`ESC[?25h`) is **not** an input: it is the default state, so
+a quiet `go build` would read as a question, and Claude Code inverts it anyway
+by hiding the cursor while it waits.
+
+**Measured, not assumed.** These rules were fixed after capturing real PTY
+sessions; re-run that capture before changing them.
+
+| Program | bracketed paste | alt screen | cursor | output while waiting |
+|---|---|---|---|---|
+| bash / zsh / fish | on at prompt, off while running | no | shown | none |
+| `sh` (dash) | never — carried by rule 4 | no | shown | none |
+| Claude Code | **on while waiting** | no | **hidden** | none |
+| htop | never | yes | hidden | repaint every 1.5 s |
+| `python3 input()` | never | no | shown | none |
+
+**Known limits, accepted by design.** Constant repainters (`htop`, `top`,
+`watch`) read as permanently `busy` — correct under rule 1, and tmux's `#`
+flag behaves the same. A program that waits for input without setting
+bracketed paste and without ringing the bell (`python3 input()`, a bare `read`
+in a script) reads as `busy`. Both are false negatives: the UI stays quiet
+instead of claiming attention it does not deserve, which is the direction to
+err in. Off Linux there is no `/proc`, so `command` and `cwd` are empty and
+only the cadence rules apply.
+
+**Cost.** The scanner runs inline in `broadcast` next to the ring-buffer write
+— a byte loop over bytes already being copied, no goroutine and no channel, so
+nothing can be dropped. The foreground lookup runs on one manager-wide
+goroutine ticking every second, not one per session.
+
 ---
 
 ## 5. WebSocket Protocol (exact spec)
@@ -264,6 +371,36 @@ Frontend uses plain `WebSocket` with `binaryType = "arraybuffer"`; feed
 binary data straight into `terminal.write(new Uint8Array(data))`. Do not use
 `@xterm/addon-attach` (its protocol doesn't match ours).
 
+### 5.1 Event channel — `GET /ws/events`
+
+A second endpoint, carrying session **list** state rather than terminal bytes.
+It exists because the per-session socket above is open only for a session whose
+terminal is on screen, and the dashboard is by definition the page where no
+terminal is mounted — so the one socket that could report on a session is the
+one whose screen the user is already looking at.
+
+**Text frames only** — this channel never carries binary. Server → client:
+
+```json
+{"type":"sessions","sessions":[ …session JSON (§6)… ]}   // full snapshot, sent first
+{"type":"session","session":{ …session JSON (§6)… }}     // one session created or changed
+{"type":"sessionGone","sessionId":"…"}                   // deleted
+```
+
+There are no client → server messages; anything received is discarded. The
+connection carries the same 30 s ping / 40 s pong keep-alive and the same
+slow-consumer policy as a terminal client (close 4001) — it reuses `ws.Client`
+unchanged, so there is still exactly one writer goroutine per connection (§14.3).
+
+Sequence: upgrade → `sessions` snapshot → subscribe → incremental messages.
+A `session` message is published on activity change (§4.7), status change,
+create, rename and restart; `sessionGone` on delete.
+
+This channel replaces the 5 s list poll of §12 M4. The frontend keeps polling
+as a **fallback while the socket is down** — the socket closing is itself the
+signal that the list may be stale, and an unreachable backend still has to mark
+every session stopped (`markAllStopped`).
+
 ---
 
 ## 6. REST API (exact spec)
@@ -303,9 +440,31 @@ Session JSON shape (single source of truth — mirror in TS types):
   "id":"…","name":"Backend","directory":"project-a","shell":"bash",
   "status":"running","pid":12345,
   "created":"2026-07-16T12:00:00Z","lastActivity":"2026-07-16T12:34:56Z",
-  "rows":32,"cols":120,"clientCount":2
+  "rows":32,"cols":120,"clientCount":2,
+  "activity":"busy","command":"claude","cwd":"project-a/backend",
+  "activitySince":"2026-07-16T12:34:12Z"
 }
 ```
+
+The shape is defined once, in Go, as `session.JSON` with `session.ToJSON(Info)`
+— not in `internal/api`. Both the REST handlers and the event channel (§5.1)
+serialise it, and `api` imports `ws`, so a shape owned by `api` could not be
+reached from either of the packages that push it. `session` already owns the
+control-message types for the same reason.
+
+The last four fields come from §4.7 and are runtime-only — none of them is
+persisted, and the SQLite schema (§8) is unchanged:
+
+| Field | Meaning |
+|---|---|
+| `activity` | `"busy"` \| `"waiting"` \| `"idle"`; empty string for a stopped session |
+| `command` | foreground program, e.g. `claude`, `htop`, or the shell when at a prompt. Empty where unavailable |
+| `cwd` | the shell's actual working directory, relative to root — follows `cd`, unlike `directory`. Empty when unknown or outside root |
+| `activitySince` | RFC 3339 UTC; when the session entered its current `activity` |
+
+The bell is deliberately **not** exported. It is an input to rule 5 of §4.7,
+not a fourth state: one indicator with three running states is the whole UI
+surface (§7).
 
 ---
 
@@ -316,7 +475,8 @@ Session JSON shape (single source of truth — mirror in TS types):
 frontend/src/
   api/          # typed fetch wrappers + TS interfaces mirroring §6
   composables/  # useTerminal.ts (xterm setup, WS wiring, fit, reconnect)
-  stores/       # sessions.ts (Pinia): list, create, delete, polling
+                # useSessionEvents.ts (/ws/events → store, §5.1)
+  stores/       # sessions.ts (Pinia): list, create, delete, fallback polling
                 # ui.ts: view state + persisted client preferences
   components/   # Sidebar.vue, SessionListItem.vue, NewSessionDialog.vue,
                 # TerminalView.vue, StatusDot.vue, TabBar.vue
@@ -325,8 +485,26 @@ frontend/src/
 ```
 
 ### Pages
-- **Dashboard** (`/`): session cards (name, status dot, directory, last
-  activity, client count), "New Session" button, root dir shown.
+- **Dashboard** (`/`): session cards, "New Session" button, root dir shown.
+  A card carries the activity indicator, name, shell, the foreground program
+  and how long it has been in its current state (§4.7), the working directory
+  — `cwd` when known, falling back to the stored `directory` — the client count
+  when more than one browser is attached, and last activity.
+
+  The indicator is one component (`StatusDot.vue`) used on the card, in the
+  sidebar and in the tab bar, so a session that wants attention is visible from
+  inside another session and not only from the dashboard. Four states, reusing
+  the palette already in the app rather than introducing colours:
+
+  | State | Rendering |
+  |---|---|
+  | `stopped` | slate dot |
+  | `idle` | emerald dot with glow — the app's existing "running" look |
+  | `busy` | emerald dot, `animate-pulse` |
+  | `waiting` | amber `?` in place of the dot — amber is already the app's attention colour |
+
+  No browser notifications and no document-title signalling: the indicator is
+  the whole surface, per "zero distractions" (§1).
 - **Terminal** (`/sessions/:id`): full-height xterm, tab bar of open
   sessions, dark theme default.
 - **Settings** (`/settings`): read-only server config display, plus the client
@@ -619,6 +797,19 @@ Multi-stage Dockerfile, compose file, README (features, screenshots later,
 config table, security notes, backend-restart caveat).
 ✅ *Verify:* `docker compose up` → full workflow works from a clean machine.
 
+### M7 — Session activity + dashboard overview
+Escape-scanner and foreground-process lookup (§4.7), activity classification
+and sampler, the event fan-out and `/ws/events` (§5.1), the four new session
+fields (§6), the four-state indicator and the rebuilt dashboard card (§7).
+The list poll becomes a fallback for when the event socket is down.
+✅ *Verify:* in one session run `sleep 20` → the dot pulses and the card names
+`sleep`; back at the prompt → steady dot, card names the shell. `cd` into a
+subdirectory → the card follows. Start `claude` in a second session, let it ask
+something → amber `?`, visible from inside the first session's tab bar. Create
+a session in a second browser tab → it appears in the first at once, not after
+5 s. Stop the backend → every dot goes slate; start it → the socket reconnects
+and the states come back. `htop` reads as permanently `busy` — expected (§4.7).
+
 ### v0.3+ (later, do not start now)
 Search/filter, favorites, rename (PATCH), then v0.4 auth/multi-user/roles/
 audit log. Future: SSH remotes, tmux import, session sharing, read-only mode.
@@ -628,7 +819,10 @@ audit log. Future: SSH remotes, tmux import, session sharing, read-only mode.
 ## 13. Testing Strategy
 
 - **Unit (Go):** RingBuffer (wraparound, exact-boundary), path sandbox
-  (§4.5 cases), shell allowlist, session state transitions.
+  (§4.5 cases), shell allowlist, session state transitions, the escape scanner
+  (§4.7 — sequences split across chunk boundaries and BEL as an OSC terminator
+  are the two cases a naive scanner gets wrong), `classify()` as a table over
+  all six rules, and the event fan-out including its slow-subscriber drop.
 - **Integration (Go):** `httptest` + real PTY: create → attach → I/O →
   replay → delete. Use `sh -c 'echo READY; cat'` as a deterministic shell
   for tests instead of bash.
@@ -642,7 +836,18 @@ audit log. Future: SSH remotes, tmux import, session sharing, read-only mode.
 ## 14. Non-negotiable Design Principles
 
 1. Backend owns the terminals; the browser is a dumb view.
-2. Raw byte replay via ring buffer — no server-side terminal emulation.
+2. Raw byte replay via ring buffer — no server-side terminal emulation. The
+   server holds no character grid, no cursor and no cell attributes; there is
+   exactly one terminal emulator in the system and it is the xterm.js the user
+   is looking at. §4.7's scanner does not weaken this: it reads mode switches
+   out of the stream and keeps three booleans, and it can answer "is something
+   reading a line" but never "what is on the screen".
+
+   This is the line that keeps the dashboard from showing a preview of each
+   session's screen. That feature needs `tmux capture-pane`, which needs
+   tmux's `grid.c` — and a second, less complete emulator would disagree with
+   xterm.js exactly in the cases where the answer matters, with no way for the
+   user to tell which one is lying.
 3. One writer goroutine per WS connection; broadcasts never block.
 4. Every user-supplied path goes through the sandbox function. No exceptions.
 5. Decisions in this spec are final for v0.1–0.2; do not introduce

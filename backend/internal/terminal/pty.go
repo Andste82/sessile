@@ -28,6 +28,19 @@ type PTY struct {
 	writeMu sync.Mutex // serializes input writes from multiple clients (§4.4)
 }
 
+// Foreground describes the program currently owning the terminal — the process
+// group the kernel will deliver a Ctrl+C to. When it is the session's own
+// shell, the shell is sitting at its prompt; otherwise it is the program the
+// user started (PROJECT_PLAN.md §4.7).
+//
+// A zero value means "not known", which is what every field reduces to off
+// Linux. Callers must treat empty strings as absent rather than as an answer.
+type Foreground struct {
+	PID  int
+	Name string // program name, e.g. "claude", "htop", "bash"
+	Cwd  string // absolute working directory, still to be sandbox-checked
+}
+
 // Write sends input bytes to the PTY, serialized across concurrent callers.
 func (p *PTY) Write(data []byte) error {
 	p.writeMu.Lock()
