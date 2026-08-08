@@ -111,6 +111,10 @@ export function useTerminal() {
   let imeComposing = false // between compositionstart and compositionend
   let imeDelivered = false // already flushed by a real key; ignore the tail
   let imeSettleTimer: ReturnType<typeof setTimeout> | null = null
+  // True only while resetXtermComposition is dispatching its own compositionend,
+  // so the handler below can recognise that event by identity. It used to
+  // recognise it by isTrusted, which is not the same question — see there.
+  let imeResetting = false
   // Quiet period that ends a sequence. Gboard's end-then-restart churn lands
   // within a task or two; anything longer is a new word, not a correction.
   const imeSettleMs = 40
@@ -550,7 +554,7 @@ export function useTerminal() {
   }
 
   function onCompositionStart(e: Event) {
-    if (!e.isTrusted) return // ours, from resetXtermComposition
+    if (imeResetting) return // ours, from resetXtermComposition
     trace('compositionstart', { data: (e as CompositionEvent).data ?? '' })
     beginImeSequence()
     imeComposing = true
@@ -561,8 +565,16 @@ export function useTerminal() {
   // send a slice of the textarea, and on a predictive keyboard this event
   // often marks an intermediate state ("hel" before the tapped "hello"), not
   // the finished word. What ends the word is quiet, so we wait for it.
+  // The guard is our own dispatch flag, not e.isTrusted. The question here is
+  // "did we send this", and isTrusted answers a different one: Chrome ends a
+  // composition with an untrusted compositionend of its own in the path a
+  // keyboard commits a glided word through. Treating that as ours left
+  // imeComposing stuck on, so no settle was ever armed and the sequence never
+  // finished — the word escaped through xterm's own path, and everything the
+  // keyboard committed after it, the trailing space included, stayed in the
+  // helper textarea for good (issue #82).
   function onCompositionEnd(e: Event) {
-    if (!e.isTrusted) return
+    if (imeResetting) return
     trace('compositionend', { data: (e as CompositionEvent).data ?? '' })
     e.stopPropagation()
     imeComposing = false
@@ -659,9 +671,16 @@ export function useTerminal() {
   // holds open, and hides the composition overlay — while its own finalize
   // reads an empty string and so cannot deliver the word again.
   function resetXtermComposition() {
-    term.value?.textarea?.dispatchEvent(
-      new CompositionEvent('compositionend', { data: '' })
-    )
+    imeResetting = true
+    try {
+      term.value?.textarea?.dispatchEvent(
+        new CompositionEvent('compositionend', { data: '' })
+      )
+    } finally {
+      // dispatchEvent is synchronous, so the flag covers exactly this event and
+      // nothing else — which is the whole reason it can replace isTrusted.
+      imeResetting = false
+    }
   }
 
   // onViewportScroll withholds a viewport scroll event from xterm for as long

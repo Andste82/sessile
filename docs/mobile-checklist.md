@@ -74,6 +74,25 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
 - [ ] Swipe a word and then press Enter straight away: the word arrives, then
       the newline, in that order.
 
+### Reproducing the swipe fault without a phone
+
+Chromium can drive a real composition over CDP, which is trusted input and so
+runs the same handlers a keyboard does — unlike events dispatched from page
+JavaScript, which are `isTrusted: false` and take a different path. That is what
+found #82:
+
+```js
+const cdp = await page.context().newCDPSession(page)
+await cdp.send('Input.imeSetComposition', { text: 'hello', selectionStart: 5, selectionEnd: 5 })
+await cdp.send('Input.insertText', { text: 'hello' })  // commits the word
+await cdp.send('Input.insertText', { text: ' ' })      // the keyboard's trailing space
+```
+
+Watch what leaves, not what the app thinks it sent: wrap `WebSocket.prototype.send`
+in an init script and decode the payloads. Playwright is deliberately **not** a
+project dependency (§2 rules out an E2E framework), so this lives in a scratch
+directory when it is needed and does not ship.
+
 ### Capturing an IME trace
 
 The keyboard's own event sequence is the one thing that cannot be read off the
