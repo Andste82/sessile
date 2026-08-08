@@ -544,7 +544,14 @@ func (m *Manager) Delete(id string) error {
 	}
 
 	s.closeClients(closeSessionEnded, "session deleted")
-	s.terminate(killGrace)
+	// Before terminating, so there is no window in which the read loop could
+	// still take a snapshot of a session that is on its way out.
+	s.markDiscarded()
+	if !s.terminate(killGrace) {
+		m.log.Warn("session shell outlived its delete: a process outside its "+
+			"group is holding the terminal open; the read loop will finish when "+
+			"that process exits", "id", id, "pid", s.PID)
+	}
 	if m.store != nil {
 		if err := m.store.Delete(id); err != nil {
 			return err
@@ -723,7 +730,12 @@ func (m *Manager) Shutdown() {
 		// is only in the ring buffer, and terminate blocks until it is reaped.
 		// A session that already stopped is skipped inside saveScrollback.
 		m.saveScrollback(s)
-		s.terminate(killGrace)
+		if !s.terminate(killGrace) {
+			// Not fatal, and no longer able to stall the shutdown: the snapshot
+			// above is already on disk, so the session restarts intact next time.
+			m.log.Warn("shell outlived shutdown: a process outside its group is "+
+				"holding the terminal open", "id", s.ID, "pid", s.PID)
+		}
 	}
 	m.closeSubscribers()
 }

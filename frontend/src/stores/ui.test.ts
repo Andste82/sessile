@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { clampFontSize, defaultFontSize, maxFontSize, minFontSize, useUiStore } from './ui'
+import {
+  clampFontSize,
+  defaultCopyOnSelect,
+  defaultFontSize,
+  maxFontSize,
+  minFontSize,
+  parseCopyOnSelect,
+  useUiStore,
+} from './ui'
 
 // localStorage does not exist in the test environment, so each case installs the
 // shape the store reaches for and takes it away again.
@@ -65,6 +73,101 @@ describe('clampFontSize', () => {
       expect(clampFontSize(input)).toBe(defaultFontSize)
     },
   )
+})
+
+describe('parseCopyOnSelect', () => {
+  it.each([
+    ['true', true],
+    ['false', false],
+  ])('reads %o as %o', (input, want) => {
+    expect(parseCopyOnSelect(input)).toBe(want)
+  })
+
+  // Anything we did not write is "no usable value", not "off": '' and null are
+  // falsy, and reading them as a decision would silently disable the feature.
+  it.each([['', 'nonsense', '1', null, undefined]].flat())(
+    'falls back to the default for %o',
+    (input) => {
+      expect(parseCopyOnSelect(input)).toBe(defaultCopyOnSelect)
+    },
+  )
+})
+
+describe('copy on select', () => {
+  it('defaults when nothing is stored', () => {
+    withStorage(fakeStorage())
+    expect(useUiStore().copyOnSelect).toBe(defaultCopyOnSelect)
+  })
+
+  it('restores a stored choice', () => {
+    withStorage(fakeStorage({ 'sessile.copyOnSelect': 'false' }))
+    expect(useUiStore().copyOnSelect).toBe(false)
+  })
+
+  it('persists a new choice', async () => {
+    const storage = fakeStorage()
+    withStorage(storage)
+    const ui = useUiStore()
+
+    ui.setCopyOnSelect(false)
+    await Promise.resolve() // the watcher that writes runs on the microtask queue
+
+    expect(ui.copyOnSelect).toBe(false)
+    expect(storage.data['sessile.copyOnSelect']).toBe('false')
+  })
+
+  it('follows a choice another tab wrote', () => {
+    const win = withWindow()
+    withStorage(fakeStorage())
+    const ui = useUiStore()
+
+    win.storage('sessile.copyOnSelect', 'false')
+
+    expect(ui.copyOnSelect).toBe(false)
+  })
+
+  // A cleared storage reports no key at all, and takes every preference with it.
+  it('falls back to the default on a cleared storage', () => {
+    const win = withWindow()
+    withStorage(fakeStorage({ 'sessile.copyOnSelect': 'false' }))
+    const ui = useUiStore()
+    expect(ui.copyOnSelect).toBe(false)
+
+    win.storage(null, null)
+
+    expect(ui.copyOnSelect).toBe(defaultCopyOnSelect)
+  })
+
+  // The two preferences share one `storage` handler, so a write to either must
+  // leave the other where it was.
+  it('is left alone by a font size from another tab', () => {
+    const win = withWindow()
+    withStorage(fakeStorage({ 'sessile.copyOnSelect': 'false' }))
+    const ui = useUiStore()
+
+    win.storage('sessile.terminalFontSize', '24')
+
+    expect(ui.terminalFontSize).toBe(24)
+    expect(ui.copyOnSelect).toBe(false)
+  })
+
+  it('survives storage that throws', async () => {
+    withStorage({
+      getItem: () => {
+        throw new Error('blocked')
+      },
+      setItem: () => {
+        throw new Error('blocked')
+      },
+    })
+    const ui = useUiStore()
+    expect(ui.copyOnSelect).toBe(defaultCopyOnSelect)
+
+    ui.setCopyOnSelect(!defaultCopyOnSelect)
+    await Promise.resolve()
+
+    expect(ui.copyOnSelect).toBe(!defaultCopyOnSelect)
+  })
 })
 
 describe('terminal font size', () => {

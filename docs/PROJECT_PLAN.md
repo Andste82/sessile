@@ -508,8 +508,13 @@ frontend/src/
 - **Terminal** (`/sessions/:id`): full-height xterm, tab bar of open
   sessions, dark theme default.
 - **Settings** (`/settings`): read-only server config display, plus the client
-  preferences the browser owns — currently the terminal font size (8–32 px,
-  default 13), with a live sample. Preferences live in `stores/ui.ts` and
+  preferences the browser owns — the terminal font size (8–32 px, default 13),
+  with a live sample, and copy-on-select (default on). Alongside the
+  copy-on-select toggle sits a short clipboard help: the copy, paste and
+  interrupt keys for this platform, and the two rules that surprise every
+  newcomer — Ctrl+C never copies, and Ctrl+Shift+C is also the browser's
+  devtools shortcut. It is deliberately three rows and a caveat, not
+  documentation. Preferences live in `stores/ui.ts` and
   persist to `localStorage` under `sessile.*`, not on the server: the readable
   size depends on the screen in front of the user, so the same session opened
   on a phone and on a desktop wants two different answers. A change applies to
@@ -571,9 +576,17 @@ frontend/src/
   helper textarea), and the textarea's value is delivered once: after 40 ms of
   keyboard quiet, or immediately when a real key ends the word. Only committed
   text reaches the PTY.
-- Copy: selection copy via context menu, Ctrl+Shift+C and Ctrl+Insert
-  (Cmd+C on macOS, which the browser handles itself). Ctrl+C is always
-  SIGINT, never a copy — even with a selection.
+- Copy: copy-on-select (a left-button drag that ends with a non-empty
+  selection puts it on the clipboard; on by default, switchable in Settings),
+  the context menu, Ctrl+Shift+C and Ctrl+Insert (Cmd+C on macOS, which the
+  browser handles itself). Ctrl+C is always SIGINT, never a copy — even with a
+  selection: a selection outlives the drag that made it, so a Ctrl+C that
+  copies is a Ctrl+C that fails to interrupt exactly when it is needed most.
+  Copy-on-select earns its default from the other end of the same problem —
+  Ctrl+Shift+C is the browser's devtools shortcut and no page can take it.
+  The mouseup is listened for on the document so a drag may end outside the
+  terminal, and gated on a mousedown inside it so a selection made elsewhere
+  in the app never copies the terminal's leftovers.
 - Paste: Ctrl+V / Ctrl+Shift+V /
   Shift+Insert (Cmd+V on macOS), context menu, and the mobile keyboard's
   clipboard menu — all funnelled through `terminal.paste()`, so pasted text

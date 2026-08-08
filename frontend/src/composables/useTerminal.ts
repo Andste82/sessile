@@ -123,6 +123,14 @@ export function useTerminal() {
   let pasteCount = 0
   let beforeInputHandledPaste = false
 
+  // Copy-on-select: true between a left-button press inside the terminal and
+  // the release that ends it. The flag is what tells our selection apart from
+  // one made elsewhere in the app — the release is listened for on the
+  // document, so a drag that runs off the edge of the terminal still copies,
+  // and without it a selection dragged in the sidebar would end by putting the
+  // terminal's leftover selection on the clipboard.
+  let selecting = false
+
   let touching = false
   let pointerId: number | null = null // the finger the gesture follows
   let touchLastY = 0
@@ -303,6 +311,15 @@ export function useTerminal() {
     el.addEventListener('beforeinput', onBeforeInput, true)
     el.addEventListener('input', onPasteInput, true)
 
+    // Copy-on-select. Never cancelled: xterm owns the mouse selection itself,
+    // and all we do is read the result of it. Capture phase, though, because a
+    // selection inside a program that asked for mouse tracking — vim, htop —
+    // is made by holding the force-selection modifier, and xterm answers that
+    // one by stopping the mousedown from propagating. In the bubble phase we
+    // would never see it, and exactly those drags would fail to copy.
+    el.addEventListener('mousedown', onSelectionMouseDown, true)
+    document.addEventListener('mouseup', onSelectionMouseUp)
+
     term.value = t
   }
 
@@ -356,7 +373,8 @@ export function useTerminal() {
 
   // copySelection puts the terminal's selection on the clipboard, reporting
   // whether there was anything to copy. Plain Ctrl+C never lands here — it
-  // stays SIGINT — so copying is Ctrl+Shift+C, Ctrl+Insert, or right-click.
+  // stays SIGINT — so copying is the selection itself (when copy-on-select is
+  // on), Ctrl+Shift+C, Ctrl+Insert, or right-click.
   function copySelection(): boolean {
     const text = term.value?.getSelection() ?? ''
     if (!text) return false
@@ -373,6 +391,31 @@ export function useTerminal() {
       legacyCopy(text)
     }
     return true
+  }
+
+  // onSelectionMouseDown opens a selection drag. Left button only: the right
+  // button opens the context menu (a copy path of its own, and one that must
+  // not be pre-empted by a copy of the selection it is being opened on), and
+  // the middle button is X11's paste.
+  function onSelectionMouseDown(e: MouseEvent) {
+    selecting = e.button === 0
+  }
+
+  // onSelectionMouseUp copies what the drag selected, if the preference is on.
+  //
+  // Reading the selection here is safe despite xterm having a document-level
+  // mouseup listener of its own, registered on mousedown and therefore after
+  // ours: the selection model is written during mousemove, and for the clicks
+  // that select without dragging — double-click for a word, triple for a line,
+  // shift-click to extend — during mousedown. By the time any mouseup runs,
+  // what getSelection() returns is final.
+  //
+  // Nothing is copied when the selection is empty, so the click that dismisses
+  // a selection leaves the clipboard alone rather than clearing it.
+  function onSelectionMouseUp() {
+    if (!selecting) return
+    selecting = false
+    if (ui.copyOnSelect) copySelection()
   }
 
   // legacyCopy is the pre-Clipboard-API path, and the same trick xterm uses
@@ -903,8 +946,11 @@ export function useTerminal() {
       hostEl.removeEventListener('paste', onPaste, true)
       hostEl.removeEventListener('beforeinput', onBeforeInput, true)
       hostEl.removeEventListener('input', onPasteInput, true)
+      hostEl.removeEventListener('mousedown', onSelectionMouseDown, true)
       hostEl = null
     }
+    // Not on the host: this one is the document's, and outlives the element.
+    document.removeEventListener('mouseup', onSelectionMouseUp)
     if (ws) {
       ws.onclose = null
       ws.onerror = null
