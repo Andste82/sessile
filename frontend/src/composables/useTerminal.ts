@@ -120,11 +120,12 @@ export function useTerminal() {
   // is emptied after every word, so it always answers "start of field". With
   // this on, the delivered text stays in front of the cursor and only what is
   // new is sent. Off by default until the device says it is the answer.
-  const imeKeepContext = ref(false)
+  const imeKeepContext = ref(true)
   // What is currently parked in the textarea as context, already delivered.
   let imeContext = ''
   // Enough for a keyboard to see the preceding word; there is no use for more.
   const imeContextMax = 64
+  let imeRestoreTimer: ReturnType<typeof setTimeout> | null = null
   // Quiet period that ends a sequence. Gboard's end-then-restart churn lands
   // within a task or two; anything longer is a new word, not a correction.
   const imeSettleMs = 40
@@ -634,22 +635,54 @@ export function useTerminal() {
     // Only what the keyboard added since the context was parked is new; the
     // context itself has already been sent once.
     const fresh = text.startsWith(imeContext) ? text.slice(imeContext.length) : text
-    if (imeKeepContext.value) {
-      imeContext = (imeContext + fresh).slice(-imeContextMax)
+    imeContext = imeKeepContext.value
+      ? (imeContext + fresh).slice(-imeContextMax)
+      : ''
+    // Always leave it empty, whatever the context is. xterm reads this buffer
+    // from a timer of its own the moment resetXtermComposition fires, and an
+    // empty read is what makes it send nothing — see restoreImeContext for the
+    // other half.
+    ta.value = ''
+    ta.setSelectionRange(0, 0)
+    return fresh
+  }
+
+  // restoreImeContext puts the delivered tail back in front of the cursor, so
+  // the keyboard can see what precedes the next word and prepend a space to it
+  // itself — the whole of issue #82. Measured on a device: with "Hallo" parked
+  // there, the next glided word arrives as " wir" rather than "wir".
+  //
+  // On a timer, and queued after resetXtermComposition, because xterm reads the
+  // same buffer from a timer it queues there. Ours therefore runs second and
+  // xterm still sees the empty buffer it needs to stay quiet. Restoring
+  // synchronously instead put the context in front of that read, and xterm
+  // delivered it as terminal input: three glided words reached the pty as
+  // "hellohello wolfhello wolf rennthello wolf rennt".
+  function restoreImeContext() {
+    clearImeRestore()
+    imeRestoreTimer = setTimeout(() => {
+      imeRestoreTimer = null
+      if (!imeContext || imeActive) return // a new word owns the buffer already
+      const ta = term.value?.textarea
+      if (!ta || ta.value !== '') return // something else is using it
       ta.value = imeContext
       ta.setSelectionRange(imeContext.length, imeContext.length)
-    } else {
-      imeContext = ''
-      ta.value = ''
-      ta.setSelectionRange(0, 0)
+      trace('context restored')
+    }, 0)
+  }
+
+  function clearImeRestore() {
+    if (imeRestoreTimer) {
+      clearTimeout(imeRestoreTimer)
+      imeRestoreTimer = null
     }
-    return fresh
   }
 
   // setImeKeepContext flips the experiment and leaves the buffer consistent
   // with it, so turning it off cannot strand text nothing will deliver.
   function setImeKeepContext(on: boolean) {
     imeKeepContext.value = on
+    clearImeRestore()
     const ta = term.value?.textarea
     imeContext = ''
     if (ta) {
@@ -669,6 +702,11 @@ export function useTerminal() {
   // empty writes. So Enter delivers the word, then the carriage return.
   function flushIme() {
     trace('flush (a real key ended the word)')
+    // A real key ends the thought as well as the word — Enter runs the command,
+    // an arrow moves away from it. Whatever the keyboard writes next is not a
+    // continuation, so it gets no context to prepend a space to.
+    imeContext = ''
+    clearImeRestore()
     clearImeSettle()
     imeDelivered = true
     armImeSettle()
@@ -692,6 +730,7 @@ export function useTerminal() {
     resetXtermComposition()
     if (delivered) trace('tail dropped (already flushed)', { data: text })
     if (!delivered) deliverIme(text)
+    restoreImeContext()
   }
 
   // deliverIme sends committed text the way typed text is sent, so the key bar's
