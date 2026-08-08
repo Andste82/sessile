@@ -5,14 +5,25 @@ import { useTerminal, type ConnStatus } from '@/composables/useTerminal'
 import { useUiStore } from '@/stores/ui'
 import { hasFinePointer } from '@/utils/device'
 import KeyBar from './KeyBar.vue'
+import ImeTrace from './ImeTrace.vue'
 
 const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{ (e: 'status', s: ConnStatus): void }>()
 
 const ui = useUiStore()
 const host = ref<HTMLElement | null>(null)
-const { status, mods, open, connect, dispose, toggleMod, pressSpecial, focus } =
-  useTerminal()
+const {
+  status,
+  mods,
+  open,
+  connect,
+  dispose,
+  toggleMod,
+  pressSpecial,
+  focus,
+  imeTracing,
+  imeTrace,
+} = useTerminal()
 
 watch(status, (s) => emit('status', s))
 
@@ -35,8 +46,12 @@ onBeforeUnmount(() => dispose())
 </script>
 
 <template>
-  <div class="flex h-full w-full flex-col">
+  <!-- relative for the diagnostics overlay only; the terminal host itself is
+       left untouched, since xterm measures the element it mounts into. -->
+  <div class="relative flex h-full w-full flex-col">
     <div ref="host" class="terminal-host min-h-0 flex-1" />
+    <!-- Diagnostics for issue #82, only with ?debug=ime (see utils/imeTrace.ts). -->
+    <ImeTrace v-if="imeTracing" :trace="imeTrace" />
     <KeyBar
       v-if="ui.keyBarOpen"
       :mods="mods"

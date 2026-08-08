@@ -62,6 +62,29 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
       clears on reconnect.
 - [ ] "Session ended" banner appears when the shell exits.
 
+## Keyboard
+
+- [ ] Type a word letter by letter: it reaches the shell once, whole, with no
+      half-typed prefix ahead of it (issue #22).
+- [ ] Tap a suggestion above a half-typed word: the suggestion arrives, the
+      prefix does not.
+- [ ] **Swipe (glide) two words in a row**: `hello` then `world` arrive as
+      `hello world`, with the space the keyboard commits after each glided word
+      (issue #82).
+- [ ] Swipe a word and then press Enter straight away: the word arrives, then
+      the newline, in that order.
+
+### Capturing an IME trace
+
+The keyboard's own event sequence is the one thing that cannot be read off the
+code, and it only happens on a phone. Open the terminal with `?debug=ime`:
+
+    https://<host>/sessions/<id>?debug=ime
+
+A panel appears under the terminal. Swipe two words, then **copy** and paste the
+trace into the issue. What it answers is in `frontend/src/utils/imeTrace.ts`;
+retire the instrument with the fault, as #69 did for #64.
+
 ## Dashboard
 
 - [ ] Session cards reflow: 1 column (<640px), 2 (sm), 3 (lg).

@@ -10,6 +10,8 @@ import { loadSymbolFont, symbolFontFamilies } from '@/utils/fonts'
 import { planReconnect, type ConnStatus } from '@/utils/reconnect'
 import { encodeResize, parseControl, sessionWsURL } from '@/api/wsProtocol'
 import { isCompositionArtifact, isImeKey, shouldFlushIme } from '@/utils/ime'
+import type { ImeTraceEntry } from '@/utils/imeTrace'
+import { createImeTrace, imeTraceEnabled, stateFlags } from '@/utils/imeTrace'
 import {
   isApplePlatform,
   isCopyShortcut,
@@ -112,6 +114,27 @@ export function useTerminal() {
   // Quiet period that ends a sequence. Gboard's end-then-restart churn lands
   // within a task or two; anything longer is a new word, not a correction.
   const imeSettleMs = 40
+
+  // Recorder for issue #82, off unless the page was opened with ?debug=ime.
+  // Swipe typing drops the trailing space a mobile keyboard commits after a
+  // glided word, and the sequence that would say why only happens on a phone.
+  // See utils/imeTrace.ts; retire this with the fault, as #69 did for #64.
+  const imeTracing = imeTraceEnabled(
+    typeof location === 'undefined' ? '' : location.search,
+  )
+  const imeTrace = createImeTrace()
+
+  // trace records one step. Reading the textarea is the whole point — it is the
+  // buffer the delivered text is taken from — so it is captured every time.
+  function trace(kind: string, extra: Partial<ImeTraceEntry> = {}) {
+    if (!imeTracing) return
+    imeTrace.record({
+      kind,
+      ta: term.value?.textarea?.value ?? '',
+      state: stateFlags(imeActive, imeComposing, imeDelivered),
+      ...extra,
+    })
+  }
 
   // Clipboard state (issue #21) — see handleKeyEvent and onPaste.
   const applePlatform = isApplePlatform(navigator)
@@ -353,6 +376,7 @@ export function useTerminal() {
       // never open a composition: the quiet period delivers their textarea,
       // which is the job xterm's diffing was doing badly.
       if (e.type === 'keydown') {
+        trace('ime key', { key: e.key, keyCode: e.keyCode })
         beginImeSequence()
         if (!imeComposing) armImeSettle()
       }
@@ -525,6 +549,7 @@ export function useTerminal() {
 
   function onCompositionStart(e: Event) {
     if (!e.isTrusted) return // ours, from resetXtermComposition
+    trace('compositionstart', { data: (e as CompositionEvent).data ?? '' })
     beginImeSequence()
     imeComposing = true
     clearImeSettle() // an open composition ends on its own; nothing to wait for
@@ -536,6 +561,7 @@ export function useTerminal() {
   // the finished word. What ends the word is quiet, so we wait for it.
   function onCompositionEnd(e: Event) {
     if (!e.isTrusted) return
+    trace('compositionend', { data: (e as CompositionEvent).data ?? '' })
     e.stopPropagation()
     imeComposing = false
     armImeSettle()
@@ -549,7 +575,12 @@ export function useTerminal() {
   // and each one restarts the quiet period.
   function gateCompositionInput(e: Event) {
     const inputType = (e as InputEvent).inputType ?? ''
-    if (!isCompositionArtifact(imeActive, inputType)) return
+    const gated = isCompositionArtifact(imeActive, inputType)
+    trace(gated ? 'input gated' : 'input passed to xterm', {
+      inputType,
+      data: (e as InputEvent).data ?? '',
+    })
+    if (!gated) return
     e.stopPropagation()
     imeActive = true
     if (!imeComposing) armImeSettle()
@@ -586,6 +617,7 @@ export function useTerminal() {
   // sending a slice of that textarea, which is now empty — and send() drops
   // empty writes. So Enter delivers the word, then the carriage return.
   function flushIme() {
+    trace('flush (a real key ended the word)')
     clearImeSettle()
     imeDelivered = true
     armImeSettle()
@@ -596,19 +628,25 @@ export function useTerminal() {
   // a real key already flushed it.
   function settleIme() {
     imeSettleTimer = null
-    if (!imeActive) return
+    if (!imeActive) {
+      trace('settle (no sequence open)')
+      return
+    }
+    trace('settle')
     const text = takeImeText()
     const delivered = imeDelivered
     imeActive = false
     imeComposing = false
     imeDelivered = false
     resetXtermComposition()
+    if (delivered) trace('tail dropped (already flushed)', { data: text })
     if (!delivered) deliverIme(text)
   }
 
   // deliverIme sends committed text the way typed text is sent, so the key bar's
   // armed modifiers still apply to a one-character commit.
   function deliverIme(text: string) {
+    trace(text ? 'SENT' : 'nothing to send', { data: text })
     if (!text) return
     send(applyModifiers(text, mods.value))
     clearMods()
@@ -967,6 +1005,8 @@ export function useTerminal() {
     status,
     term,
     mods,
+    imeTracing,
+    imeTrace,
     open,
     connect,
     dispose,
