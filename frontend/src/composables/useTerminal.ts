@@ -119,10 +119,9 @@ export function useTerminal() {
   // Swipe typing drops the trailing space a mobile keyboard commits after a
   // glided word, and the sequence that would say why only happens on a phone.
   // See utils/imeTrace.ts; retire this with the fault, as #69 did for #64.
-  // Sticky for the tab: the router drops the query when the dashboard links to
-  // a session, and the terminal is the only place the recorder is any use.
+  // Read only: main.ts captures the launch URL's flag before anything renders,
+  // because the router drops the query on the way here from the dashboard.
   const imeTracing = imeTraceEnabled(
-    typeof location === 'undefined' ? '' : location.search,
     typeof sessionStorage === 'undefined' ? null : sessionStorage,
   )
   const imeTrace = createImeTrace()

@@ -47,22 +47,23 @@ export const imeTraceKey = 'sessile.debug.ime'
 export type FlagStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 /**
- * imeTraceEnabled reports whether this tab asked for the recorder.
+ * captureImeTraceFlag records what the launch URL asked for. Call it once, at
+ * startup, before anything renders.
  *
- * The flag is sticky for the tab, because the router does not carry a query
- * across navigation: the dashboard links to `/sessions/:id` and nothing else,
- * so opening the app with ?debug=ime and tapping a session would arrive at the
- * terminal with the flag gone — and the one place it is needed is the terminal.
- * Whoever set it would swipe, see no panel, and conclude the instrument was
- * broken rather than absent.
+ * Reading the query and answering "is it on" are two jobs, and merging them is
+ * what broke this the first time: the check lived inside the terminal, so a
+ * flag set on the dashboard was never seen — the router links to
+ * `/sessions/:id` with no query, so by the time the terminal asked, the query
+ * was gone and nothing had written it down. Whoever switched the recorder on
+ * got no panel and no reason why.
  *
- * `?debug=` with anything else — `?debug=off` will do — clears it again.
+ * `?debug=` with any other value — `?debug=off` will do — clears it again.
  * sessionStorage rather than localStorage, deliberately: a diagnostic that
  * outlives the tab it was switched on in is a trap for whoever opens the app
- * next, and the app's own preferences live in localStorage under the same
+ * next, and the app's real preferences live in localStorage under the same
  * prefix.
  */
-export function imeTraceEnabled(search: string, store?: FlagStore | null): boolean {
+export function captureImeTraceFlag(search: string, store?: FlagStore | null): boolean {
   let asked: string | null = null
   try {
     asked = new URLSearchParams(search).get('debug')
@@ -77,7 +78,6 @@ export function imeTraceEnabled(search: string, store?: FlagStore | null): boole
       store.setItem(imeTraceKey, '1')
       return true
     }
-    // An explicit `debug` that is not ours turns it off again.
     if (asked !== null) {
       store.removeItem(imeTraceKey)
       return false
@@ -86,6 +86,19 @@ export function imeTraceEnabled(search: string, store?: FlagStore | null): boole
   } catch {
     // Private-mode browsers can throw on storage access; the query still works.
     return fromQuery
+  }
+}
+
+/**
+ * imeTraceEnabled reports whether this tab has the recorder switched on. It
+ * only reads: captureImeTraceFlag is what decides, once, at startup.
+ */
+export function imeTraceEnabled(store?: FlagStore | null): boolean {
+  if (!store) return false
+  try {
+    return store.getItem(imeTraceKey) === '1'
+  } catch {
+    return false
   }
 }
 

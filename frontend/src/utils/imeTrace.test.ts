@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  captureImeTraceFlag,
   createImeTrace,
   formatImeTrace,
   imeTraceEnabled,
@@ -16,7 +17,7 @@ function fakeStore(initial: Record<string, string> = {}) {
   }
 }
 
-describe('imeTraceEnabled', () => {
+describe('captureImeTraceFlag', () => {
   it.each([
     ['?debug=ime', true],
     ['?foo=1&debug=ime', true],
@@ -25,28 +26,17 @@ describe('imeTraceEnabled', () => {
     ['', false],
     ['?other=ime', false],
   ])('reads %s as %s', (search, want) => {
-    expect(imeTraceEnabled(search)).toBe(want)
-  })
-
-  // The router links to /sessions/:id with no query, so a flag that did not
-  // survive navigation would be off in the one place it is needed.
-  it('stays on after the query is gone', () => {
-    const store = fakeStore()
-    expect(imeTraceEnabled('?debug=ime', store)).toBe(true)
-    expect(imeTraceEnabled('', store)).toBe(true)
-  })
-
-  it('is off without a query and without a stored flag', () => {
-    expect(imeTraceEnabled('', fakeStore())).toBe(false)
+    expect(captureImeTraceFlag(search, fakeStore())).toBe(want)
   })
 
   it('is turned off again by an explicit other debug value', () => {
     const store = fakeStore({ [imeTraceKey]: '1' })
-    expect(imeTraceEnabled('?debug=off', store)).toBe(false)
-    expect(imeTraceEnabled('', store)).toBe(false)
+    expect(captureImeTraceFlag('?debug=off', store)).toBe(false)
+    expect(imeTraceEnabled(store)).toBe(false)
   })
 
-  // Private-mode browsers throw on storage access; the query must still work.
+  // Private-mode browsers throw on storage access; the query must still work
+  // for whoever opened the terminal URL directly.
   it('falls back to the query when storage throws', () => {
     const hostile = {
       getItem: () => {
@@ -59,8 +49,37 @@ describe('imeTraceEnabled', () => {
         throw new Error('denied')
       },
     }
-    expect(imeTraceEnabled('?debug=ime', hostile)).toBe(true)
-    expect(imeTraceEnabled('', hostile)).toBe(false)
+    expect(captureImeTraceFlag('?debug=ime', hostile)).toBe(true)
+    expect(captureImeTraceFlag('', hostile)).toBe(false)
+  })
+})
+
+describe('imeTraceEnabled', () => {
+  // This is the sequence that shipped broken: the flag was only ever read on
+  // the terminal page, so opening the app on the dashboard with ?debug=ime and
+  // tapping a session arrived with no query and nothing written down. Capture
+  // happens at startup now, whatever route the app was opened on, and the
+  // terminal only reads.
+  it('is on at the terminal after the app was launched on the dashboard', () => {
+    const store = fakeStore()
+    captureImeTraceFlag('?debug=ime', store) // main.ts, at boot, on "/"
+    expect(imeTraceEnabled(store)).toBe(true) // useTerminal, later, on "/sessions/x"
+  })
+
+  it('is on when the terminal URL itself carried the flag', () => {
+    const store = fakeStore()
+    captureImeTraceFlag('?debug=ime', store)
+    expect(imeTraceEnabled(store)).toBe(true)
+  })
+
+  it('is off when nothing ever asked for it', () => {
+    const store = fakeStore()
+    captureImeTraceFlag('', store)
+    expect(imeTraceEnabled(store)).toBe(false)
+  })
+
+  it('reads nothing without a store', () => {
+    expect(imeTraceEnabled(null)).toBe(false)
   })
 })
 
