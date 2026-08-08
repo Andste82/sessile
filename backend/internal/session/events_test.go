@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -193,5 +195,62 @@ func TestSamplerPublishesOnlyOnChange(t *testing.T) {
 	}
 	if got := len(sub.received()); got != 0 {
 		t.Errorf("a settled session published %d messages across 5 samples, want 0", got)
+	}
+}
+
+// A read loop that finishes after its session was deleted must stay quiet.
+//
+// The two halves of this only meet once both exist: terminate now gives up on a
+// shell whose terminal is held open from outside its process group, so the read
+// loop can reach its stop announcement long after Delete has already published
+// sessionGone. Announcing it there put the deleted session back on every
+// dashboard as a stopped entry that nothing would ever remove.
+func TestDeletedSessionIsNotRepublishedByItsLateReadLoop(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid not available")
+	}
+	mgr, _, _ := testManager(t)
+
+	info, err := mgr.Create("wedged", ".", "sh")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// setsid leaves the shell's process group but keeps the terminal open, so
+	// the read loop cannot finish until that child does.
+	if err := mgr.WriteInput(info.ID, []byte("setsid sleep 120 &\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	sub := newFakeSubscriber()
+	defer mgr.Subscribe(sub)()
+
+	if err := mgr.Delete(info.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	waitFor(t, "the sessionGone message", func() bool {
+		for _, m := range sub.received() {
+			if g, ok := m.(SessionGoneMsg); ok && g.SessionID == info.ID {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Release the holder; the read loop now runs its cleanup.
+	out, _ := exec.Command("pgrep", "-x", "sleep").Output()
+	for _, line := range strings.Fields(string(out)) {
+		_ = exec.Command("kill", "-9", line).Run()
+	}
+
+	// Nothing more about this session may arrive.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, m := range sub.received() {
+			if s, ok := m.(SessionMsg); ok && s.Session.ID == info.ID {
+				t.Fatalf("deleted session was republished as %q after sessionGone", s.Session.Status)
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

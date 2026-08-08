@@ -376,7 +376,14 @@ func (m *Manager) readLoop(s *Session) {
 		// Clear the derived state before announcing it, or the dashboard keeps
 		// showing the program the session was running when its shell died.
 		info, _ := s.clearActivity()
-		m.publishSession(info)
+		// Unless the session has already been deleted. This loop can outlive a
+		// delete by as long as some process outside the shell's group holds the
+		// terminal open, and by then every subscriber has been told the session
+		// is gone. Announcing it again puts it straight back on their dashboards
+		// as a stopped session that nothing can remove.
+		if !s.isDiscarded() {
+			m.publishSession(info)
+		}
 	}
 	// Reap the shell process (single reaper), close the master, then signal
 	// that termination is complete for any waiter in terminate().

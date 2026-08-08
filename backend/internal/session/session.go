@@ -312,6 +312,13 @@ func (s *Session) markDiscarded() {
 	s.discarded = true
 }
 
+// isDiscarded reports whether Delete has already removed this session.
+func (s *Session) isDiscarded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.discarded
+}
+
 // releaseBuffer drops the scrollback of a stopped session.
 //
 // A stopped session stays in the Manager's map — it is still listed, still
