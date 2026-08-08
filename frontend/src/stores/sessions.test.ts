@@ -71,6 +71,10 @@ function session(over: Partial<Session> = {}): Session {
     rows: 24,
     cols: 80,
     clientCount: 1,
+    activity: 'idle',
+    activitySince: '2026-08-03T10:00:00Z',
+    command: 'bash',
+    cwd: '.',
     ...over,
   }
 }
@@ -181,5 +185,70 @@ describe('refreshSessions', () => {
     await store.refreshSessions()
 
     expect(store.sessions.map((s) => s.id)).toEqual(['a', 'b'])
+  })
+})
+
+// The event channel (§5.1) reaches the store through exactly one function, so
+// this is where its behaviour is worth asserting — the composable around it is
+// socket plumbing.
+describe('applyEvent', () => {
+  it('replaces the whole list on a snapshot', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'stale' })]
+
+    store.applyEvent({ type: 'sessions', sessions: [session({ id: 'a' }), session({ id: 'b' })] })
+
+    expect(store.sessions.map((s) => s.id)).toEqual(['a', 'b'])
+  })
+
+  it('drops a session the snapshot no longer lists', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'gone-elsewhere' })]
+
+    store.applyEvent({ type: 'sessions', sessions: [] })
+
+    expect(store.sessions).toEqual([])
+  })
+
+  it('updates a session in place without reordering the list', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
+
+    store.applyEvent({ type: 'session', session: session({ id: 'b', activity: 'waiting' }) })
+
+    expect(store.sessions.map((s) => s.id)).toEqual(['a', 'b'])
+    expect(store.sessions[1].activity).toBe('waiting')
+  })
+
+  it('inserts a session created by another client', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' })]
+
+    store.applyEvent({ type: 'session', session: session({ id: 'new' }) })
+
+    expect(store.sessions.map((s) => s.id)).toContain('new')
+  })
+
+  it('removes a deleted session and closes its tab', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
+    store.openTab('b')
+
+    store.applyEvent({ type: 'sessionGone', sessionId: 'b' })
+
+    expect(store.sessions.map((s) => s.id)).toEqual(['a'])
+    expect(store.openTabIds).not.toContain('b')
+  })
+
+  // A failed poll sets an error and greys everything out. The channel coming
+  // back is the evidence that the backend is reachable again, so a stale error
+  // must not survive it.
+  it('clears an earlier error', () => {
+    const store = useSessionsStore()
+    store.error = 'backend unreachable'
+
+    store.applyEvent({ type: 'sessions', sessions: [session()] })
+
+    expect(store.error).toBeNull()
   })
 })

@@ -1,22 +1,21 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
 import { RouterView } from 'vue-router'
 import AppSidebar from '@/components/AppSidebar.vue'
 import BottomNav from '@/components/BottomNav.vue'
 import { useDocumentTitle } from '@/composables/useDocumentTitle'
-import { useSessionsStore } from '@/stores/sessions'
-
-const store = useSessionsStore()
+import { useSessionEvents } from '@/composables/useSessionEvents'
 
 useDocumentTitle()
 
-// Polling lives here rather than on the dashboard because the session list is
-// on screen everywhere: the sidebar and the terminal tab bar both draw status
-// dots from it. Polled only from the dashboard, those dots kept whatever the
-// last visit left behind — a backend restart went unnoticed until the user
-// clicked the session.
-onMounted(() => store.startPolling(5000))
-onUnmounted(() => store.stopPolling())
+// The session list is kept live here rather than on the dashboard because it is
+// on screen everywhere: the sidebar and the terminal tab bar both draw
+// indicators from it. Fed only from the dashboard, those indicators kept
+// whatever the last visit left behind — a backend restart went unnoticed until
+// the user clicked the session.
+//
+// This replaces the app-wide 5 s poll with the event channel (§5.1) and keeps
+// polling as its fallback; see useSessionEvents.
+useSessionEvents()
 </script>
 
 <template>
