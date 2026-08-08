@@ -125,6 +125,9 @@ export function useTerminal() {
   let imeContext = ''
   // Enough for a keyboard to see the preceding word; there is no use for more.
   const imeContextMax = 64
+  // What a terminal expects for "rub out the character before the cursor" —
+  // DEL, the same byte xterm sends for the Backspace key.
+  const eraseChar = '\x7f'
   let imeRestoreTimer: ReturnType<typeof setTimeout> | null = null
   // Quiet period that ends a sequence. Gboard's end-then-restart churn lands
   // within a task or two; anything longer is a new word, not a correction.
@@ -628,23 +631,46 @@ export function useTerminal() {
   }
 
   // takeImeText empties the helper textarea and returns what was in it.
-  function takeImeText(): string {
+  // An edit the keyboard made to the buffer: how much of what we already sent it
+  // took back, and what it put there instead.
+  interface ImeEdit {
+    erase: number
+    insert: string
+  }
+
+  // commonPrefix is how much of two strings matches from the start — the part a
+  // correction left alone.
+  function commonPrefix(a: string, b: string): number {
+    const max = Math.min(a.length, b.length)
+    let i = 0
+    while (i < max && a[i] === b[i]) i++
+    return i
+  }
+
+  function takeImeText(): ImeEdit {
     const ta = term.value?.textarea
-    if (!ta) return ''
+    if (!ta) return { erase: 0, insert: '' }
     const text = ta.value
     // Only what the keyboard added since the context was parked is new; the
     // context itself has already been sent once.
-    const fresh = text.startsWith(imeContext) ? text.slice(imeContext.length) : text
-    imeContext = imeKeepContext.value
-      ? (imeContext + fresh).slice(-imeContextMax)
-      : ''
+    // Not "what was appended": tapping a suggestion replaces the word that was
+    // already sent — "Hallo wie" becomes "Hallo wir" — and treating that as an
+    // append sent the whole buffer again, then compounded on the next tap.
+    // What actually happened is an edit: the tail after the common prefix was
+    // taken back, and something else was written in its place.
+    const keep = commonPrefix(imeContext, text)
+    const edit: ImeEdit = {
+      erase: imeContext.length - keep,
+      insert: text.slice(keep),
+    }
+    imeContext = imeKeepContext.value ? text.slice(-imeContextMax) : ''
     // Always leave it empty, whatever the context is. xterm reads this buffer
     // from a timer of its own the moment resetXtermComposition fires, and an
     // empty read is what makes it send nothing — see restoreImeContext for the
     // other half.
     ta.value = ''
     ta.setSelectionRange(0, 0)
-    return fresh
+    return edit
   }
 
   // restoreImeContext puts the delivered tail back in front of the cursor, so
@@ -702,15 +728,19 @@ export function useTerminal() {
   // empty writes. So Enter delivers the word, then the carriage return.
   function flushIme() {
     trace('flush (a real key ended the word)')
-    // A real key ends the thought as well as the word — Enter runs the command,
-    // an arrow moves away from it. Whatever the keyboard writes next is not a
-    // continuation, so it gets no context to prepend a space to.
-    imeContext = ''
     clearImeRestore()
     clearImeSettle()
     imeDelivered = true
     armImeSettle()
     deliverIme(takeImeText())
+    // A real key ends the thought as well as the word — Enter runs the command,
+    // an arrow moves away from it. Whatever the keyboard writes next is not a
+    // continuation, so it gets no context to prepend a space to.
+    //
+    // Cleared after the edit is taken, not before: the edit is measured against
+    // the context, and clearing first would have made the whole buffer look
+    // new and sent the already-delivered part a second time.
+    imeContext = ''
   }
 
   // settleIme ends a sequence that has gone quiet, delivering the word unless
@@ -728,24 +758,24 @@ export function useTerminal() {
     imeComposing = false
     imeDelivered = false
     resetXtermComposition()
-    if (delivered) trace('tail dropped (already flushed)', { data: text })
+    if (delivered) trace('tail dropped (already flushed)', { data: text.insert })
     if (!delivered) deliverIme(text)
     restoreImeContext()
   }
 
-  // deliverIme sends committed text the way typed text is sent, so the key bar's
-  // armed modifiers still apply to a one-character commit.
-  function deliverIme(text: string) {
-    // While the context experiment runs, nothing is sent. Keeping text in the
-    // helper textarea restarts xterm's own diffing, which then delivers the
-    // whole buffer on top of our delta — measured: three glided words reached
-    // the pty as "hellohello wolfhello wolf rennthello wolf rennt". The
-    // experiment only needs the trace to show whether the keyboard starts
-    // prepending a space once it can see what precedes the cursor, so the shell
-    // is left out of it rather than filled with nonsense.
-    trace(text ? 'SENT' : 'nothing to send', { data: text })
-    if (!text) return
-    send(applyModifiers(text, mods.value))
+  // deliverIme applies the keyboard's edit: take back what it withdrew, then
+  // send what it wrote, the way typed text is sent — so the key bar's armed
+  // modifiers still apply to a one-character commit.
+  function deliverIme(edit: ImeEdit) {
+    if (!edit.erase && !edit.insert) {
+      trace('nothing to send')
+      return
+    }
+    trace('SENT', { data: eraseChar.repeat(edit.erase) + edit.insert })
+    // The erase goes out raw: it is not something the user typed, so the armed
+    // modifiers have no business being applied to it.
+    if (edit.erase > 0) send(eraseChar.repeat(edit.erase))
+    if (edit.insert) send(applyModifiers(edit.insert, mods.value))
     clearMods()
   }
 
