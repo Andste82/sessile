@@ -69,8 +69,12 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
 - [ ] Tap a suggestion above a half-typed word: the suggestion arrives, the
       prefix does not.
 - [ ] **Swipe (glide) two words in a row**: `hello` then `world` arrive as
-      `hello world`, with the space the keyboard commits after each glided word
-      (issue #82).
+      `hello world`. The keyboard writes that space itself, once it can see what
+      precedes the cursor — which is why the delivered tail is parked back in
+      the helper textarea between words (issue #82).
+- [ ] Swipe a word, then tap a suggestion to correct it: the line ends up with
+      the corrected word only, not both. A suggestion replaces what was already
+      sent, so it goes out as DEL plus the replacement.
 - [ ] Swipe a word and then press Enter straight away: the word arrives, then
       the newline, in that order.
 
@@ -93,16 +97,6 @@ in an init script and decode the payloads. Playwright is deliberately **not** a
 project dependency (§2 rules out an E2E framework), so this lives in a scratch
 directory when it is needed and does not ship.
 
-### Capturing an IME trace
-
-The keyboard's own event sequence is the one thing that cannot be read off the
-code, and it only happens on a phone. Open the terminal with `?debug=ime`:
-
-    https://<host>/sessions/<id>?debug=ime
-
-A panel appears under the terminal. Swipe two words, then **copy** and paste the
-trace into the issue. What it answers is in `frontend/src/utils/imeTrace.ts`;
-retire the instrument with the fault, as #69 did for #64.
 
 ## Dashboard
 
