@@ -23,6 +23,8 @@ const {
   focus,
   imeTracing,
   imeTrace,
+  imeKeepContext,
+  setImeKeepContext,
 } = useTerminal()
 
 watch(status, (s) => emit('status', s))
@@ -51,7 +53,12 @@ onBeforeUnmount(() => dispose())
   <div class="relative flex h-full w-full flex-col">
     <div ref="host" class="terminal-host min-h-0 flex-1" />
     <!-- Diagnostics for issue #82, only with ?debug=ime (see utils/imeTrace.ts). -->
-    <ImeTrace v-if="imeTracing" :trace="imeTrace" />
+    <ImeTrace
+      v-if="imeTracing"
+      :trace="imeTrace"
+      :keep-context="imeKeepContext"
+      @keep-context="setImeKeepContext"
+    />
     <KeyBar
       v-if="ui.keyBarOpen"
       :mods="mods"

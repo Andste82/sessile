@@ -9,7 +9,11 @@ import type { ImeTrace } from '@/utils/imeTrace'
 // overlay was: this fault is a sequence, not a number, and it has to leave the
 // phone to be read. Everything is one tap away because the device that has the
 // bug has no console and an awkward keyboard.
-const props = defineProps<{ trace: ImeTrace }>()
+const props = defineProps<{
+  trace: ImeTrace
+  keepContext: boolean
+}>()
+const emit = defineEmits<{ (e: 'keepContext', on: boolean): void }>()
 
 const open = ref(true)
 const copied = ref(false)
@@ -60,12 +64,12 @@ function textarea(): HTMLTextAreaElement | null {
   return document.querySelector('.xterm-helper-textarea')
 }
 
-function seedContext() {
-  const ta = textarea()
-  if (!ta) return
-  ta.value = 'hello'
-  ta.setSelectionRange(ta.value.length, ta.value.length)
-  ta.focus()
+// A one-shot seed could not work: beginImeSequence resets the buffer on the
+// first composing keystroke, which lands between the tap and the glide. So the
+// context is a mode the terminal keeps, not something planted here.
+function toggleContext() {
+  emit('keepContext', !props.keepContext)
+  textarea()?.focus()
   refresh()
 }
 
@@ -103,10 +107,11 @@ refresh()
       <button class="rounded px-2 py-0.5 hover:bg-slate-800" @click="clear">clear</button>
       <button
         class="rounded px-2 py-0.5 hover:bg-slate-800"
-        title="Put text before the cursor, then glide a word"
-        @click="seedContext"
+        :class="keepContext ? 'bg-emerald-800 text-emerald-100' : ''"
+        title="Keep the delivered text in front of the cursor"
+        @click="toggleContext"
       >
-        ctx
+        ctx{{ keepContext ? '+' : '-' }}
       </button>
       <button
         class="rounded px-2 py-0.5 hover:bg-slate-800"

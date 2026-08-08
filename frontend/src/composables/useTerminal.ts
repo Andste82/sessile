@@ -115,6 +115,16 @@ export function useTerminal() {
   // so the handler below can recognise that event by identity. It used to
   // recognise it by isTrusted, which is not the same question — see there.
   let imeResetting = false
+  // Experiment for issue #82. A keyboard decides whether a glided word needs a
+  // leading space by asking what precedes the cursor, and the helper textarea
+  // is emptied after every word, so it always answers "start of field". With
+  // this on, the delivered text stays in front of the cursor and only what is
+  // new is sent. Off by default until the device says it is the answer.
+  const imeKeepContext = ref(false)
+  // What is currently parked in the textarea as context, already delivered.
+  let imeContext = ''
+  // Enough for a keyboard to see the preceding word; there is no use for more.
+  const imeContextMax = 64
   // Quiet period that ends a sequence. Gboard's end-then-restart churn lands
   // within a task or two; anything longer is a new word, not a correction.
   const imeSettleMs = 40
@@ -546,11 +556,15 @@ export function useTerminal() {
     if (imeActive && !imeDelivered) return
     imeActive = true
     imeDelivered = false
-    // Start from a known-empty buffer so the value read at the end is this word
-    // and nothing else. It is normally empty already — every sequence ends by
-    // clearing it — but xterm's blur and right-click paths write there too.
+    // Start from a known buffer so the value read at the end is this word and
+    // nothing else. Normally that is empty — every sequence ends by clearing
+    // it — but xterm's blur and right-click paths write there too, and with the
+    // context experiment on it is the tail of what was already delivered.
     const ta = term.value?.textarea
-    if (ta && ta.value !== '') ta.value = ''
+    if (ta && ta.value !== imeContext) {
+      ta.value = imeContext
+      ta.setSelectionRange(imeContext.length, imeContext.length)
+    }
   }
 
   function onCompositionStart(e: Event) {
@@ -617,9 +631,32 @@ export function useTerminal() {
     const ta = term.value?.textarea
     if (!ta) return ''
     const text = ta.value
-    ta.value = ''
-    ta.setSelectionRange(0, 0)
-    return text
+    // Only what the keyboard added since the context was parked is new; the
+    // context itself has already been sent once.
+    const fresh = text.startsWith(imeContext) ? text.slice(imeContext.length) : text
+    if (imeKeepContext.value) {
+      imeContext = (imeContext + fresh).slice(-imeContextMax)
+      ta.value = imeContext
+      ta.setSelectionRange(imeContext.length, imeContext.length)
+    } else {
+      imeContext = ''
+      ta.value = ''
+      ta.setSelectionRange(0, 0)
+    }
+    return fresh
+  }
+
+  // setImeKeepContext flips the experiment and leaves the buffer consistent
+  // with it, so turning it off cannot strand text nothing will deliver.
+  function setImeKeepContext(on: boolean) {
+    imeKeepContext.value = on
+    const ta = term.value?.textarea
+    imeContext = ''
+    if (ta) {
+      ta.value = ''
+      ta.setSelectionRange(0, 0)
+    }
+    trace(`context experiment ${on ? 'on' : 'off'}`)
   }
 
   // flushIme delivers the staged word because a real key arrived. The sequence
@@ -660,6 +697,17 @@ export function useTerminal() {
   // deliverIme sends committed text the way typed text is sent, so the key bar's
   // armed modifiers still apply to a one-character commit.
   function deliverIme(text: string) {
+    // While the context experiment runs, nothing is sent. Keeping text in the
+    // helper textarea restarts xterm's own diffing, which then delivers the
+    // whole buffer on top of our delta — measured: three glided words reached
+    // the pty as "hellohello wolfhello wolf rennthello wolf rennt". The
+    // experiment only needs the trace to show whether the keyboard starts
+    // prepending a space once it can see what precedes the cursor, so the shell
+    // is left out of it rather than filled with nonsense.
+    if (imeKeepContext.value) {
+      trace('WOULD SEND (context experiment: nothing sent)', { data: text })
+      return
+    }
     trace(text ? 'SENT' : 'nothing to send', { data: text })
     if (!text) return
     send(applyModifiers(text, mods.value))
@@ -1028,6 +1076,8 @@ export function useTerminal() {
     mods,
     imeTracing,
     imeTrace,
+    imeKeepContext,
+    setImeKeepContext,
     open,
     connect,
     dispose,
