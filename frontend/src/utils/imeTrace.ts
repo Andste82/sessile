@@ -40,12 +40,52 @@ export interface ImeTraceEntry {
   keyCode?: number
 }
 
-/** imeTraceEnabled reports whether the page asked for the recorder. */
-export function imeTraceEnabled(search: string): boolean {
+/** Where the flag is remembered for the rest of the tab. */
+export const imeTraceKey = 'sessile.debug.ime'
+
+/** The part of Storage this needs, so a test can pass a fake. */
+export type FlagStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+
+/**
+ * imeTraceEnabled reports whether this tab asked for the recorder.
+ *
+ * The flag is sticky for the tab, because the router does not carry a query
+ * across navigation: the dashboard links to `/sessions/:id` and nothing else,
+ * so opening the app with ?debug=ime and tapping a session would arrive at the
+ * terminal with the flag gone — and the one place it is needed is the terminal.
+ * Whoever set it would swipe, see no panel, and conclude the instrument was
+ * broken rather than absent.
+ *
+ * `?debug=` with anything else — `?debug=off` will do — clears it again.
+ * sessionStorage rather than localStorage, deliberately: a diagnostic that
+ * outlives the tab it was switched on in is a trap for whoever opens the app
+ * next, and the app's own preferences live in localStorage under the same
+ * prefix.
+ */
+export function imeTraceEnabled(search: string, store?: FlagStore | null): boolean {
+  let asked: string | null = null
   try {
-    return new URLSearchParams(search).get('debug') === 'ime'
+    asked = new URLSearchParams(search).get('debug')
   } catch {
-    return false
+    asked = null
+  }
+  const fromQuery = asked === 'ime'
+  if (!store) return fromQuery
+
+  try {
+    if (fromQuery) {
+      store.setItem(imeTraceKey, '1')
+      return true
+    }
+    // An explicit `debug` that is not ours turns it off again.
+    if (asked !== null) {
+      store.removeItem(imeTraceKey)
+      return false
+    }
+    return store.getItem(imeTraceKey) === '1'
+  } catch {
+    // Private-mode browsers can throw on storage access; the query still works.
+    return fromQuery
   }
 }
 

@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { createImeTrace, formatImeTrace, imeTraceEnabled, stateFlags } from './imeTrace'
+import {
+  createImeTrace,
+  formatImeTrace,
+  imeTraceEnabled,
+  imeTraceKey,
+  stateFlags,
+} from './imeTrace'
+
+function fakeStore(initial: Record<string, string> = {}) {
+  const map = new Map(Object.entries(initial))
+  return {
+    getItem: (k: string) => map.get(k) ?? null,
+    setItem: (k: string, v: string) => void map.set(k, v),
+    removeItem: (k: string) => void map.delete(k),
+  }
+}
 
 describe('imeTraceEnabled', () => {
   it.each([
@@ -11,6 +26,41 @@ describe('imeTraceEnabled', () => {
     ['?other=ime', false],
   ])('reads %s as %s', (search, want) => {
     expect(imeTraceEnabled(search)).toBe(want)
+  })
+
+  // The router links to /sessions/:id with no query, so a flag that did not
+  // survive navigation would be off in the one place it is needed.
+  it('stays on after the query is gone', () => {
+    const store = fakeStore()
+    expect(imeTraceEnabled('?debug=ime', store)).toBe(true)
+    expect(imeTraceEnabled('', store)).toBe(true)
+  })
+
+  it('is off without a query and without a stored flag', () => {
+    expect(imeTraceEnabled('', fakeStore())).toBe(false)
+  })
+
+  it('is turned off again by an explicit other debug value', () => {
+    const store = fakeStore({ [imeTraceKey]: '1' })
+    expect(imeTraceEnabled('?debug=off', store)).toBe(false)
+    expect(imeTraceEnabled('', store)).toBe(false)
+  })
+
+  // Private-mode browsers throw on storage access; the query must still work.
+  it('falls back to the query when storage throws', () => {
+    const hostile = {
+      getItem: () => {
+        throw new Error('denied')
+      },
+      setItem: () => {
+        throw new Error('denied')
+      },
+      removeItem: () => {
+        throw new Error('denied')
+      },
+    }
+    expect(imeTraceEnabled('?debug=ime', hostile)).toBe(true)
+    expect(imeTraceEnabled('', hostile)).toBe(false)
   })
 })
 
