@@ -21,6 +21,11 @@ ENV LANG=C.UTF-8
 #   bash zsh fish                the three shells in sessile's default allowlist
 #                                (--shells=bash,zsh,fish) so sessions can spawn
 #                                any of them during manual testing
+#   gcc libc6-dev                only so `go test -race` can run; the shipped
+#                                binary stays CGO-free (see below)
+#   procps psmisc iproute2       finding and stopping stray test processes by pid
+#   setsid (util-linux)          starts a child outside the shell's process group,
+#                                which internal/session's terminate tests need
 #   (Go tarball)                 backend toolchain — official 1.25.x baked below
 #                                (apt's golang-go is 1.22; modernc.org/sqlite
 #                                needs >= 1.25). Works offline / GOTOOLCHAIN=local.
@@ -29,10 +34,14 @@ ENV LANG=C.UTF-8
 #   docker-ce-cli                client only, no daemon — `make docker` talks to
 #                                the host's daemon over the socket mounted by
 #                                start.sh / devcontainer.json
+#   (playwright + chromium)      headless browser, for checking the frontend in
+#                                a real engine — see the stanza at the bottom
 # =============================================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget git jq make gnupg \
     bash zsh fish \
+    gcc libc6-dev \
+    procps psmisc iproute2 util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Go (official toolchain) --------------------------------------------------
@@ -77,6 +86,37 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code
+
+# --- Headless Chromium (Playwright) -------------------------------------------
+# For checking the frontend in a real engine. Two faults were found with it that
+# reading the code could not settle, and one of them turned on a difference no
+# hand-written harness can produce: events dispatched from page JavaScript carry
+# isTrusted: false and take a different path through xterm than a keyboard's do.
+# Chromium driven over CDP produces the trusted kind —
+# `Input.imeSetComposition` and `Input.insertText` are a real composition — and
+# that is how issue #82 was reproduced without a phone. See
+# docs/mobile-checklist.md for the recipe.
+#
+# Installed globally, and deliberately not in frontend/package.json: §2 of the
+# plan rules out an E2E framework as a project dependency, and this is a tool
+# for the machine rather than something the build or CI needs. Scripts using it
+# belong in a scratch directory, not in the repo.
+#
+# PLAYWRIGHT_BROWSERS_PATH is pinned so the download lands in the image instead
+# of in a home directory a volume might later shadow. Only chromium is fetched;
+# firefox and webkit would triple the size for nothing.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN npm install -g playwright@1.62.1 \
+    && npx --yes playwright@1.62.1 install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Race detector ------------------------------------------------------------
+# `go test -race` needs cgo, hence gcc above. The shipped binary is unaffected:
+# the Makefile and the Dockerfile both build with CGO_ENABLED=0, and that stays
+# the rule (§2 — no CGO). Run it explicitly when touching anything concurrent:
+#
+#   cd backend && CGO_ENABLED=1 go test ./... -race -count=3
+ENV CGO_ENABLED=0
 
 WORKDIR /workspace
 

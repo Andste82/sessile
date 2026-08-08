@@ -62,6 +62,42 @@ breakpoints. Breakpoints follow Tailwind defaults: `sm=640px`, `lg=1024px`.
       clears on reconnect.
 - [ ] "Session ended" banner appears when the shell exits.
 
+## Keyboard
+
+- [ ] Type a word letter by letter: it reaches the shell once, whole, with no
+      half-typed prefix ahead of it (issue #22).
+- [ ] Tap a suggestion above a half-typed word: the suggestion arrives, the
+      prefix does not.
+- [ ] **Swipe (glide) two words in a row**: `hello` then `world` arrive as
+      `hello world`. The keyboard writes that space itself, once it can see what
+      precedes the cursor — which is why the delivered tail is parked back in
+      the helper textarea between words (issue #82).
+- [ ] Swipe a word, then tap a suggestion to correct it: the line ends up with
+      the corrected word only, not both. A suggestion replaces what was already
+      sent, so it goes out as DEL plus the replacement.
+- [ ] Swipe a word and then press Enter straight away: the word arrives, then
+      the newline, in that order.
+
+### Reproducing the swipe fault without a phone
+
+Chromium can drive a real composition over CDP, which is trusted input and so
+runs the same handlers a keyboard does — unlike events dispatched from page
+JavaScript, which are `isTrusted: false` and take a different path. That is what
+found #82:
+
+```js
+const cdp = await page.context().newCDPSession(page)
+await cdp.send('Input.imeSetComposition', { text: 'hello', selectionStart: 5, selectionEnd: 5 })
+await cdp.send('Input.insertText', { text: 'hello' })  // commits the word
+await cdp.send('Input.insertText', { text: ' ' })      // the keyboard's trailing space
+```
+
+Watch what leaves, not what the app thinks it sent: wrap `WebSocket.prototype.send`
+in an init script and decode the payloads. Playwright is deliberately **not** a
+project dependency (§2 rules out an E2E framework), so this lives in a scratch
+directory when it is needed and does not ship.
+
+
 ## Dashboard
 
 - [ ] Session cards reflow: 1 column (<640px), 2 (sm), 3 (lg).
