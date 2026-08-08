@@ -2,8 +2,8 @@ package session
 
 import (
 	"os/exec"
-	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -215,12 +215,7 @@ func TestDeletedSessionIsNotRepublishedByItsLateReadLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// setsid leaves the shell's process group but keeps the terminal open, so
-	// the read loop cannot finish until that child does.
-	if err := mgr.WriteInput(info.ID, []byte("setsid sleep 120 &\n")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	time.Sleep(300 * time.Millisecond)
+	escaped := startEscapedChild(t, mgr, info.ID)
 
 	sub := newFakeSubscriber()
 	defer mgr.Subscribe(sub)()
@@ -238,10 +233,7 @@ func TestDeletedSessionIsNotRepublishedByItsLateReadLoop(t *testing.T) {
 	})
 
 	// Release the holder; the read loop now runs its cleanup.
-	out, _ := exec.Command("pgrep", "-x", "sleep").Output()
-	for _, line := range strings.Fields(string(out)) {
-		_ = exec.Command("kill", "-9", line).Run()
-	}
+	_ = syscall.Kill(escaped, syscall.SIGKILL)
 
 	// Nothing more about this session may arrive.
 	deadline := time.Now().Add(3 * time.Second)

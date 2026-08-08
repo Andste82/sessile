@@ -105,14 +105,14 @@ func (s *Session) Info() Info {
 
 func (s *Session) infoLocked() Info {
 	return Info{
-		ID:           s.ID,
-		Name:         s.Name,
-		Directory:    s.Directory,
-		Shell:        s.Shell,
-		Status:       s.Status,
-		PID:          s.PID,
-		Created:      s.Created,
-		LastActivity: s.LastActivity,
+		ID:            s.ID,
+		Name:          s.Name,
+		Directory:     s.Directory,
+		Shell:         s.Shell,
+		Status:        s.Status,
+		PID:           s.PID,
+		Created:       s.Created,
+		LastActivity:  s.LastActivity,
 		Rows:          s.Rows,
 		Cols:          s.Cols,
 		ClientCount:   len(s.clients),

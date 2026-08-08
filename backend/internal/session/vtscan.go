@@ -29,11 +29,11 @@ type vtScanner struct {
 type vtParse uint8
 
 const (
-	vtGround vtParse = iota
-	vtEsc            // saw ESC
-	vtCSI            // inside ESC [ …, collecting parameter/intermediate bytes
-	vtString         // inside a string sequence (OSC/DCS/APC/PM/SOS) payload
-	vtStringEsc      // inside a string sequence, saw ESC — expecting \ (ST)
+	vtGround    vtParse = iota
+	vtEsc               // saw ESC
+	vtCSI               // inside ESC [ …, collecting parameter/intermediate bytes
+	vtString            // inside a string sequence (OSC/DCS/APC/PM/SOS) payload
+	vtStringEsc         // inside a string sequence, saw ESC — expecting \ (ST)
 )
 
 // maxParams bounds the parameter run. Real mode sequences are a handful of
