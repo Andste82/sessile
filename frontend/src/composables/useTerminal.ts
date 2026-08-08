@@ -704,10 +704,6 @@ export function useTerminal() {
     // experiment only needs the trace to show whether the keyboard starts
     // prepending a space once it can see what precedes the cursor, so the shell
     // is left out of it rather than filled with nonsense.
-    if (imeKeepContext.value) {
-      trace('WOULD SEND (context experiment: nothing sent)', { data: text })
-      return
-    }
     trace(text ? 'SENT' : 'nothing to send', { data: text })
     if (!text) return
     send(applyModifiers(text, mods.value))
