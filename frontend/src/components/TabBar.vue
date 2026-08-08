@@ -34,12 +34,18 @@ interface Tab {
   id: string
   name: string
   status: Session['status']
+  activity: Session['activity']
 }
 
 const tabs = computed<Tab[]>(() =>
   store.openTabIds.map((id) => {
     const s = store.byId(id)
-    return { id, name: s?.name ?? 'session', status: s?.status ?? 'stopped' }
+    return {
+      id,
+      name: s?.name ?? 'session',
+      status: s?.status ?? 'stopped',
+      activity: s?.activity ?? '',
+    }
   }),
 )
 
@@ -71,7 +77,7 @@ function close(id: string) {
         "
         @click="router.push(`/sessions/${tab.id}`)"
       >
-        <StatusDot :status="tab.status" />
+        <StatusDot :status="tab.status" :activity="tab.activity" />
         <span class="truncate">{{ tab.name }}</span>
         <XMarkIcon
           class="h-4 w-4 shrink-0 rounded text-slate-500 opacity-60 hover:bg-slate-700 hover:text-slate-200 group-hover:opacity-100"

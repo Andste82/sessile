@@ -1,9 +1,11 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
+import type { ServerEvent } from '@/api/events'
 import type { AppConfig, CreateSessionBody, Session } from '@/api/types'
 
-// Session list + config store, with background polling for live client counts.
+// Session list + config store. The list is kept live by the event channel
+// (§5.1); polling remains as the fallback for while that socket is down.
 export const useSessionsStore = defineStore('sessions', () => {
   const sessions = ref<Session[]>([])
   const config = ref<AppConfig | null>(null)
@@ -80,6 +82,35 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
+  // Applies one frame from the event channel (§5.1).
+  //
+  // This lives in the store rather than in the composable that owns the socket
+  // so it can be tested: the repo has no component tests, and everything worth
+  // asserting about the channel is which of these three things it does.
+  function applyEvent(ev: ServerEvent) {
+    switch (ev.type) {
+      case 'sessions':
+        // The snapshot is the whole truth, including a session this client
+        // never saw created and one it never saw deleted.
+        sessions.value = ev.sessions
+        error.value = null
+        break
+      case 'session':
+        upsertSession(ev.session)
+        error.value = null
+        break
+      case 'sessionGone':
+        removeSession(ev.sessionId)
+        error.value = null
+        break
+    }
+  }
+
+  function removeSession(id: string) {
+    sessions.value = sessions.value.filter((s) => s.id !== id)
+    closeTab(id)
+  }
+
   // Inserts or replaces a single session. Fetching one by id (a deep link into
   // a terminal, say) otherwise left it out of the list, so the tab bar showed
   // "session" and the window title fell back to the plain route title until the
@@ -98,8 +129,7 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   async function deleteSession(id: string) {
     await api.deleteSession(id)
-    sessions.value = sessions.value.filter((s) => s.id !== id)
-    closeTab(id)
+    removeSession(id)
   }
 
   async function renameSession(id: string, name: string) {
@@ -158,6 +188,8 @@ export const useSessionsStore = defineStore('sessions', () => {
     refreshSessions,
     startPolling,
     stopPolling,
+    applyEvent,
+    removeSession,
     upsertSession,
     createSession,
     deleteSession,

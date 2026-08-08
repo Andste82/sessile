@@ -1,15 +1,22 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ArrowPathIcon, FolderIcon, TrashIcon } from '@heroicons/vue/24/outline'
+import { ArrowPathIcon, FolderIcon, TrashIcon, UsersIcon } from '@heroicons/vue/24/outline'
 import StatusDot from './StatusDot.vue'
 import type { Session } from '@/api/types'
-import { relativeTime } from '@/utils/time'
+import { activitySummary, displayDirectory, indicatorFor } from '@/utils/activity'
+import { duration, relativeTime } from '@/utils/time'
 
-defineProps<{ session: Session }>()
+const props = defineProps<{ session: Session }>()
 const emit = defineEmits<{
   (e: 'delete', id: string): void
   (e: 'restart', id: string): void
 }>()
+
+const indicator = computed(() => indicatorFor(props.session.status, props.session.activity))
+const summary = computed(() => activitySummary(props.session))
+const held = computed(() => duration(props.session.activitySince))
+const directory = computed(() => displayDirectory(props.session))
 </script>
 
 <template>
@@ -18,7 +25,7 @@ const emit = defineEmits<{
     class="group flex flex-col gap-3 rounded-lg border border-slate-700 bg-slate-800/50 p-4 transition hover:border-slate-500 hover:bg-slate-800"
   >
     <div class="flex items-center gap-2">
-      <StatusDot :status="session.status" />
+      <StatusDot :status="session.status" :activity="session.activity" />
       <span class="truncate font-medium text-slate-100">{{ session.name }}</span>
       <span class="ml-auto font-mono text-xs text-slate-400">{{ session.shell }}</span>
       <button
@@ -37,10 +44,36 @@ const emit = defineEmits<{
         <TrashIcon class="h-4 w-4" />
       </button>
     </div>
+
+    <!--
+      What the session is doing. Amber only for waiting: it is the one state
+      that is about the viewer rather than about the session, and colouring the
+      other two would spend the signal that makes it stand out on a grid of
+      cards. The row keeps its height in every state so the grid does not
+      reflow each time a session changes.
+    -->
+    <div class="flex min-h-4 items-center gap-2 text-xs">
+      <span
+        class="truncate font-mono"
+        :class="indicator === 'waiting' ? 'text-amber-400' : 'text-slate-400'"
+        >{{ summary }}</span
+      >
+      <span v-if="held && indicator !== 'stopped'" class="shrink-0 text-slate-500">{{ held }}</span>
+    </div>
+
     <div class="flex items-center gap-4 text-xs text-slate-400">
       <span class="flex min-w-0 items-center gap-1">
         <FolderIcon class="h-4 w-4 shrink-0" />
-        <span class="truncate font-mono">{{ session.directory }}</span>
+        <span class="truncate font-mono">{{ directory }}</span>
+      </span>
+      <!-- Only worth the space once a session is mirrored somewhere else. -->
+      <span
+        v-if="session.clientCount > 1"
+        class="flex shrink-0 items-center gap-1"
+        :title="`${session.clientCount} browsers attached`"
+      >
+        <UsersIcon class="h-4 w-4" />
+        {{ session.clientCount }}
       </span>
       <span class="ml-auto whitespace-nowrap">{{ relativeTime(session.lastActivity) }}</span>
     </div>
