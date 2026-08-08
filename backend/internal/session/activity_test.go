@@ -119,6 +119,81 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// Leaving "waiting" needs sustained output, not a byte. This is the difference
+// between a dashboard you can glance at and one that flickers: a real Claude
+// Code session sitting at its prompt repaints every few seconds, and without
+// the hysteresis each repaint dropped the indicator to busy for four seconds.
+func TestWaitingSurvivesARepaint(t *testing.T) {
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	waiting := activityInput{
+		previous:       ActivityWaiting,
+		lastOutput:     now, // the repaint landed this instant
+		bracketedPaste: true,
+		fg:             fgProgram,
+	}
+
+	t.Run("an isolated repaint does not count as work", func(t *testing.T) {
+		if got := classify(now, waiting); got != ActivityWaiting {
+			t.Errorf("classify = %q, want %q", got, ActivityWaiting)
+		}
+	})
+
+	t.Run("sustained output does", func(t *testing.T) {
+		in := waiting
+		in.sustainedOutput = true
+		if got := classify(now, in); got != ActivityBusy {
+			t.Errorf("classify = %q, want %q", got, ActivityBusy)
+		}
+	})
+
+	t.Run("the program exiting releases it", func(t *testing.T) {
+		in := waiting
+		in.fg = fgShell
+		if got := classify(now.Add(time.Minute), in); got != ActivityIdle {
+			t.Errorf("classify = %q, want %q", got, ActivityIdle)
+		}
+	})
+
+	t.Run("the line editor closing releases it", func(t *testing.T) {
+		in := waiting
+		in.bracketedPaste = false
+		if got := classify(now.Add(time.Minute), in); got != ActivityBusy {
+			t.Errorf("classify = %q, want %q", got, ActivityBusy)
+		}
+	})
+
+	t.Run("the hysteresis does not apply to other states", func(t *testing.T) {
+		in := waiting
+		in.previous = ActivityIdle
+		if got := classify(now, in); got != ActivityBusy {
+			t.Errorf("classify = %q, want %q — only waiting is sticky", got, ActivityBusy)
+		}
+	})
+}
+
+// The counter is about continuity, not volume: two samples in a row with any
+// output at all, and none the moment output stops.
+func TestSampleOutputRun(t *testing.T) {
+	var s Session
+
+	if s.sampleOutputRunLocked() {
+		t.Error("a session that has produced nothing reports sustained output")
+	}
+
+	s.outputBytes += 10
+	if s.sampleOutputRunLocked() {
+		t.Error("one sample with output is not sustained")
+	}
+	s.outputBytes += 1 // a single byte is enough to continue a run
+	if !s.sampleOutputRunLocked() {
+		t.Error("two samples in a row with output should be sustained")
+	}
+
+	if s.sampleOutputRunLocked() {
+		t.Error("a sample with no new output must end the run immediately")
+	}
+}
+
 // A zero lastBell is "no bell ever", not "a bell in 1970" — and the zero time is
 // far enough in the past that an unguarded comparison would go the right way by
 // accident. Pin it so a later refactor cannot break it silently.

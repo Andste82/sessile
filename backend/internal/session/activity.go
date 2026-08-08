@@ -55,10 +55,15 @@ const (
 
 // activityInput is everything classify is allowed to look at.
 type activityInput struct {
-	lastOutput     time.Time
-	bracketedPaste bool
-	lastBell       time.Time
-	fg             fgKind
+	previous   Activity
+	lastOutput time.Time
+	// sustainedOutput is true when output arrived in this sample interval and
+	// in the one before it — roughly two seconds of continuous writing, which
+	// a spinner produces and an occasional repaint does not.
+	sustainedOutput bool
+	bracketedPaste  bool
+	lastBell        time.Time
+	fg              fgKind
 }
 
 // classify turns a snapshot of the three signals into a state. It is pure — no
@@ -66,6 +71,21 @@ type activityInput struct {
 //
 // The order matters: each rule assumes the ones above it did not fire.
 func classify(now time.Time, in activityInput) Activity {
+	// Leaving "waiting" takes more than a byte. A program sitting at its prompt
+	// still repaints — a spinner, a hint line, a cursor — and treating any
+	// output as work starting made the indicator drop out of waiting for four
+	// seconds at a time, several times a minute, against a real Claude Code
+	// session. So while the conditions that produced the state still hold — a
+	// program, still reading a line — only sustained output moves it.
+	//
+	// Deliberately asymmetric: entering waiting needs positive evidence and a
+	// dwell, leaving it needs positive evidence too. A state that flickers is
+	// worse than one that is a second late.
+	if in.previous == ActivityWaiting && in.fg == fgProgram &&
+		in.bracketedPaste && !in.sustainedOutput {
+		return ActivityWaiting
+	}
+
 	quiet := now.Sub(in.lastOutput)
 	switch {
 	// 1. Bytes are arriving. Whatever else is true, the session is working.
@@ -149,10 +169,12 @@ func (m *Manager) sampleSession(s *Session, now time.Time) (Info, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := classify(now, activityInput{
-		lastOutput:     s.LastActivity,
-		bracketedPaste: s.vt.bracketedPaste,
-		lastBell:       s.vt.lastBell,
-		fg:             kind,
+		previous:        s.activity,
+		lastOutput:      s.LastActivity,
+		sustainedOutput: s.sampleOutputRunLocked(),
+		bracketedPaste:  s.vt.bracketedPaste,
+		lastBell:        s.vt.lastBell,
+		fg:              kind,
 	})
 	changed := next != s.activity || fg.Name != s.fgCommand || cwd != s.fgCwd
 	if next != s.activity {
@@ -164,6 +186,23 @@ func (m *Manager) sampleSession(s *Session, now time.Time) (Info, bool) {
 	}
 	s.fgCommand, s.fgCwd = fg.Name, cwd
 	return s.infoLocked(), changed
+}
+
+// sampleOutputRunLocked advances the consecutive-output counter and reports
+// whether output has now arrived in two samples running.
+//
+// It counts sample intervals rather than bytes on purpose. "Did output keep
+// coming" is a property of any program; "did more than N bytes arrive" is a
+// threshold that would have to be tuned per program, which is exactly what
+// §4.7 exists to avoid.
+func (s *Session) sampleOutputRunLocked() bool {
+	if s.outputBytes != s.sampledBytes {
+		s.sampledBytes = s.outputBytes
+		s.outputRun++
+	} else {
+		s.outputRun = 0
+	}
+	return s.outputRun >= 2
 }
 
 // runningPTY returns the session's PTY, or nil if it is no longer running.

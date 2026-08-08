@@ -269,6 +269,19 @@ snapshot of those inputs, so the whole table below is a unit test:
 | 5 | BEL within `bellWindow` (60 s) | `waiting` |
 | 6 | otherwise | `busy` |
 
+Ahead of all six sits one piece of hysteresis: a session that is already
+`waiting`, whose foreground program is still reading a line, stays `waiting`
+unless output is **sustained** — present in two consecutive samples rather than
+just recent. Programs that are waiting still repaint, and against a real Claude
+Code session each repaint otherwise dropped the indicator to `busy` for four
+seconds, several times a minute. The asymmetry is deliberate: entering the state
+needs positive evidence and a dwell, and so does leaving it. An indicator that
+flickers is worse than one that is a second late.
+
+Sustained is counted in sample intervals, not bytes. "Did output keep coming" is
+a property every program has; "did more than N bytes arrive" is a threshold that
+would need tuning per program, which is the thing this section exists to avoid.
+
 Rule 3's dwell time is what keeps a slow-redrawing program from oscillating:
 htop repaints every 1.5 s, so a threshold at the `busy` boundary alone would
 flip it back and forth. Rule 6 is the deliberate default — a program that is

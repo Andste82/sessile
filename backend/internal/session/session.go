@@ -48,6 +48,14 @@ type Session struct {
 	fgCommand     string // foreground program name
 	fgCwd         string // its working directory, relative to root
 
+	// outputBytes counts every byte broadcast; the sampler compares it against
+	// sampledBytes to tell whether output kept coming, and outputRun is how
+	// many samples in a row it has. Only the comparison matters, so the counter
+	// wrapping after 16 exabytes is not a case worth handling.
+	outputBytes  uint64
+	sampledBytes uint64
+	outputRun    int
+
 	// runtime-only
 	pty         *terminal.PTY
 	buffer      *RingBuffer
@@ -219,6 +227,7 @@ func (s *Session) broadcast(data []byte) {
 	// ring buffer just copied anyway, so there is nothing to queue and nothing
 	// that can be dropped — unlike the client fan-out below (§4.7).
 	s.vt.Feed(data)
+	s.outputBytes += uint64(len(data))
 	s.LastActivity = timeNow()
 	for c := range s.clients {
 		if !c.Send(data) {
