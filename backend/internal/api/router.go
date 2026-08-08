@@ -57,6 +57,11 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		r.GET("/ws/sessions/:id", func(c *gin.Context) {
 			s.ws.Handle(c.Writer, c.Request, c.Param("id"))
 		})
+		// Session list state rather than terminal bytes (§5.1). Separate from
+		// the terminal socket because the dashboard mounts no terminal.
+		r.GET("/ws/events", func(c *gin.Context) {
+			s.ws.HandleEvents(c.Writer, c.Request)
+		})
 	}
 
 	s.registerSPA(r, dist)

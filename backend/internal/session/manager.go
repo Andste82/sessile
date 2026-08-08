@@ -725,4 +725,22 @@ func (m *Manager) Shutdown() {
 		m.saveScrollback(s)
 		s.terminate(killGrace)
 	}
+	m.closeSubscribers()
+}
+
+// closeSubscribers disconnects the event channel on shutdown, with the same
+// close code a terminal client gets (§5). Last, so a dashboard is told about
+// the sessions going down before its own socket does.
+func (m *Manager) closeSubscribers() {
+	m.subMu.Lock()
+	subs := make([]Subscriber, 0, len(m.subs))
+	for sub := range m.subs {
+		subs = append(subs, sub)
+	}
+	m.subs = make(map[Subscriber]struct{})
+	m.subMu.Unlock()
+
+	for _, sub := range subs {
+		sub.Close(closeGoingAway, "server shutting down")
+	}
 }
