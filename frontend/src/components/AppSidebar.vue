@@ -62,7 +62,7 @@ function isTerminal(id: string) {
         class="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
         :class="{ 'bg-slate-800 text-slate-100': isTerminal(s.id) }"
       >
-        <StatusDot :status="s.status" />
+        <StatusDot :status="s.status" :activity="s.activity" />
         <span class="truncate">{{ s.name }}</span>
       </RouterLink>
       <p
