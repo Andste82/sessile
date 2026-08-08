@@ -38,7 +38,12 @@ type Manager struct {
 	// set by Shutdown, in the same critical section that drains sessions.
 	shuttingDown bool
 
-	stop     chan struct{} // closed by Shutdown to end the flush loop
+	// subMu guards subs and is never held while taking another lock, so
+	// publish is safe to call from anywhere — see Subscribe.
+	subMu sync.Mutex
+	subs  map[Subscriber]struct{}
+
+	stop     chan struct{} // closed by Shutdown to end the background loops
 	stopOnce sync.Once
 }
 
@@ -55,12 +60,16 @@ func NewManager(root string, shells []string, bufferSize int, dataDir string, st
 		store:      store,
 		sessions:   make(map[string]*Session),
 		restarting: make(map[string]struct{}),
+		subs:       make(map[Subscriber]struct{}),
 		stop:       make(chan struct{}),
 	}
 	if dataDir != "" {
 		m.scrollback = NewScrollbackStore(dataDir)
 		go m.flushLoop()
 	}
+	// Unconditional, unlike the flush loop: activity is derived from the PTY
+	// and the output stream, neither of which needs a data directory (§4.7).
+	go m.activityLoop()
 	return m
 }
 
@@ -77,6 +86,7 @@ func (m *Manager) Create(name, dir, shell string) (Info, error) {
 		return Info{}, err
 	}
 	m.log.Info("session created", "id", s.ID, "name", name, "shell", shell, "pid", s.PID)
+	m.publishSession(info)
 	return info, nil
 }
 
@@ -150,7 +160,9 @@ func (m *Manager) Restart(id string) (Info, error) {
 
 	m.log.Info("session restarted", "id", s.ID, "name", s.Name, "shell", s.Shell, "pid", s.PID)
 	// Snapshotted after the migration so the reply carries the real client count.
-	return s.Info(), nil
+	info := s.Info()
+	m.publishSession(info)
+	return info, nil
 }
 
 // claimRestart reserves id for one restart, refusing if the session is already
@@ -361,6 +373,10 @@ func (m *Manager) readLoop(s *Session) {
 		// The snapshot is on disk and nothing can read the buffer again.
 		s.releaseBuffer()
 		m.log.Info("session stopped", "id", s.ID)
+		// Clear the derived state before announcing it, or the dashboard keeps
+		// showing the program the session was running when its shell died.
+		info, _ := s.clearActivity()
+		m.publishSession(info)
 	}
 	// Reap the shell process (single reaper), close the master, then signal
 	// that termination is complete for any waiter in terminate().
@@ -536,6 +552,7 @@ func (m *Manager) Delete(id string) error {
 	}
 	m.discardState(id)
 	m.log.Info("session deleted", "id", id)
+	m.publishGone(id)
 	return nil
 }
 
@@ -605,6 +622,7 @@ func (m *Manager) Rename(id, name string) (Info, error) {
 			return Info{}, err
 		}
 	}
+	m.publishSession(info)
 	return info, nil
 }
 

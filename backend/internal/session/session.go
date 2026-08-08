@@ -41,6 +41,13 @@ type Session struct {
 	LastActivity time.Time
 	Rows, Cols   uint16
 
+	// derived activity, refreshed by the manager's sampler (§4.7). Empty
+	// activity means the session is not running.
+	activity      Activity
+	activitySince time.Time
+	fgCommand     string // foreground program name
+	fgCwd         string // its working directory, relative to root
+
 	// runtime-only
 	pty         *terminal.PTY
 	buffer      *RingBuffer
@@ -71,6 +78,13 @@ type Info struct {
 	LastActivity time.Time
 	Rows, Cols   uint16
 	ClientCount  int
+
+	// Derived, never persisted (§4.7). Activity is empty for a stopped
+	// session; Command and Cwd are empty where they cannot be determined.
+	Activity      Activity
+	ActivitySince time.Time
+	Command       string
+	Cwd           string
 }
 
 // Info returns a copy of the session's public fields.
@@ -90,9 +104,13 @@ func (s *Session) infoLocked() Info {
 		PID:          s.PID,
 		Created:      s.Created,
 		LastActivity: s.LastActivity,
-		Rows:         s.Rows,
-		Cols:         s.Cols,
-		ClientCount:  len(s.clients),
+		Rows:          s.Rows,
+		Cols:          s.Cols,
+		ClientCount:   len(s.clients),
+		Activity:      s.activity,
+		ActivitySince: s.activitySince,
+		Command:       s.fgCommand,
+		Cwd:           s.fgCwd,
 	}
 }
 

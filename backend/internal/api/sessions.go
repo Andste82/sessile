@@ -3,45 +3,15 @@ package api
 import (
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/Andste82/sessile/backend/internal/session"
 )
 
-// sessionJSON mirrors the §6 session shape (single source of truth; kept in
-// sync with frontend/src/api/types.ts).
-type sessionJSON struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Directory    string `json:"directory"`
-	Shell        string `json:"shell"`
-	Status       string `json:"status"`
-	PID          int    `json:"pid"`
-	Created      string `json:"created"`
-	LastActivity string `json:"lastActivity"`
-	Rows         uint16 `json:"rows"`
-	Cols         uint16 `json:"cols"`
-	ClientCount  int    `json:"clientCount"`
-}
-
-func toJSON(i session.Info) sessionJSON {
-	return sessionJSON{
-		ID:           i.ID,
-		Name:         i.Name,
-		Directory:    i.Directory,
-		Shell:        i.Shell,
-		Status:       string(i.Status),
-		PID:          i.PID,
-		Created:      i.Created.UTC().Format(time.RFC3339),
-		LastActivity: i.LastActivity.UTC().Format(time.RFC3339),
-		Rows:         i.Rows,
-		Cols:         i.Cols,
-		ClientCount:  i.ClientCount,
-	}
-}
-
+// The §6 session shape is session.JSON, built by session.ToJSON. It lives in
+// the session package because the event channel serialises it too and ws cannot
+// import api — see the type's own comment.
 type createSessionBody struct {
 	Name      string `json:"name"`
 	Directory string `json:"directory"`
@@ -54,9 +24,9 @@ func (s *Server) listSessions(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, CodeInternal, "list sessions failed")
 		return
 	}
-	out := make([]sessionJSON, 0, len(infos))
+	out := make([]session.JSON, 0, len(infos))
 	for _, i := range infos {
-		out = append(out, toJSON(i))
+		out = append(out, session.ToJSON(i))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -72,7 +42,7 @@ func (s *Server) createSession(c *gin.Context) {
 		s.respondSessionError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, toJSON(info))
+	c.JSON(http.StatusCreated, session.ToJSON(info))
 }
 
 func (s *Server) getSession(c *gin.Context) {
@@ -81,7 +51,7 @@ func (s *Server) getSession(c *gin.Context) {
 		s.respondSessionError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toJSON(info))
+	c.JSON(http.StatusOK, session.ToJSON(info))
 }
 
 func (s *Server) deleteSession(c *gin.Context) {
@@ -107,7 +77,7 @@ func (s *Server) renameSession(c *gin.Context) {
 		s.respondSessionError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toJSON(info))
+	c.JSON(http.StatusOK, session.ToJSON(info))
 }
 
 // restartSession gives a stopped session a new shell under the same id, with
@@ -118,7 +88,7 @@ func (s *Server) restartSession(c *gin.Context) {
 		s.respondSessionError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toJSON(info))
+	c.JSON(http.StatusOK, session.ToJSON(info))
 }
 
 // respondSessionError maps domain errors to the unified error envelope.

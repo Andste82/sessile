@@ -121,3 +121,42 @@ func mustMkdir(t *testing.T, path string) {
 		t.Fatalf("mkdir %s: %v", path, err)
 	}
 }
+
+// The working directory comes from the kernel rather than from the user, but it
+// is on its way to a browser, so it passes the same containment rule (§4.5). A
+// session whose shell has cd-ed past the root shows nothing rather than a path
+// outside the sandbox.
+func TestRelativeToRoot(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "project-a", "backend"))
+	// The root the caller configured may itself be a symlink; the kernel's
+	// answer never is, so only the root needs resolving.
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("eval root: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		abs  string
+		want string
+	}{
+		{"root itself", resolved, "."},
+		{"direct child", filepath.Join(resolved, "project-a"), "project-a"},
+		{"nested", filepath.Join(resolved, "project-a", "backend"), "project-a/backend"},
+		{"parent of root", filepath.Dir(resolved), ""},
+		{"unrelated absolute path", "/etc", ""},
+		{"empty", "", ""},
+		{"relative input is not a kernel answer", "project-a", ""},
+		// A sibling whose name merely starts with the root's is not inside it.
+		{"prefix without a separator", resolved + "-sibling", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := relativeToRoot(root, tt.abs); got != tt.want {
+				t.Errorf("relativeToRoot(%q) = %q, want %q", tt.abs, got, tt.want)
+			}
+		})
+	}
+}
