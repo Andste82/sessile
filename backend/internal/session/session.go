@@ -47,6 +47,7 @@ type Session struct {
 	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
 	exited      chan struct{} // closed by the read loop once the shell is reaped
+	discarded   bool          // Delete has removed this session and its files
 }
 
 // clientGeom is the terminal size one attached client reports. A client that
@@ -254,10 +255,27 @@ func (s *Session) takeClients() []Client {
 func (s *Session) snapshotRunning() ([]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.Status != StatusRunning {
+	if s.Status != StatusRunning || s.discarded {
 		return nil, false
 	}
 	return s.buffer.Snapshot(), true
+}
+
+// markDiscarded records that Delete has removed this session, so the read loop
+// does not write a scrollback file for it.
+//
+// It matters because the read loop can outlive the delete. terminate gives up
+// on a shell whose PTY is held open from outside its process group, and the read
+// loop then finishes minutes later and reaches its snapshot — after discardState
+// has already removed the session's files, leaving an orphan on disk under an id
+// nothing refers to any more.
+//
+// In the ordinary case this only saves a write: the file would be deleted
+// moments later anyway.
+func (s *Session) markDiscarded() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discarded = true
 }
 
 // releaseBuffer drops the scrollback of a stopped session.
@@ -291,14 +309,38 @@ func (s *Session) closeClients(code int, reason string) {
 // terminate stops the shell: SIGHUP+SIGTERM the process group, wait up to grace
 // for the read loop to reap it, then SIGKILL as a last resort (§4.3). It relies
 // on the read loop closing s.exited after Wait, so there is a single reaper.
-func (s *Session) terminate(grace time.Duration) {
+//
+// Reports whether the shell was reaped. False means the read loop is still
+// blocked on the PTY, because a process outside the shell's process group is
+// holding the slave open: anything that calls setsid() survives a signal aimed
+// at that group — a daemon, tmux, screen — and while it lives, the master never
+// reaches EOF.
+//
+// The second wait is bounded for that case. It used to be unbounded, which made
+// this a permanent hang rather than a slow path: the HTTP request that asked for
+// the delete never returned, and a graceful shutdown never finished, because
+// both wait here.
+//
+// Giving up is the only option available. Closing the master does not help —
+// creack/pty hands back a blocking file, so a Read already in the kernel cannot
+// be interrupted by a Close, which returns nil while the read stays put. The
+// read loop is not leaked, only late: it finishes on its own the moment the last
+// holder of the slave lets go, and runs its usual cleanup then.
+func (s *Session) terminate(grace time.Duration) bool {
 	s.pty.Signal(syscall.SIGHUP)
 	s.pty.Signal(syscall.SIGTERM)
 	select {
 	case <-s.exited:
+		return true
 	case <-time.After(grace):
-		s.pty.Signal(syscall.SIGKILL)
-		<-s.exited
+	}
+
+	s.pty.Signal(syscall.SIGKILL)
+	select {
+	case <-s.exited:
+		return true
+	case <-time.After(grace):
+		return false
 	}
 }
 
