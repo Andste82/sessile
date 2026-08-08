@@ -216,6 +216,7 @@ func TestDeletedSessionIsNotRepublishedByItsLateReadLoop(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	escaped := startEscapedChild(t, mgr, info.ID)
+	sess := mgr.live(info.ID) // captured before Delete removes it from the map
 
 	sub := newFakeSubscriber()
 	defer mgr.Subscribe(sub)()
@@ -232,17 +233,15 @@ func TestDeletedSessionIsNotRepublishedByItsLateReadLoop(t *testing.T) {
 		return false
 	})
 
-	// Release the holder; the read loop now runs its cleanup.
+	// Release the holder and let the loop run its whole cleanup — the point at
+	// which it would announce the stop.
 	_ = syscall.Kill(escaped, syscall.SIGKILL)
+	waitForReadLoop(t, sess)
 
-	// Nothing more about this session may arrive.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, m := range sub.received() {
-			if s, ok := m.(SessionMsg); ok && s.Session.ID == info.ID {
-				t.Fatalf("deleted session was republished as %q after sessionGone", s.Session.Status)
-			}
+	// Nothing more about this session may have arrived.
+	for _, m := range sub.received() {
+		if s, ok := m.(SessionMsg); ok && s.Session.ID == info.ID {
+			t.Fatalf("deleted session was republished as %q after sessionGone", s.Session.Status)
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
