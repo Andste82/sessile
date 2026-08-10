@@ -107,6 +107,7 @@ Ring buffer implementation: a simple `[]byte` with copy-on-overflow is fine
 ```
 backend/
   cmd/server/main.go        # flag parsing, wiring, graceful shutdown
+  cmd/ptycapture/main.go    # dev tool: what a program leaves a pty in (§4.7)
   internal/
     api/                    # Gin handlers + router setup + middleware
       router.go
@@ -330,6 +331,33 @@ tmux's screen grid. We take both and stop there — see §14.2.
    over: a container's first prompt can land before the sampler notices the
    container.
 
+5. **Screen ownership** — the alternate screen (47/1047/1049), mouse tracking
+   (1000/1002/1003) and focus reporting (1004), scanned by `vtscan.go` and
+   collapsed into one question: *is something drawing an interface here?*
+
+   This is what separates a program's question from a shell's prompt where
+   input 1 cannot see and input 4 is absent — the ordinary container, whose
+   image has no shell integration. Measured at a real pty (`cmd/ptycapture`),
+   in the silence the classifier samples:
+
+   | | bracketed paste | alt screen | mouse | focus | cursor |
+   |---|---|---|---|---|---|
+   | `bash -i` at its prompt | on | off | off | off | shown |
+   | `sh -i`, `python3`, `node` | off | off | off | off | shown |
+   | `docker run -it … bash`, idle | **on** | off | off | off | shown |
+   | Claude Code waiting | **on** | **on** | **on** | **on** | shown |
+   | htop | off | on | on | off | hidden |
+
+   A shell asks for none of them: it wants a line of text on the screen it
+   shares with its own history. Anything drawing an interface asks for at least
+   one, in bytes a proxy forwards — measured through `docker run -it`, all three
+   arrive unchanged. So the same container reads `idle` with a shell in it and
+   `waiting` with Claude Code in it, and neither answer needs a program name.
+
+   The cursor is **not** an input, and this table is why: Claude Code shows it
+   while waiting, exactly as a shell does. An earlier reading of it as hidden
+   was wrong, and cost one wrong hypothesis before the capture corrected it.
+
 **Classification** — `classify()` in `activity.go` is a pure function over a
 snapshot of those inputs, so the whole table below is a unit test:
 
@@ -339,14 +367,15 @@ snapshot of those inputs, so the whole table below is a unit test:
 | 0 | a prompt mark says a command is running | an *unidentified* foreground counts as a program; fall through |
 | 1 | bytes within `busyWindow` (1.5 s) | `busy` |
 | 2 | bracketed paste on, foreground **is** a shell (the session's own or a nested one) | `idle` |
-| 3 | bracketed paste on, foreground is **not** the shell, quiet ≥ `waitQuiet` (2.5 s) | `waiting` |
+| 3 | bracketed paste on, foreground is **not** the shell, quiet ≥ `waitQuiet` (2.5 s), **and something owns the screen** | `waiting` |
+| 3b | the same three, with the screen owned by nobody — a prompt, wherever it is | `idle` |
 | 4 | foreground **is** the session's own shell | `idle` |
 | 5 | BEL within `bellWindow` (60 s) | `waiting` |
 | 6 | otherwise | `busy` |
 
 Ahead of all six — and behind rule 0 — sits one piece of hysteresis: a session
-that is already `waiting`, whose foreground program is still reading a line,
-stays `waiting` unless output is **sustained** — present in two consecutive
+that is already `waiting`, whose foreground program is still reading a line and
+still owns the screen, stays `waiting` unless output is **sustained** — present in two consecutive
 samples rather than just recent. A prompt mark ends it immediately, and has to:
 when a program behind tmux or a container exits, nothing our own pty can see
 changes — the wrapper is still in the foreground and its line editor is still
@@ -369,15 +398,22 @@ a quiet `go build` would read as a question, and Claude Code inverts it anyway
 by hiding the cursor while it waits.
 
 **Measured, not assumed.** These rules were fixed after capturing real PTY
-sessions; re-run that capture before changing them.
+sessions; re-run that capture before changing them —
+`go run ./cmd/ptycapture -for 12s -- <program>` drives a real pty and reports
+what the program leaves the terminal in while it is silent.
 
-| Program | bracketed paste | alt screen | cursor | output while waiting |
-|---|---|---|---|---|
-| bash / zsh / fish | on at prompt, off while running | no | shown | none |
-| `sh` (dash) | never — carried by rule 4 | no | shown | none |
-| Claude Code | **on while waiting** | no | **hidden** | none |
-| htop | never | yes | hidden | repaint every 1.5 s |
-| `python3 input()` | never | no | shown | none |
+| Program | bracketed paste | alt screen | mouse | cursor | output while waiting |
+|---|---|---|---|---|---|
+| bash / zsh / fish | on at prompt, off while running | no | no | shown | none |
+| `sh` (dash) | never — carried by rule 4 | no | no | shown | none |
+| Claude Code | **on while waiting** | **yes** | **yes** | shown | none |
+| htop | never | yes | yes | hidden | repaint every 1.5 s |
+| `python3 input()`, `node` | never | no | no | shown | none |
+
+Two of Claude Code's columns were wrong here until the capture above was run:
+it does take the alternate screen, and it does **not** hide the cursor while
+waiting. A discrimination built on the cursor would have failed on exactly the
+case it was for.
 
 And what the foreground lookup sees through a wrapper, measured the same way —
 a pty driven by hand, `tcgetpgrp` read on the master:
@@ -389,11 +425,14 @@ a pty driven by hand, `tcgetpgrp` read on the master:
 | `docker run -it … bash` | `docker` | **reaches us** | **reaches us** |
 | `tmux` | `tmux: client`, unchanged while a pane runs `sleep` | **reaches us** | **dropped by tmux 3.4** |
 
-The last two rows are the whole case for input 4, and its limit. The mode the
-classifier leans on arrives from a shell the process lookup cannot see, so
-without a mark that shell's prompt cannot be told from a program's question.
-Through a byte proxy the mark gets there; through a multiplexer that parses OSC
-itself, it does not.
+The last two rows are the whole case for inputs 4 and 5, and their limit. The
+mode the classifier leans on arrives from a shell the process lookup cannot
+see, so on its own that shell's prompt cannot be told from a program's
+question. Two things can tell them apart, and both travel as bytes: a mark, and
+whether anything has taken the screen. Through a byte proxy both get there;
+through a multiplexer that parses OSC itself the mark does not — and tmux takes
+the alternate screen for its own client, so input 5 reads a tmux session as
+owned no matter what runs in the pane.
 
 Test for the ESC byte, never the text: a pty echoes the command that was typed,
 so a probe searching output for `]133` finds the echo of its own `printf` and
@@ -411,15 +450,18 @@ only the cadence rules apply.
 
 Three more, all on the same fault line — the pty boundary:
 
-- A shell behind a wrapper whose marks **do not reach us** still reads as
-  `waiting` at its prompt — either because the inner shell has no integration,
-  or because the wrapper drops them. **tmux is always in the second group**, so
-  a tmux session reads as `waiting` whenever its pane sits at a prompt, and
-  input 4 cannot help it. This is the one false positive in the section, and it
-  is deliberate: the alternative is a table of wrapper names (`tmux`, `docker`,
-  `ssh`, `kubectl`, …) declaring their contents unknowable, which would cost
-  the `waiting` state for anything genuinely asking behind one. For a container
-  or an ssh hop the fix is shell integration on the inside, not code here.
+- **tmux** reads as `waiting` whenever a pane sits at a prompt: it drops the
+  marks (input 4) *and* holds the alternate screen for its own client, so
+  input 5 sees the session as owned by a program. It is the one false positive
+  left in the section, and it is deliberate: the alternative is a table of
+  wrapper names declaring their contents unknowable, which would cost the
+  `waiting` state for anything genuinely asking behind one. A byte proxy —
+  `docker`, `ssh` — needs no such table; input 5 answers it, and a shell with
+  integration on the inside answers it exactly.
+- A program that asks its question at a **plain prompt** — bracketed paste on,
+  nothing drawn, no alternate screen, no mouse — now reads as `idle` under rule
+  3b. This is the cost of the line input 5 draws, and it is a false negative,
+  the direction this section errs in everywhere else.
 - A **nested `sh`** at its prompt reads as `busy`: it announces no line editor,
   so it cannot be told from a script the same binary is running. Rule 4 rescues
   the session's own dash and cannot rescue this one.

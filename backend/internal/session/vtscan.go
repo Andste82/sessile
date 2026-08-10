@@ -4,9 +4,10 @@ import "time"
 
 // vtScanner extracts the handful of terminal mode changes that §4.7 needs from
 // the raw output stream. It is deliberately not a terminal emulator: it keeps
-// three fields, holds no screen, no cursor and no cell attributes, and never
-// looks at printable text. It can answer "is something reading a line right
-// now" and never "what is on the screen" — the line §14.2 draws.
+// a handful of booleans, holds no screen, no cursor and no cell attributes, and
+// never looks at printable text. It can answer "is something reading a line
+// right now" and "has something taken this terminal over", and never "what is
+// on the screen" — the line §14.2 draws.
 //
 // It is a state machine rather than a per-chunk scan because a PTY read ends
 // wherever the kernel filled the buffer, which is regularly in the middle of an
@@ -23,6 +24,12 @@ type vtScanner struct {
 
 	altScreen      bool
 	bracketedPaste bool
+	// mouseTracking and focusReporting are the other two ways a program takes
+	// the terminal over. With altScreen they answer "is something drawing its
+	// own interface here", which is what tells a program's question from a
+	// shell's prompt when the process lookup cannot see either (§4.7).
+	mouseTracking  bool
+	focusReporting bool
 	lastBell       time.Time
 
 	// Semantic prompt marks (OSC 133, §4.7). promptSeen stays false for a shell
@@ -67,6 +74,18 @@ var altScreenModes = map[string]bool{"47": true, "1047": true, "1049": true}
 // and Ink-based apps such as Claude Code all set it before reading a line and
 // clear it before running what they read (§4.7).
 const bracketedPasteMode = "2004"
+
+// mouseTrackingModes are the DEC private modes that ask for mouse reports: 1000
+// (button press and release), 1002 (and drags), 1003 (and every move). The
+// encodings a program picks alongside them — 1005, 1006, 1015, 1016 — say how
+// a report is spelled, not that one was asked for, and are deliberately not
+// here: a program can select an encoding and never enable tracking.
+var mouseTrackingModes = map[string]bool{"1000": true, "1001": true, "1002": true, "1003": true}
+
+// focusReportingMode is DEC private mode 1004, where the terminal reports the
+// window gaining and losing focus. Only a program that redraws on focus asks
+// for it.
+const focusReportingMode = "1004"
 
 // promptMarkPrefix introduces the semantic prompt marks: OSC 133 ; A (a prompt
 // begins), B (the prompt ends and input is being read), C (the command's output
@@ -237,8 +256,25 @@ func (v *vtScanner) csiFinal(final byte) {
 			v.altScreen = set
 		case p == bracketedPasteMode:
 			v.bracketedPaste = set
+		case mouseTrackingModes[p]:
+			v.mouseTracking = set
+		case p == focusReportingMode:
+			v.focusReporting = set
 		}
 	}
+}
+
+// screenOwned reports whether something has taken the terminal over: it is
+// drawing on the alternate screen, or it has asked for mouse or focus reports.
+//
+// This is the line between a program's question and a shell's prompt, and it is
+// the only one that survives a pty boundary. A shell needs none of these — it
+// wants a line of text, on the screen it shares with everything before it.
+// Anything that draws an interface asks for at least one, and asks for it in
+// bytes, which a byte proxy forwards: measured through `docker run -it`, all
+// three arrive unchanged (§4.7).
+func (v *vtScanner) screenOwned() bool {
+	return v.altScreen || v.mouseTracking || v.focusReporting
 }
 
 // forgetPromptMarks drops what the marks said, back to "this stream carries
