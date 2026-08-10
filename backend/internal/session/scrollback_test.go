@@ -115,6 +115,15 @@ func TestRestoreSeparatorResetsTerminalModes(t *testing.T) {
 		"\x1b[0m",     // reset attributes
 		"\x1b[?25h",   // show cursor
 		"\x1b[?7h",    // re-enable autowrap
+		"\x1b[?1000l", // mouse tracking, all three levels
+		"\x1b[?1002l",
+		"\x1b[?1003l",
+		"\x1b[?1006l", // and the report encodings
+		"\x1b[?1004l", // focus reporting
+		"\x1b[?2004l", // bracketed paste
+		"\x1b[?1l",    // application cursor keys
+		"\x1b>",       // application keypad
+		"\x1b[r",      // scroll margins
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("separator %q missing escape %q", got, want)
@@ -141,14 +150,72 @@ func TestRestoreSeparatorKeepsTheCursorOutsideTheAlternateScreen(t *testing.T) {
 		t.Errorf("separator moves the cursor with 1049l outside the alternate screen: %q", got)
 	}
 	// The resets that do not move the cursor stay unconditional.
-	for _, want := range []string{"\x1b[0m", "\x1b[?25h", "\x1b[?7h"} {
+	for _, want := range []string{"\x1b[0m", "\x1b[?25h", "\x1b[?7h", "\x1b[?1003l"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("separator %q missing escape %q", got, want)
 		}
 	}
+	// DECSTBM homes the cursor, which is the same trap 1049l was. It may only
+	// appear between a save and a restore of the cursor.
+	save, region, restore := strings.Index(got, "\x1b7"), strings.Index(got, "\x1b[r"), strings.Index(got, "\x1b8")
+	if save < 0 || restore < 0 || !(save < region && region < restore) {
+		t.Errorf("separator resets the scroll region unguarded by DECSC/DECRC: %q", got)
+	}
 	if !strings.Contains(got, "── restored 2026-08-03T12:00:00Z") {
 		t.Errorf("separator %q does not carry the restore banner", got)
 	}
+}
+
+// The case this exists for: a program that was killed rather than closed. It
+// never turned its input modes off, so the snapshot ends with them on, and
+// without the separator undoing them the restarted shell inherits them — with
+// mouse tracking that means a report and a bell for every mouse move across the
+// window, which is a session nobody can type in.
+func TestRestoreSeparatorEndsWithInputModesOff(t *testing.T) {
+	// How a real snapshot ends when Claude Code is killed: several modes in one
+	// sequence, no reset after it.
+	snapshot := []byte("$ claude\r\n\x1b[?1004h\x1b[?1000;1002;1003;1006h\x1b[?2004h" +
+		"drawing…\x1b[?1049h\x1b[H\x1b[?25l")
+	replay := append(snapshot, restoreSeparator(
+		time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC), endsInAltScreen(snapshot))...)
+
+	for _, ps := range []string{"1000", "1002", "1003", "1006", "1004", "2004", "1049", "1"} {
+		if finalModeState(replay, ps) {
+			t.Errorf("mode ?%s is still set after the separator", ps)
+		}
+	}
+	// And the modes a usable terminal needs are on.
+	for _, ps := range []string{"25", "7"} {
+		if !finalModeState(replay, ps) {
+			t.Errorf("mode ?%s is not set after the separator", ps)
+		}
+	}
+}
+
+// finalModeState replays data and reports whether DEC private mode ps is set at
+// the end of it, parsing sequences the way the scanner does — several modes can
+// travel in one `ESC [ ? 1000 ; 1002 h`.
+func finalModeState(data []byte, ps string) bool {
+	set := false
+	for i := 0; i+2 < len(data); i++ {
+		if data[i] != 0x1b || data[i+1] != '[' || data[i+2] != '?' {
+			continue
+		}
+		j := i + 3
+		for j < len(data) && (data[j] == ';' || (data[j] >= '0' && data[j] <= '9')) {
+			j++
+		}
+		if j >= len(data) || (data[j] != 'h' && data[j] != 'l') {
+			continue
+		}
+		for _, p := range splitParams(data[i+3 : j]) {
+			if p == ps {
+				set = data[j] == 'h'
+			}
+		}
+		i = j
+	}
+	return set
 }
 
 func TestEndsInAltScreen(t *testing.T) {

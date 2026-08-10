@@ -700,6 +700,19 @@ without it a session that stopped inside a full-screen program would leave the
 replacement shell drawing into an unreachable screen. Restart is always
 explicit: sessions are never respawned automatically on startup.
 
+The separator also turns the **input modes** back off: mouse tracking
+(1000/1002/1003 and the 1005/1006/1015/1016 encodings), focus reporting (1004),
+bracketed paste (2004), application cursor keys and keypad, and the scroll
+margins. A program that exits cleanly does this itself; one that is killed does
+not, and the snapshot then ends with them on. Inherited by a shell, they are not
+cosmetic — with mouse tracking on, every mouse *move* across the window sends
+the shell a report that it echoes as `35;42;7M` plus a bell, faster than
+anything can be typed. Two of these resets move the cursor as a side effect and
+so are handled specially: DECRST 1049 is conditional on the snapshot really
+ending in the alternate screen, and DECSTBM is wrapped in DECSC/DECRC. A full
+reset (RIS) is not an option — it would clear the very history the separator
+introduces.
+
 ---
 
 ## 9. Configuration
