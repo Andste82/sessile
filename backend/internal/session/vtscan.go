@@ -24,6 +24,22 @@ type vtScanner struct {
 	altScreen      bool
 	bracketedPaste bool
 	lastBell       time.Time
+
+	// Semantic prompt marks (OSC 133, §4.7). promptSeen stays false for a shell
+	// with no integration, and that is what makes the marks additive: where they
+	// are absent, every other rule decides exactly as it did before.
+	promptSeen   bool
+	promptActive bool
+	// lastMark is when the most recent one arrived, which is how a mark that
+	// belongs to a program that has just started is told from one left behind
+	// by the program it replaced.
+	lastMark time.Time
+
+	// osc tracks whether the string sequence currently being skipped is an OSC,
+	// and oscBuf holds as much of its payload as a mark can need.
+	osc    bool
+	oscLen int
+	oscBuf [oscPrefixMax]byte
 }
 
 type vtParse uint8
@@ -51,6 +67,23 @@ var altScreenModes = map[string]bool{"47": true, "1047": true, "1049": true}
 // and Ink-based apps such as Claude Code all set it before reading a line and
 // clear it before running what they read (§4.7).
 const bracketedPasteMode = "2004"
+
+// promptMarkPrefix introduces the semantic prompt marks: OSC 133 ; A (a prompt
+// begins), B (the prompt ends and input is being read), C (the command's output
+// begins), D (the command finished).
+//
+// These are the one signal that survives a change of terminal. The foreground
+// lookup stops at our own pty, so a shell inside tmux, a container or an ssh
+// session is invisible to it — but the marks are bytes in the stream, and both
+// tmux and `docker -t` forward them unchanged (measured, see §4.7). Where the
+// inner shell emits them we can tell a prompt from a running command across
+// that boundary; where it does not, nothing changes.
+const promptMarkPrefix = "133;"
+
+// oscPrefixMax bounds the OSC payload kept for inspection. A mark is decided by
+// its first five bytes ("133;D"); a window title or a clipboard write can be
+// arbitrarily long and is dropped by the prefix check either way.
+const oscPrefixMax = 16
 
 // Feed advances the scanner over one chunk of PTY output.
 func (v *vtScanner) Feed(p []byte) {
@@ -99,9 +132,17 @@ func (v *vtScanner) Feed(p []byte) {
 		case vtString:
 			switch b {
 			case 0x07:
-				v.st = vtGround // BEL terminates — xterm accepts it for all of them
+				v.endString() // BEL terminates — xterm accepts it for all of them
 			case 0x1b:
 				v.st = vtStringEsc
+			default:
+				// Only an OSC payload is kept, and only its prefix. Everything
+				// else in here — a Sixel image, a tmux passthrough — is skipped
+				// as before.
+				if v.osc && v.oscLen < len(v.oscBuf) {
+					v.oscBuf[v.oscLen] = b
+					v.oscLen++
+				}
 			}
 
 		case vtStringEsc:
@@ -109,7 +150,7 @@ func (v *vtScanner) Feed(p []byte) {
 			// was aborted by a fresh escape sequence, and this byte introduces
 			// it — the same dispatch as from vtEsc, which is why they share it.
 			if b == '\\' {
-				v.st = vtGround
+				v.endString()
 			} else {
 				v.afterEsc(b)
 			}
@@ -118,19 +159,63 @@ func (v *vtScanner) Feed(p []byte) {
 }
 
 // afterEsc dispatches the byte following an ESC.
+//
+// It is also how a string sequence is abandoned, so it clears the OSC payload
+// first: reaching here from vtStringEsc means the string never terminated, and
+// half a mark must not be applied by the sequence that interrupted it.
 func (v *vtScanner) afterEsc(b byte) {
+	v.osc = false
 	switch b {
 	case '[':
 		v.st, v.params, v.tooLong = vtCSI, v.params[:0], false
-	case ']', 'P', 'X', '^', '_':
-		// OSC, DCS, SOS, PM, APC. Their payloads are arbitrary bytes — a Sixel
-		// image or a tmux passthrough can carry anything, including 0x07 — so
-		// they are skipped wholesale rather than parsed.
+	case ']':
+		// OSC. Its payload is scanned for a prompt mark; anything else in it is
+		// dropped by the prefix check in promptMark.
+		v.st, v.osc, v.oscLen = vtString, true, 0
+	case 'P', 'X', '^', '_':
+		// DCS, SOS, PM, APC. Their payloads are arbitrary bytes — a Sixel image
+		// or a tmux passthrough can carry anything, including 0x07 — so they
+		// are skipped wholesale rather than parsed.
 		v.st = vtString
 	case 0x1b:
 		v.st = vtEsc // ESC ESC: the second one introduces the sequence
 	default:
 		v.st = vtGround
+	}
+}
+
+// endString closes a properly terminated string sequence.
+func (v *vtScanner) endString() {
+	if v.osc {
+		v.promptMark()
+	}
+	v.st, v.osc = vtGround, false
+}
+
+// promptMark applies a completed OSC payload. Only OSC 133 is of interest: a
+// window title (OSC 0/2, sent by bash and fish on every prompt) or a clipboard
+// write (OSC 52) fails the prefix check and changes nothing.
+func (v *vtScanner) promptMark() {
+	p := v.oscBuf[:v.oscLen]
+	if len(p) <= len(promptMarkPrefix) || string(p[:len(promptMarkPrefix)]) != promptMarkPrefix {
+		return
+	}
+	mark := p[len(promptMarkPrefix)]
+	if mark == 'A' || mark == 'B' || mark == 'C' || mark == 'D' {
+		v.lastMark = timeNow()
+	}
+	switch mark {
+	// A prompt is being drawn (A), or it is drawn and the line editor has it
+	// (B). D is here too: the command finished, so whatever we were watching is
+	// over and the shell has the terminal back. Reading D as "at the prompt"
+	// rather than waiting for the next A is the quiet direction to be wrong in —
+	// a shell that emits D and then takes its time never nags in the meantime.
+	case 'A', 'B', 'D':
+		v.promptSeen, v.promptActive = true, true
+	// The command's output begins: from here until D, something other than the
+	// shell owns the terminal.
+	case 'C':
+		v.promptSeen, v.promptActive = true, false
 	}
 }
 
@@ -154,6 +239,15 @@ func (v *vtScanner) csiFinal(final byte) {
 			v.bracketedPaste = set
 		}
 	}
+}
+
+// forgetPromptMarks drops what the marks said, back to "this stream carries
+// none". They describe whichever program was in the foreground when they
+// arrived; once that program is gone they are a claim about something that is
+// no longer there, and a stale claim is worse than no claim — it cannot be
+// contradicted by a shell that never emits marks of its own.
+func (v *vtScanner) forgetPromptMarks() {
+	v.promptSeen, v.promptActive, v.lastMark = false, false, time.Time{}
 }
 
 // splitParams splits a parameter run on ';' without allocating a slice of

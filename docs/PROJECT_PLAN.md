@@ -122,7 +122,7 @@ backend/
       manager.go            # SessionManager (the core component)
       session.go            # Session struct + lifecycle
       ringbuffer.go
-      vtscan.go             # escape-sequence scanner — modes only (§4.7)
+      vtscan.go             # escape-sequence scanner — modes + prompt marks (§4.7)
       activity.go           # activity classification + sampler (§4.7)
       events.go             # subscriber fan-out for /ws/events
     terminal/
@@ -231,13 +231,49 @@ plus a `/proc` lookup (`osdep-linux.c`), and drives `monitor-activity` /
 `monitor-bell` / `monitor-silence` from arriving bytes alone. Neither reads
 tmux's screen grid. We take both and stop there — see §14.2.
 
-**Three inputs, in order of how much they can be trusted:**
+**Four inputs, in order of how much they can be trusted:**
 
 1. **Foreground process group** — `ioctl(TIOCGPGRP)` on the pty **master**,
    then `/proc/<pgid>/comm` and `/proc/<pgid>/cwd`. Exact, not inferred: the
    kernel is the authority on which program owns the terminal. When the
    foreground group is the session's own shell, the shell is at its prompt.
    Sampled once a second, not per byte.
+
+   It resolves to one of four kinds: the session's own shell (by pid), *a*
+   shell (by name — `knownShells` plus the configured allowlist), a program, or
+   unknown. The nested-shell kind exists because a `bash` started inside a
+   session is at a prompt on exactly the same evidence the session's own shell
+   is, and the pid check cannot see that: the pid only ever matches the shell we
+   started ourselves. It takes rule 2, never rule 4 — with a line editor open it
+   is a prompt, and without one it is `bash deploy.sh`, which is work.
+
+   A name table is otherwise what this section exists to avoid. This one is
+   bounded by what the section is *about*: shell-versus-program is the axis
+   every rule turns on. It adds no knowledge of any program, so a new TUI still
+   needs no code.
+
+   **The group leader is not always the program.** A shell running a script
+   does no job control, so `bash deploy.sh` leaves the `ping` it starts in the
+   script's own process group: `TIOCGPGRP` can only name the leader, and the
+   program the user is waiting on sits one level below it. So the lookup
+   descends from the leader through `/proc/<pid>/task/<pid>/children`, and the
+   chain it collects — `bash › ping` — is both what the UI shows and what
+   decides the kind above, the innermost process being the one that is running.
+
+   Only children **still in the group** are followed, and that condition is the
+   whole safety of it: an interactive shell puts every job in a group of its
+   own, so a backgrounded `sleep 300 &` has a different group and is skipped.
+   Without the check, a shell sitting at its prompt with anything in the
+   background would be reported as running it. Where a pipeline inside a script
+   puts several children in the group at once, the one that started first wins
+   — it is what the line is about, and it is also the answer tmux gives for the
+   same pipeline typed at a prompt.
+
+   The descent stops at eight levels, and only the leader's own thread is asked
+   for children: a shell is single threaded, and scanning every thread would
+   cost a directory read per sample to cover a case that does not arise. A
+   kernel without `CONFIG_PROC_CHILDREN` yields a one-link chain, which is
+   exactly the behaviour that came before it.
 
    Take the fd through `File.SyscallConn()`, never `File.Fd()` — `Fd()` pulls
    the file out of the runtime poller and switches it to blocking mode, which
@@ -257,22 +293,64 @@ tmux's screen grid. We take both and stop there — see §14.2.
    while reading and clear it before running. Also scanned: the alternate
    screen modes (already needed by `scrollback.go`) and BEL.
 
+4. **Semantic prompt marks** (`OSC 133 ; A|B|C|D`) — also scanned by
+   `vtscan.go`, and the only signal that survives a change of terminal. Input 1
+   stops at our own pty: a shell inside tmux, a container or an ssh session has
+   a pty of its own, so `tcgetpgrp` reports the *wrapper* (`tmux: client`,
+   `docker`) and every prompt behind one read as `waiting`. The marks are bytes
+   in the stream, so a wrapper that proxies bytes carries them: `docker -t`
+   does, measured end to end. tmux 3.4 does **not** — it parses OSC and drops
+   what it does not implement, so the marks die at the pane boundary and a tmux
+   session is unaffected by this input. See the table below.
+
+   A mark says "the shell is at a prompt" (A, B, and D — a finished command
+   hands the terminal back) or "a command is running" (C). It never says what a
+   *program* wants, so the second half only decides that the foreground is a
+   program and leaves rules 1–6 to run: that is what keeps Claude Code inside a
+   container reporting `waiting`.
+
+   Two facts, not one: "this shell emits no marks" must stay distinct from
+   "not at a prompt", because only the first may fall back to input 1. A shell
+   without integration therefore changes nothing, which is what makes this
+   additive.
+
+   **It outranks input 1 in one direction only.** "At a prompt" wins, because
+   nothing else can know it. "A command is running" does not: it is equally
+   true of an interactive `bash` started from a marked shell — that *is* a
+   command its parent ran, and it is also a prompt — so where the kernel can
+   see a shell in the foreground, the kernel wins. The mark's other half only
+   fills in a foreground that could not be identified at all.
+
+   **And marks expire with the program that sent them.** A container shell
+   draws a prompt, says so, and is then left behind; the session's own shell
+   emits no marks, so nothing would ever contradict it and a program started
+   later would be reported as sitting at a prompt that is not there. So a
+   change of foreground program drops them — except for a mark newer than one
+   sampling window, which may well have come from the program that just took
+   over: a container's first prompt can land before the sampler notices the
+   container.
+
 **Classification** — `classify()` in `activity.go` is a pure function over a
 snapshot of those inputs, so the whole table below is a unit test:
 
 | # | Condition | State |
 |---|---|---|
+| 0 | a prompt mark says the shell is at its prompt | `busy` within `busyWindow`, else `idle` |
+| 0 | a prompt mark says a command is running | an *unidentified* foreground counts as a program; fall through |
 | 1 | bytes within `busyWindow` (1.5 s) | `busy` |
-| 2 | bracketed paste on, foreground **is** the shell | `idle` |
+| 2 | bracketed paste on, foreground **is** a shell (the session's own or a nested one) | `idle` |
 | 3 | bracketed paste on, foreground is **not** the shell, quiet ≥ `waitQuiet` (2.5 s) | `waiting` |
-| 4 | foreground **is** the shell | `idle` |
+| 4 | foreground **is** the session's own shell | `idle` |
 | 5 | BEL within `bellWindow` (60 s) | `waiting` |
 | 6 | otherwise | `busy` |
 
-Ahead of all six sits one piece of hysteresis: a session that is already
-`waiting`, whose foreground program is still reading a line, stays `waiting`
-unless output is **sustained** — present in two consecutive samples rather than
-just recent. Programs that are waiting still repaint, and against a real Claude
+Ahead of all six — and behind rule 0 — sits one piece of hysteresis: a session
+that is already `waiting`, whose foreground program is still reading a line,
+stays `waiting` unless output is **sustained** — present in two consecutive
+samples rather than just recent. A prompt mark ends it immediately, and has to:
+when a program behind tmux or a container exits, nothing our own pty can see
+changes — the wrapper is still in the foreground and its line editor is still
+open — so the mark is the only thing that can release the state. Programs that are waiting still repaint, and against a real Claude
 Code session each repaint otherwise dropped the indicator to `busy` for four
 seconds, several times a minute. The asymmetry is deliberate: entering the state
 needs positive evidence and a dwell, and so does leaving it. An indicator that
@@ -301,6 +379,27 @@ sessions; re-run that capture before changing them.
 | htop | never | yes | hidden | repaint every 1.5 s |
 | `python3 input()` | never | no | shown | none |
 
+And what the foreground lookup sees through a wrapper, measured the same way —
+a pty driven by hand, `tcgetpgrp` read on the master:
+
+| Started in the session | foreground name | inner shell's `?2004h` | inner `OSC 133` |
+|---|---|---|---|
+| `bash` (nested) | `bash` — a real second process group | reaches us | reaches us |
+| `sh` (nested) | `sh` | never sent | reaches us |
+| `docker run -it … bash` | `docker` | **reaches us** | **reaches us** |
+| `tmux` | `tmux: client`, unchanged while a pane runs `sleep` | **reaches us** | **dropped by tmux 3.4** |
+
+The last two rows are the whole case for input 4, and its limit. The mode the
+classifier leans on arrives from a shell the process lookup cannot see, so
+without a mark that shell's prompt cannot be told from a program's question.
+Through a byte proxy the mark gets there; through a multiplexer that parses OSC
+itself, it does not.
+
+Test for the ESC byte, never the text: a pty echoes the command that was typed,
+so a probe searching output for `]133` finds the echo of its own `printf` and
+reports success through a wrapper that forwards nothing. That mistake was made
+once here already.
+
 **Known limits, accepted by design.** Constant repainters (`htop`, `top`,
 `watch`) read as permanently `busy` — correct under rule 1, and tmux's `#`
 flag behaves the same. A program that waits for input without setting
@@ -309,6 +408,25 @@ in a script) reads as `busy`. Both are false negatives: the UI stays quiet
 instead of claiming attention it does not deserve, which is the direction to
 err in. Off Linux there is no `/proc`, so `command` and `cwd` are empty and
 only the cadence rules apply.
+
+Three more, all on the same fault line — the pty boundary:
+
+- A shell behind a wrapper whose marks **do not reach us** still reads as
+  `waiting` at its prompt — either because the inner shell has no integration,
+  or because the wrapper drops them. **tmux is always in the second group**, so
+  a tmux session reads as `waiting` whenever its pane sits at a prompt, and
+  input 4 cannot help it. This is the one false positive in the section, and it
+  is deliberate: the alternative is a table of wrapper names (`tmux`, `docker`,
+  `ssh`, `kubectl`, …) declaring their contents unknowable, which would cost
+  the `waiting` state for anything genuinely asking behind one. For a container
+  or an ssh hop the fix is shell integration on the inside, not code here.
+- A **nested `sh`** at its prompt reads as `busy`: it announces no line editor,
+  so it cannot be told from a script the same binary is running. Rule 4 rescues
+  the session's own dash and cannot rescue this one.
+- `sudo -i`, `su` and the like lead the group themselves. Whether the chain
+  reaches the shell underneath depends on whether they keep it in their own
+  process group — unverified, neither is installed in the container these
+  measurements were taken in.
 
 **Cost.** The scanner runs inline in `broadcast` next to the ring-buffer write
 — a byte loop over bytes already being copied, no goroutine and no channel, so
@@ -460,7 +578,7 @@ persisted, and the SQLite schema (§8) is unchanged:
 | Field | Meaning |
 |---|---|
 | `activity` | `"busy"` \| `"waiting"` \| `"idle"`; empty string for a stopped session |
-| `command` | foreground program, e.g. `claude`, `htop`, or the shell when at a prompt. Empty where unavailable |
+| `command` | foreground program, e.g. `claude`, `htop`, or the shell when at a prompt. A script and what it started are joined with ` › ` — `bash › ping` — and a chain past three links keeps its ends: `bash › … › cc1plus`. Empty where unavailable |
 | `cwd` | the shell's actual working directory, relative to root — follows `cd`, unlike `directory`. Empty when unknown or outside root |
 | `activitySince` | RFC 3339 UTC; when the session entered its current `activity` |
 
@@ -860,8 +978,11 @@ audit log. Future: SSH remotes, tmux import, session sharing, read-only mode.
    server holds no character grid, no cursor and no cell attributes; there is
    exactly one terminal emulator in the system and it is the xterm.js the user
    is looking at. §4.7's scanner does not weaken this: it reads mode switches
-   out of the stream and keeps three booleans, and it can answer "is something
-   reading a line" but never "what is on the screen".
+   and prompt marks out of the stream and keeps a handful of booleans, and it
+   can answer "is something reading a line" and "is a shell at its prompt" but
+   never "what is on the screen". Both are announcements the programs make on
+   purpose; neither requires knowing a single printable character, and the
+   scanner never looks at one.
 
    This is the line that keeps the dashboard from showing a preview of each
    session's screen. That feature needs `tmux capture-pane`, which needs

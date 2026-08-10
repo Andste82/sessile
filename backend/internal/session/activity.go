@@ -1,6 +1,8 @@
 package session
 
 import (
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Andste82/sessile/backend/internal/terminal"
@@ -50,8 +52,69 @@ const (
 	// prompt on a non-Linux build report as waiting.
 	fgUnknown fgKind = iota
 	fgShell
+	// fgNestedShell: a shell other than the session's own — `bash` typed at the
+	// prompt, a login shell, anything the operator allowed as a shell. It is at
+	// its prompt under exactly the same evidence the session's own shell is, so
+	// it takes the same branch; the pid check cannot see it because the pid is
+	// only ever the shell we started ourselves.
+	fgNestedShell
 	fgProgram
 )
+
+// knownShells are the foreground names that make a process a shell rather than
+// a program.
+//
+// A name table is the thing §4.7 avoids, so this one is bounded by what the
+// section is actually about: shell-versus-program is the axis every rule turns
+// on, and the session's own shell is recognised by pid only because we happened
+// to start it. This adds no knowledge of any *program* — a new TUI still needs
+// no code. Shells the operator configured are matched too, so `--shells nu`
+// works without touching this.
+var knownShells = map[string]bool{
+	"sh": true, "bash": true, "dash": true, "ash": true, "zsh": true,
+	"fish": true, "ksh": true, "mksh": true, "csh": true, "tcsh": true,
+}
+
+// chainSeparator joins the foreground chain for display, and maxChainShown is
+// how many of its links are worth showing: the label is a glance, not a process
+// tree, and the two ends are what carry the meaning.
+const (
+	chainSeparator = " › "
+	maxChainShown  = 3
+)
+
+// commandLabel renders the foreground chain: "bash › ping" for a script that
+// runs ping, and just "claude" for a program started directly.
+//
+// A chain deeper than the cap keeps its ends — the outermost says what was
+// started, the innermost what is running, and everything between them is
+// scaffolding a build system put there.
+func commandLabel(fg terminal.Foreground) string {
+	switch {
+	case len(fg.Chain) == 0:
+		return fg.Name
+	case len(fg.Chain) <= maxChainShown:
+		return strings.Join(fg.Chain, chainSeparator)
+	default:
+		return fg.Chain[0] + chainSeparator + "…" + chainSeparator + fg.Leaf()
+	}
+}
+
+// isShellName reports whether a foreground process name is a shell.
+func (m *Manager) isShellName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if knownShells[name] {
+		return true
+	}
+	for _, sh := range m.shells {
+		if filepath.Base(sh) == name {
+			return true
+		}
+	}
+	return false
+}
 
 // activityInput is everything classify is allowed to look at.
 type activityInput struct {
@@ -64,6 +127,12 @@ type activityInput struct {
 	bracketedPaste  bool
 	lastBell        time.Time
 	fg              fgKind
+	// promptMarks is true once the stream has carried an OSC 133 mark, and
+	// atPrompt is what the most recent one said. The pair is deliberately two
+	// fields: "no marks at all" is a different answer from "not at the prompt",
+	// and only the first may fall back to the foreground lookup.
+	promptMarks bool
+	atPrompt    bool
 }
 
 // classify turns a snapshot of the three signals into a state. It is pure — no
@@ -71,6 +140,32 @@ type activityInput struct {
 //
 // The order matters: each rule assumes the ones above it did not fire.
 func classify(now time.Time, in activityInput) Activity {
+	quiet := now.Sub(in.lastOutput)
+
+	// 0. A prompt mark answers the question the foreground lookup exists to
+	// answer — is a shell at its prompt — and answers it through a wrapper with
+	// a pty of its own, which the lookup cannot see past. That is the whole
+	// gain: a shell in a container says so itself.
+	//
+	// It outranks the lookup in one direction only. "At a prompt" wins, because
+	// nothing else can know it. "A command is running" does not: it is true of a
+	// nested shell too — an interactive `bash` *is* a command its parent ran —
+	// and there the kernel seeing a shell in the foreground is the better
+	// evidence. So that half only fills in a foreground we could not identify,
+	// and then leaves rules 1-6 to decide. A mark never says what a program
+	// wants, which is what keeps Claude Code in a container reporting waiting.
+	if in.promptMarks {
+		if in.atPrompt {
+			if quiet < busyWindow {
+				return ActivityBusy // rule 1 still comes first
+			}
+			return ActivityIdle
+		}
+		if in.fg == fgUnknown {
+			in.fg = fgProgram
+		}
+	}
+
 	// Leaving "waiting" takes more than a byte. A program sitting at its prompt
 	// still repaints — a spinner, a hint line, a cursor — and treating any
 	// output as work starting made the indicator drop out of waiting for four
@@ -86,15 +181,17 @@ func classify(now time.Time, in activityInput) Activity {
 		return ActivityWaiting
 	}
 
-	quiet := now.Sub(in.lastOutput)
 	switch {
 	// 1. Bytes are arriving. Whatever else is true, the session is working.
 	case quiet < busyWindow:
 		return ActivityBusy
 
-	// 2. Something is reading a line and it is not a program — either the
-	// shell's own prompt, or a foreground process we could not identify, where
-	// a prompt is the likelier reading and the quieter one to be wrong about.
+	// 2. Something is reading a line and it is not a program — the session's own
+	// shell, a shell started inside it, or a foreground process we could not
+	// identify, where a prompt is the likelier reading and the quieter one to be
+	// wrong about. A nested shell belongs here rather than under rule 4: with a
+	// line editor open it is at a prompt, and without one it is running a script
+	// (`bash deploy.sh` keeps the name and loses the mode), which is work.
 	case in.bracketedPaste && in.fg != fgProgram:
 		return ActivityIdle
 
@@ -106,6 +203,11 @@ func classify(now time.Time, in activityInput) Activity {
 
 	// 4. The shell owns the terminal but never announced a line editor — dash
 	// has no readline at all. At the prompt regardless.
+	//
+	// The session's own shell only, not a nested one: this rule is safe here
+	// because a command the session's shell runs gets its own process group and
+	// so is never mistaken for it, and that is exactly what does not hold one
+	// level down.
 	case in.fg == fgShell:
 		return ActivityIdle
 
@@ -159,15 +261,41 @@ func (m *Manager) sampleSession(s *Session, now time.Time) (Info, bool) {
 	kind := fgUnknown
 	switch {
 	case fg.PID <= 0:
-	case fg.PID == s.PID:
+	// The leader is our own shell and nothing is running under it. The second
+	// half matters: an interactive shell gives every job a group of its own, so
+	// a child still inside the group means job control is off and that child,
+	// not the shell, has the terminal.
+	case fg.PID == s.PID && len(fg.Chain) <= 1:
 		kind = fgShell
+	// Everything else is decided by the innermost process, which is the one
+	// actually running — `bash deploy.sh` is a program at work, not a shell at
+	// a prompt, and only the leaf says so.
+	case m.isShellName(fg.Leaf()):
+		kind = fgNestedShell
 	default:
 		kind = fgProgram
 	}
+	command := commandLabel(fg)
 	cwd := relativeToRoot(m.root, fg.Cwd)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A different program is in the foreground than the one the marks were about,
+	// so what they said concerns something that has exited. The case this exists
+	// for: a container shell with integration draws a prompt, says so, and is
+	// then left behind — the session's own shell emits no marks of its own, so
+	// nothing would ever contradict it, and a program started later would be
+	// reported as sitting at a prompt that is not there.
+	//
+	// Two guards. An empty name is a lookup that failed, not a change, and must
+	// not discard a live wrapper's state on a hiccup. And a mark newer than one
+	// sampling window may well have come from the program that just took over —
+	// a container's first prompt can easily land before the sampler notices the
+	// container — so only marks older than the change are treated as its debris.
+	if command != "" && command != s.fgCommand &&
+		now.Sub(s.vt.lastMark) > activitySampleInterval {
+		s.vt.forgetPromptMarks()
+	}
 	next := classify(now, activityInput{
 		previous:        s.activity,
 		lastOutput:      s.LastActivity,
@@ -175,8 +303,10 @@ func (m *Manager) sampleSession(s *Session, now time.Time) (Info, bool) {
 		bracketedPaste:  s.vt.bracketedPaste,
 		lastBell:        s.vt.lastBell,
 		fg:              kind,
+		promptMarks:     s.vt.promptSeen,
+		atPrompt:        s.vt.promptActive,
 	})
-	changed := next != s.activity || fg.Name != s.fgCommand || cwd != s.fgCwd
+	changed := next != s.activity || command != s.fgCommand || cwd != s.fgCwd
 	if next != s.activity {
 		s.activity = next
 		// Only a real transition restarts the clock: the dashboard shows how
@@ -184,7 +314,7 @@ func (m *Manager) sampleSession(s *Session, now time.Time) (Info, bool) {
 		// it reading "0s" forever.
 		s.activitySince = now
 	}
-	s.fgCommand, s.fgCwd = fg.Name, cwd
+	s.fgCommand, s.fgCwd = command, cwd
 	return s.infoLocked(), changed
 }
 

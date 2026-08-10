@@ -37,8 +37,22 @@ type PTY struct {
 // Linux. Callers must treat empty strings as absent rather than as an answer.
 type Foreground struct {
 	PID  int
-	Name string // program name, e.g. "claude", "htop", "bash"
+	Name string // the process group leader, e.g. "claude", "htop", "bash"
 	Cwd  string // absolute working directory, still to be sandbox-checked
+	// Chain is the group leader followed by the processes running under it that
+	// stayed in its group — ["bash", "ping"] for a script that runs ping. Its
+	// first element is always Name, and its last is the program actually
+	// running. Empty when nothing could be determined.
+	Chain []string
+}
+
+// Leaf is the program actually running: the innermost member of the chain, or
+// the group leader when there is nothing under it.
+func (f Foreground) Leaf() string {
+	if len(f.Chain) == 0 {
+		return f.Name
+	}
+	return f.Chain[len(f.Chain)-1]
 }
 
 // Write sends input bytes to the PTY, serialized across concurrent callers.

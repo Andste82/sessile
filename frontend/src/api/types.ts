@@ -25,7 +25,7 @@ export interface Session {
   clientCount: number
   activity: Activity
   activitySince: string // RFC 3339 UTC, or "" if never set
-  command: string // foreground program, "" if unknown
+  command: string // foreground program, or "bash › ping" for a script and what it started; "" if unknown
   cwd: string // working directory relative to root, "" if unknown
 }
 
