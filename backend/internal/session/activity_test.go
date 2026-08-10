@@ -63,10 +63,13 @@ func TestClassify(t *testing.T) {
 			want: ActivityIdle,
 		},
 
-		// Rule 3 — a program is asking.
+		// Rule 3 — a program is asking. Measured: Claude Code waiting has the
+		// alternate screen, mouse and focus reporting all on, which is what
+		// screenOwned reports and what tells it from a prompt.
 		{
 			name: "claude code waiting for input",
-			in:   activityInput{lastOutput: ago(10 * time.Second), bracketedPaste: true, fg: fgProgram},
+			in: activityInput{lastOutput: ago(10 * time.Second), bracketedPaste: true,
+				fg: fgProgram, screenOwned: true},
 			want: ActivityWaiting,
 		},
 		{
@@ -76,7 +79,34 @@ func TestClassify(t *testing.T) {
 		},
 		{
 			name: "program reading a line exactly at the dwell time",
-			in:   activityInput{lastOutput: ago(waitQuiet), bracketedPaste: true, fg: fgProgram},
+			in: activityInput{lastOutput: ago(waitQuiet), bracketedPaste: true,
+				fg: fgProgram, screenOwned: true},
+			want: ActivityWaiting,
+		},
+
+		// Rule 3b — the same three facts without the takeover. This is a shell
+		// behind a wrapper: the lookup sees `docker`, the inner shell's
+		// bracketed paste reaches us, and nothing is being drawn. Measured
+		// through `docker run -it … bash`, which sets no alternate screen, no
+		// mouse and no focus reporting.
+		{
+			name: "an idling shell behind a wrapper is a prompt, not a question",
+			in: activityInput{lastOutput: ago(time.Minute), bracketedPaste: true,
+				fg: fgProgram, screenOwned: false},
+			want: ActivityIdle,
+		},
+		{
+			name: "the same wrapper with something drawing in it does ask",
+			in: activityInput{lastOutput: ago(time.Minute), bracketedPaste: true,
+				fg: fgProgram, screenOwned: true},
+			want: ActivityWaiting,
+		},
+		{
+			// Mouse reporting alone is enough — a program need not take the
+			// whole screen to be a program.
+			name: "a takeover is any of the three, not all of them",
+			in: activityInput{lastOutput: ago(time.Minute), bracketedPaste: true,
+				fg: fgProgram, screenOwned: true},
 			want: ActivityWaiting,
 		},
 
@@ -160,7 +190,7 @@ func TestClassify(t *testing.T) {
 			name: "a program behind a wrapper still asks",
 			in: activityInput{
 				lastOutput: ago(10 * time.Second), bracketedPaste: true, fg: fgProgram,
-				promptMarks: true, atPrompt: false,
+				promptMarks: true, atPrompt: false, screenOwned: true,
 			},
 			want: ActivityWaiting,
 		},
@@ -190,7 +220,7 @@ func TestClassify(t *testing.T) {
 			name: "a marked command fills in an unidentifiable foreground",
 			in: activityInput{
 				lastOutput: ago(10 * time.Second), bracketedPaste: true, fg: fgUnknown,
-				promptMarks: true, atPrompt: false,
+				promptMarks: true, atPrompt: false, screenOwned: true,
 			},
 			want: ActivityWaiting,
 		},
@@ -227,6 +257,7 @@ func TestWaitingSurvivesARepaint(t *testing.T) {
 		lastOutput:     now, // the repaint landed this instant
 		bracketedPaste: true,
 		fg:             fgProgram,
+		screenOwned:    true,
 	}
 
 	t.Run("an isolated repaint does not count as work", func(t *testing.T) {
@@ -507,17 +538,20 @@ func TestSampleActivityFollowsPromptMarks(t *testing.T) {
 	wrapper := fakeWrapper(t)
 
 	tests := []struct {
-		name string
-		mark string
-		want Activity
+		name     string
+		mark     string
+		takeover string // what a program drawing an interface would also send
+		want     Activity
 	}{
-		// A shell is at its prompt on the far side. Without the mark this is
-		// rule 3 — a program, a line editor, silence — and reads as a question.
-		{"a marked prompt behind the wrapper", "A", ActivityIdle},
-		// A command is running there, and it is holding a line editor open. The
-		// mark says nothing about what it wants, so rule 3 still decides: this
-		// is Claude Code in a container, and it must keep asking.
-		{"a marked command behind the wrapper", "C", ActivityWaiting},
+		// A shell is at its prompt on the far side. It draws nothing and asks
+		// for nothing, which is exactly why rule 3b reads it as a prompt even
+		// where the mark is missing.
+		{"a marked prompt behind the wrapper", "A", "", ActivityIdle},
+		// A command is running there, holding a line editor open and asking for
+		// mouse reports — Claude Code in a container, measured. The mark says
+		// nothing about what it wants, so rule 3 decides, and it must keep
+		// asking.
+		{"a marked command behind the wrapper", "C", "\\033[?1000h", ActivityWaiting},
 	}
 
 	for _, tt := range tests {
@@ -534,7 +568,8 @@ func TestSampleActivityFollowsPromptMarks(t *testing.T) {
 			// that exec'd away would change the name and reset the marks, which
 			// is a different test.
 			sent := time.Now()
-			cmd := wrapper + " -c 'printf \"\\033[?2004h\\033]133;" + tt.mark + "\\007\"; read x'\n"
+			cmd := wrapper + " -c 'printf \"\\033[?2004h" + tt.takeover +
+				"\\033]133;" + tt.mark + "\\007\"; read x'\n"
 			if err := mgr.WriteInput(info.ID, []byte(cmd)); err != nil {
 				t.Fatalf("write: %v", err)
 			}
@@ -542,6 +577,50 @@ func TestSampleActivityFollowsPromptMarks(t *testing.T) {
 			if got := settled(t, mgr, info.ID, sent); got.Activity != tt.want {
 				t.Fatalf("activity %q with mark %q, want %q (foreground %q)",
 					got.Activity, tt.mark, tt.want, got.Command)
+			}
+		})
+	}
+}
+
+// The reported case, end to end and without a single mark: a shell idling
+// behind a wrapper the lookup cannot see into. `docker run -it … bash` gives us
+// a foreground program, the inner shell's bracketed paste, and silence — three
+// facts that used to spell "a program is asking you something" and left every
+// idling container shouting for attention.
+//
+// What separates it from a program with a question is that it draws nothing.
+// The second half of the test is the same wrapper asking for mouse reports,
+// which must still come out waiting: the fix has to be a discrimination, not a
+// blanket amnesty for anything behind a proxy.
+func TestSampleActivityLeavesAnIdlingWrapperAlone(t *testing.T) {
+	wrapper := fakeWrapper(t)
+
+	tests := []struct {
+		name     string
+		takeover string
+		want     Activity
+	}{
+		{"a shell idling behind a wrapper", "", ActivityIdle},
+		{"a program drawing behind the same wrapper", "\\033[?1000h", ActivityWaiting},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr, _, _ := testManager(t)
+			info, err := mgr.Create("probe", ".", "sh")
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			t.Cleanup(func() { _ = mgr.Delete(info.ID) })
+
+			sent := time.Now()
+			cmd := wrapper + " -c 'printf \"\\033[?2004h" + tt.takeover + "\"; read x'\n"
+			if err := mgr.WriteInput(info.ID, []byte(cmd)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+
+			if got := settled(t, mgr, info.ID, sent); got.Activity != tt.want {
+				t.Fatalf("activity %q behind %q, want %q", got.Activity, got.Command, tt.want)
 			}
 		})
 	}
@@ -569,10 +648,11 @@ func TestSampleActivityForgetsMarksWhenTheForegroundChanges(t *testing.T) {
 		t.Fatalf("activity %q back at the session's own prompt, want %q", got.Activity, ActivityIdle)
 	}
 
-	// A different program now holds a line editor open and says nothing. If the
-	// mark survived its author, this reads as a prompt that is not there.
+	// A different program now holds a line editor open, draws an interface and
+	// says nothing. If the mark survived its author, this reads as a prompt
+	// that is not there.
 	sent = time.Now()
-	if err := mgr.WriteInput(info.ID, []byte(wrapper+" -c 'printf \"\\033[?2004h\"; read x'\n")); err != nil {
+	if err := mgr.WriteInput(info.ID, []byte(wrapper+" -c 'printf \"\\033[?2004h\\033[?1049h\"; read x'\n")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if got := settled(t, mgr, info.ID, sent); got.Activity != ActivityWaiting {
