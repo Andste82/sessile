@@ -123,18 +123,51 @@ func (s *ScrollbackStore) Delete(id string) error {
 // Emitting 1049l only when the snapshot really ends in the alternate screen
 // leaves the cursor where the previous shell left it — the end of the output —
 // in every other case.
+//
+// The input modes are the other half, and the one that makes a session
+// unusable rather than merely ugly. A program that exits cleanly turns them off
+// itself; one that is killed — a `docker stop`, a SIGKILLed backend, a machine
+// that went down — does not, and the snapshot then ends with them on. Mouse
+// tracking is the worst of them: the replacement shell inherits `?1003h` and
+// every mouse *move* over the window sends it a report, which it echoes as
+// `35;42;7M` and a bell, several per second, with no way to type past it. That
+// is not hypothetical — it is what a snapshot from a killed Claude Code looks
+// like, mouse reports and bells to the last byte.
+//
+// Which modes: the ones a program turns on for itself and a shell cannot use.
+// Mouse tracking (1000/1002/1003 and the encodings 1005/1006/1015/1016), focus
+// reporting (1004), bracketed paste (2004, re-armed by the new shell's own line
+// editor a moment later), application cursor keys (DECCKM) and the application
+// keypad. Not a full reset: RIS would clear the screen, and clearing the screen
+// is deleting the very history this separator introduces.
+//
+// The scroll region needs the same care as 1049, for the same reason. DECSTBM
+// homes the cursor as a side effect, so resetting the margins straight would
+// draw the separator over the top of the restored output. Wrapping it in
+// DECSC/DECRC puts the cursor back where the previous shell left it — the idiom
+// the programs that set margins use themselves.
 func restoreSeparator(at time.Time, inAltScreen bool) []byte {
 	const (
 		leaveAltScreen = "\x1b[?1049l"
-		resetAttrs     = "\x1b[0m"
-		showCursor     = "\x1b[?25h"
-		enableWrap     = "\x1b[?7h"
-		dim            = "\x1b[2m"
+		mouseOff       = "\x1b[?1000l\x1b[?1002l\x1b[?1003l" + // tracking
+			"\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l" // report encodings
+		focusOff         = "\x1b[?1004l"
+		pasteOff         = "\x1b[?2004l"
+		cursorKeysOff    = "\x1b[?1l" // DECCKM: arrows send CSI again, not SS3
+		keypadNumeric    = "\x1b>"    // DECKPNM
+		fullScrollRegion = "\x1b7" +  // DECSC, so DECSTBM cannot home the cursor
+			"\x1b[r" + "\x1b8" // DECSTBM with no parameters, DECRC
+		resetAttrs = "\x1b[0m"
+		showCursor = "\x1b[?25h"
+		enableWrap = "\x1b[?7h"
+		dim        = "\x1b[2m"
 	)
 	var b strings.Builder
 	if inAltScreen {
 		b.WriteString(leaveAltScreen)
 	}
+	b.WriteString(mouseOff + focusOff + pasteOff + cursorKeysOff + keypadNumeric)
+	b.WriteString(fullScrollRegion)
 	b.WriteString(resetAttrs + showCursor + enableWrap)
 	b.WriteString("\r\n" + dim + "── restored " + at.UTC().Format(time.RFC3339) +
 		" ── output above is from the previous run ──" + resetAttrs + "\r\n")
