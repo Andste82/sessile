@@ -356,7 +356,9 @@ Server → Client:
 - Keep-alive: server sends WS ping every 30 s, expects pong within 10 s
   (gorilla ping/pong handlers). No JSON-level heartbeat needed.
 - Attach sequence, in order: upgrade → send `attached` control frame →
-  send ring buffer replay (binary) → begin live streaming.
+  send ring buffer replay (binary) → begin live streaming. The replay is the
+  buffer with the terminal queries filtered out, and `replayBytes` counts what
+  is actually sent — see §8, "Replayed output must not ask questions".
 - `exit` does **not** close the connection: the session can be restarted
   under the same id, and this is the channel that carries that news to every
   client — including the ones that did not ask for it. Restarting a session
@@ -671,6 +673,24 @@ running, and the snapshot on disk is what a restart reads. Rows and their files
 are discarded by `--session-retention` on startup, which is **off by default**:
 a stopped session is no longer a dead end now that it can be restarted with its
 output and history, so expiring one is an operator's decision.
+
+**Replayed output must not ask questions.** PTY output is not only drawing:
+`ESC [ c` asks the terminal what it is, `ESC [ 6 n` where the cursor is,
+`ESC ] 11 ; ?` what the background colour is, `ESC ] 52 ; c ; ?` what is on the
+clipboard. Live, that is a conversation the program that asked is there to
+finish. Replayed, only the question survives — the emulator answers it into the
+PTY, and what reads the PTY now is a fresh shell at a prompt. Claude Code emits
+`ESC [ > 0 q ESC [ c` on startup, xterm.js answers the replay with
+`ESC [ ? 1 ; 2 c`, and the shell leaves `1;2c` on its command line, once per
+attach — every reload, every extra tab, every reconnect, and across restarts,
+since the restart seeds the new buffer from the same snapshot.
+
+Every replay is therefore filtered (`sanitizeReplay`, `internal/session`): the
+device-attribute, status, mode, capability, window and colour/clipboard queries
+are dropped, and everything that draws or sets is passed through byte for byte.
+A query renders nothing, so the restored screen is unchanged. The filter runs
+on the replay only — live output keeps its queries, or a running program would
+wait forever for an answer that was deleted.
 
 `POST /api/sessions/:id/restart` (§6) spawns a new shell under the same id,
 name, directory and shell, re-running the §4.5 sandbox and allowlist checks.

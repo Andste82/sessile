@@ -126,10 +126,17 @@ func (s *Session) infoLocked() Info {
 // attach registers c and primes it with the attached control frame followed by
 // the current ring-buffer replay, atomically w.r.t. broadcast so live output
 // can never interleave ahead of the replay (§5 attach sequence).
+//
+// The replay is filtered here rather than on the way into the ring buffer:
+// sanitizeReplay is what keeps a replayed question from being answered into a
+// live shell (§8), and this is the one place where the whole snapshot is in
+// hand at once — on the write side a query can be split across two PTY reads.
+// It is a byte loop over a buffer Snapshot has just copied anyway, and it runs
+// once per attach, not per chunk of output.
 func (s *Session) attach(c Client) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	replay := s.buffer.Snapshot()
+	replay := sanitizeReplay(s.buffer.Snapshot())
 	c.SendControl(newAttached(s.ID, len(replay)))
 	if len(replay) > 0 {
 		c.Send(replay)
