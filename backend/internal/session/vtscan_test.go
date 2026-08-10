@@ -48,6 +48,63 @@ func TestVTScannerBracketedPaste(t *testing.T) {
 	}
 }
 
+// The semantic prompt marks. Two booleans rather than one because "this shell
+// emits no marks" and "this shell is not at a prompt" lead to opposite answers
+// in classify, and the first must fall back to the foreground lookup.
+func TestVTScannerPromptMarks(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       string
+		wantSeen   bool
+		wantActive bool
+	}{
+		{"no marks at all", "\x1b[?2004h$ ", false, false},
+		{"prompt begins", "\x1b]133;A\x07$ ", true, true},
+		{"prompt ends, the line editor has it", "\x1b]133;A\x07$ \x1b]133;B\x07", true, true},
+		{"command output begins", "\x1b]133;A\x07$ ls\x1b]133;C\x07", true, false},
+		{"command finished", "\x1b]133;C\x07file\r\n\x1b]133;D;0\x07", true, true},
+		{"a failing command still hands the terminal back", "\x1b]133;C\x07\x1b]133;D;1\x07", true, true},
+		{"terminated by ST rather than BEL", "\x1b]133;C\x1b\\", true, false},
+		// The payload can carry an identifier; only the mark decides.
+		{"long payload, prefix still decides", "\x1b]133;D;0;aid=" + strings.Repeat("9", 500) + "\x07", true, true},
+		// Everything else in an OSC must be dropped by the prefix check.
+		{"a window title is not a mark", "\x1b]0;133;C\x07", false, false},
+		{"a clipboard write is not a mark", "\x1b]52;c;MTMzO0M=\x07", false, false},
+		{"a mark-shaped DCS payload is not a mark", "\x1bP133;C\x1b\\", false, false},
+		{"an unknown mark letter changes nothing", "\x1b]133;Z\x07", false, false},
+		{"a truncated mark changes nothing", "\x1b]133;\x07", false, false},
+		// An OSC that never terminates was interrupted, not sent.
+		{"aborted before its terminator", "\x1b]133;C\x1b[?2004h", false, false},
+		{"the interrupted one does not taint the next", "\x1b]133;C\x1b[?2004h\x1b]0;title\x07", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var v vtScanner
+			v.Feed([]byte(tt.data))
+			if v.promptSeen != tt.wantSeen || v.promptActive != tt.wantActive {
+				t.Errorf("after %q: seen=%v active=%v, want seen=%v active=%v",
+					tt.data, v.promptSeen, v.promptActive, tt.wantSeen, tt.wantActive)
+			}
+		})
+	}
+}
+
+// A hostile stream must not be able to grow the OSC buffer either — the payload
+// is attacker-controlled in a way a mode parameter is not, since any program can
+// print a window title of any length.
+func TestVTScannerBoundsOSCPayload(t *testing.T) {
+	var v vtScanner
+	v.Feed([]byte("\x1b]0;" + strings.Repeat("x", 1<<20) + "\x07"))
+
+	if v.oscLen > len(v.oscBuf) {
+		t.Errorf("osc payload grew to %d, want at most %d", v.oscLen, len(v.oscBuf))
+	}
+	if v.promptSeen {
+		t.Error("a window title was read as a prompt mark")
+	}
+}
+
 // The bell is what rule 5 of §4.7 hangs on, and it is also the byte that ends
 // an OSC string. bash and fish set the window title on every prompt, so a
 // scanner that counts every 0x07 reports a bell several times a minute in a
@@ -95,6 +152,9 @@ func TestVTScannerIsIndependentOfChunkBoundaries(t *testing.T) {
 		"\x1b]0;user@host: ~\x07\x1b[?2004h$ \x07",
 		"\x1b[?1049;1004;2004h drawing \x1b[?1049;2004l",
 		"\x1bPq#0;2;0;0;0\x07\x1b[?2004h",
+		// A marked prompt cycle, as bash-preexec writes it.
+		"\x1b]133;A\x07\x1b]0;user@host\x07$ \x1b]133;B\x07ls\x1b]133;C\x07file\r\n\x1b]133;D;0\x07",
+		"\x1b]133;C\x1b\\output\x1b]133;D;0\x1b\\",
 	}
 
 	for _, in := range inputs {
@@ -111,11 +171,14 @@ func TestVTScannerIsIndependentOfChunkBoundaries(t *testing.T) {
 				split.Feed([]byte(in[i:]))
 				if split.altScreen != whole.altScreen ||
 					split.bracketedPaste != whole.bracketedPaste ||
-					split.lastBell != whole.lastBell {
-					t.Fatalf("split at %d: alt=%v/%v bracketed=%v/%v bell=%v/%v",
+					split.lastBell != whole.lastBell ||
+					split.promptSeen != whole.promptSeen ||
+					split.promptActive != whole.promptActive {
+					t.Fatalf("split at %d: alt=%v/%v bracketed=%v/%v bell=%v/%v prompt=%v,%v/%v,%v",
 						i, split.altScreen, whole.altScreen,
 						split.bracketedPaste, whole.bracketedPaste,
-						!split.lastBell.IsZero(), !whole.lastBell.IsZero())
+						!split.lastBell.IsZero(), !whole.lastBell.IsZero(),
+						split.promptSeen, split.promptActive, whole.promptSeen, whole.promptActive)
 				}
 			}
 
@@ -126,11 +189,14 @@ func TestVTScannerIsIndependentOfChunkBoundaries(t *testing.T) {
 			}
 			if single.altScreen != whole.altScreen ||
 				single.bracketedPaste != whole.bracketedPaste ||
-				single.lastBell != whole.lastBell {
-				t.Errorf("byte-at-a-time: alt=%v/%v bracketed=%v/%v bell=%v/%v",
+				single.lastBell != whole.lastBell ||
+				single.promptSeen != whole.promptSeen ||
+				single.promptActive != whole.promptActive {
+				t.Errorf("byte-at-a-time: alt=%v/%v bracketed=%v/%v bell=%v/%v prompt=%v,%v/%v,%v",
 					single.altScreen, whole.altScreen,
 					single.bracketedPaste, whole.bracketedPaste,
-					!single.lastBell.IsZero(), !whole.lastBell.IsZero())
+					!single.lastBell.IsZero(), !whole.lastBell.IsZero(),
+					single.promptSeen, single.promptActive, whole.promptSeen, whole.promptActive)
 			}
 		})
 	}

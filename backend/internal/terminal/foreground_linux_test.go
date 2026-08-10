@@ -5,6 +5,7 @@ package terminal
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -79,6 +80,72 @@ func TestForegroundFollowsTheRunningProgram(t *testing.T) {
 	waitForName(t, p, "sh")
 }
 
+// A shell running a script does no job control, so the program the script
+// started stays in the script's process group and TIOCGPGRP — which can only
+// name the leader — reports the script. The chain is what reaches past it.
+func TestForegroundChainReachesTheProgramInsideAScript(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "work.sh")
+	// Two commands, so the shell cannot exec the last one and replace itself:
+	// that would leave nothing to descend into and pass the test for the wrong
+	// reason.
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\n:\n"), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	p := startShell(t, dir)
+	waitForName(t, p, "sh")
+	if err := p.Write([]byte("/bin/sh " + script + "\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := waitForChain(t, p, []string{"sh", "sleep"})
+	if got.Name != "sh" {
+		t.Errorf("leader name = %q, want the script's shell", got.Name)
+	}
+	if got.Leaf() != "sleep" {
+		t.Errorf("leaf = %q, want %q", got.Leaf(), "sleep")
+	}
+}
+
+// The condition that makes the descent safe: a job in the background has a
+// process group of its own, so a shell sitting at its prompt must not be
+// reported as running it.
+func TestForegroundChainIgnoresBackgroundJobs(t *testing.T) {
+	p := startShell(t, t.TempDir())
+	waitForName(t, p, "sh")
+
+	if err := p.Write([]byte("sleep 5 &\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Give the job time to exist before concluding that it is not in the chain.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got := p.Foreground()
+		if len(got.Chain) != 1 || got.Leaf() != "sh" {
+			t.Fatalf("chain %v while a background job runs, want just the shell", got.Chain)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// waitForChain polls until the foreground chain matches want.
+func waitForChain(t *testing.T, p *PTY, want []string) Foreground {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var last Foreground
+	for time.Now().Before(deadline) {
+		last = p.Foreground()
+		if slices.Equal(last.Chain, want) {
+			return last
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("chain never became %v; last was %+v", want, last)
+	return last
+}
+
 // cwd is what lets the dashboard show where a session actually is rather than
 // where it was started, so it has to follow cd.
 func TestForegroundReportsTheWorkingDirectory(t *testing.T) {
@@ -129,14 +196,14 @@ func TestForegroundOnClosedPTYReportsNothing(t *testing.T) {
 	p.Wait()
 	p.CloseFile()
 
-	if got := p.Foreground(); got.PID != 0 || got.Name != "" || got.Cwd != "" {
+	if got := p.Foreground(); got.PID != 0 || got.Name != "" || got.Cwd != "" || got.Chain != nil {
 		t.Errorf("foreground on a closed pty = %+v, want the zero value", got)
 	}
 }
 
 func TestForegroundOnZeroValuePTYReportsNothing(t *testing.T) {
 	var p PTY
-	if got := p.Foreground(); got != (Foreground{}) {
+	if got := p.Foreground(); got.PID != 0 || got.Name != "" || got.Cwd != "" || got.Chain != nil {
 		t.Errorf("foreground on an unstarted pty = %+v, want the zero value", got)
 	}
 }

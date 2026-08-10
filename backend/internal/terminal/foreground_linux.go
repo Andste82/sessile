@@ -62,5 +62,118 @@ func (p *PTY) Foreground() Foreground {
 	if dir, err := os.Readlink(proc + "/cwd"); err == nil {
 		fg.Cwd = dir
 	}
+	fg.Chain = chainFrom(pgid, fg.Name)
 	return fg
+}
+
+// maxChainDepth bounds the descent. Real chains are one or two deep; anything
+// past this is a build system, and the label has long stopped being readable.
+const maxChainDepth = 8
+
+// chainFrom walks from the process group leader down to the process that is
+// actually running, and returns the names along the way.
+//
+// The descent exists because a shell running a script does not do job control:
+// `bash deploy.sh` leaves the `ping` it starts in its own process group, so the
+// group leader — all TIOCGPGRP can report — is the script, and the program the
+// user is waiting on is invisible one level down.
+//
+// Only children that stayed in the group are followed, and that condition is
+// the whole safety of it: an interactive shell puts every job in a group of its
+// own, so a backgrounded `sleep 300 &` has a different group and is skipped.
+// Without that check a shell sitting at its prompt with anything in the
+// background would be reported as running it.
+func chainFrom(pgid int, name string) []string {
+	if name == "" {
+		return nil
+	}
+	chain := make([]string, 1, 2)
+	chain[0] = name
+	for pid := pgid; len(chain) < maxChainDepth; {
+		next, nextName := groupChild(pid, pgid)
+		if next == 0 {
+			break
+		}
+		chain = append(chain, nextName)
+		pid = next
+	}
+	return chain
+}
+
+// groupChild returns the child of pid that belongs to process group pgid, and
+// its name.
+//
+// Where a pipeline inside a script puts several there at once — `ping | grep`
+// makes both children of the script — the one that started first wins. It is
+// the command the line is about; the rest are filters hanging off it, and it is
+// also the answer tmux gives for the same pipeline typed at a prompt.
+//
+// Only the leader's own thread is asked for children. A shell is single
+// threaded, and walking every thread would cost a directory scan per sample to
+// cover a case that does not arise here.
+func groupChild(pid, pgid int) (int, string) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/task/" + strconv.Itoa(pid) + "/children")
+	if err != nil {
+		return 0, "" // no CONFIG_PROC_CHILDREN, or the process just exited
+	}
+
+	var (
+		bestPID   int
+		bestName  string
+		bestStart uint64
+	)
+	for _, f := range strings.Fields(string(b)) {
+		child, err := strconv.Atoi(f)
+		if err != nil {
+			continue
+		}
+		group, start, name, ok := procStat(child)
+		if !ok || group != pgid {
+			continue
+		}
+		if bestPID == 0 || start < bestStart {
+			bestPID, bestName, bestStart = child, name, start
+		}
+	}
+	return bestPID, bestName
+}
+
+// procStat reads the process group, start time and name of a pid out of one
+// /proc/<pid>/stat read.
+//
+// The name is parsed out of the parenthesised field rather than read from
+// /proc/<pid>/comm so that a child costs one open instead of two, and it is the
+// same string either way.
+func procStat(pid int) (group int, start uint64, name string, ok bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, 0, "", false
+	}
+	s := string(b)
+
+	// Field 2 is the executable name in parentheses and may itself contain
+	// spaces or parentheses, so the fields after it are found from the *last*
+	// ')' rather than by splitting the whole line.
+	open := strings.IndexByte(s, '(')
+	close := strings.LastIndexByte(s, ')')
+	if open < 0 || close < open {
+		return 0, 0, "", false
+	}
+	name = s[open+1 : close]
+
+	// After the name come state (3), ppid (4), pgrp (5) … starttime (22).
+	fields := strings.Fields(s[close+1:])
+	const pgrpField, startField = 2, 19 // zero-based, counting from state
+	if len(fields) <= startField {
+		return 0, 0, "", false
+	}
+	group, err = strconv.Atoi(fields[pgrpField])
+	if err != nil {
+		return 0, 0, "", false
+	}
+	start, err = strconv.ParseUint(fields[startField], 10, 64)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	return group, start, name, true
 }
