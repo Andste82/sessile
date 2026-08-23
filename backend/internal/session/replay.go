@@ -2,6 +2,26 @@ package session
 
 import "bytes"
 
+// vtParse is where a byte-at-a-time walk of a PTY stream currently stands. It
+// is a state machine rather than a per-chunk scan because a PTY read ends
+// wherever the kernel filled the buffer, which is regularly in the middle of an
+// escape sequence: 32 KiB into a redraw, `ESC [ ? 2` arrives in one chunk and
+// `0 0 4 h` in the next.
+type vtParse uint8
+
+const (
+	vtGround    vtParse = iota
+	vtEsc               // saw ESC
+	vtCSI               // inside ESC [ …, collecting parameter/intermediate bytes
+	vtString            // inside a string sequence (OSC/DCS/APC/PM/SOS) payload
+	vtStringEsc         // inside a string sequence, saw ESC — expecting \ (ST)
+)
+
+// maxParams bounds the parameter run. Real sequences are a handful of bytes; a
+// longer one is malformed, and either way must not let a stream grow this
+// buffer without limit.
+const maxParams = 64
+
 // sanitizeReplay removes the terminal *queries* from a ring-buffer snapshot.
 //
 // A snapshot is raw PTY output, and PTY output contains questions as well as
@@ -27,8 +47,7 @@ import "bytes"
 //
 // Not handled, deliberately: the 8-bit C1 introducers (0x9b for CSI, 0x9d for
 // OSC). In a UTF-8 stream those bytes are continuation bytes of ordinary text,
-// and no program that has to survive a UTF-8 locale emits them — the same call
-// vtScanner makes.
+// and no program that has to survive a UTF-8 locale emits them.
 func sanitizeReplay(data []byte) []byte {
 	var (
 		out     []byte // built lazily: an unfiltered replay is returned as it came
@@ -252,4 +271,18 @@ var oscQueryPs = map[string]bool{
 	"10": true, "11": true, "12": true, "13": true, "14": true,
 	"15": true, "16": true, "17": true, "18": true, "19": true,
 	"52": true,
+}
+
+// splitParams splits a parameter run on ';' without allocating a slice of
+// strings per byte scanned. Called only for completed sequences.
+func splitParams(b []byte) []string {
+	out := make([]string, 0, 4)
+	start := 0
+	for i := 0; i <= len(b); i++ {
+		if i == len(b) || b[i] == ';' {
+			out = append(out, string(b[start:i]))
+			start = i + 1
+		}
+	}
+	return out
 }

@@ -13,8 +13,6 @@ const validSession = {
   rows: 24,
   cols: 80,
   clientCount: 2,
-  activity: 'waiting',
-  activitySince: '2026-08-07T10:04:00Z',
   command: 'claude',
   cwd: 'project-a/backend',
 }
@@ -45,17 +43,16 @@ describe('parseEvent', () => {
     })
   })
 
-  it('accepts a stopped session, whose activity is the empty string', () => {
-    const stopped = { ...validSession, status: 'stopped', activity: '', command: '', cwd: '' }
+  it('accepts a stopped session, whose derived fields are empty', () => {
+    const stopped = { ...validSession, status: 'stopped', command: '', cwd: '' }
     const ev = parseEvent(JSON.stringify({ type: 'session', session: stopped }))
     expect(ev).toEqual({ type: 'session', session: stopped })
   })
 
-  // The indicator and the card switch on status and activity. A value outside
-  // the union would render as nothing at all, with nothing to point at.
+  // The indicator and the card switch on status. A value outside the union
+  // would render as nothing at all, with nothing to point at.
   it.each([
     ['an unknown status', { ...validSession, status: 'zombie' }],
-    ['an unknown activity', { ...validSession, activity: 'thinking' }],
     ['a missing id', { ...validSession, id: '' }],
     ['a non-string name', { ...validSession, name: 7 }],
   ])('rejects a session with %s', (_label, session) => {
@@ -92,9 +89,9 @@ describe('parseEvent', () => {
   it('fills absent optional strings rather than producing undefined fields', () => {
     const sparse = { ...validSession }
     delete (sparse as Record<string, unknown>).cwd
-    delete (sparse as Record<string, unknown>).activitySince
+    delete (sparse as Record<string, unknown>).command
     const ev = parseEvent(JSON.stringify({ type: 'session', session: sparse }))
     expect(ev).toHaveProperty('session.cwd', '')
-    expect(ev).toHaveProperty('session.activitySince', '')
+    expect(ev).toHaveProperty('session.command', '')
   })
 })

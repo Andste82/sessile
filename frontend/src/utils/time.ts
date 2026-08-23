@@ -1,22 +1,3 @@
-// Format how long ago an RFC 3339 timestamp was, as a bare span ("3m").
-//
-// The same ladder as relativeTime without the "ago", for the card's "how long
-// has it been in this state". An empty or unparseable input gives "" rather
-// than a zero, because a session that has never changed state has no since
-// timestamp at all and "0s" would read as one that just did.
-export function duration(iso: string, now: number = Date.now()): string {
-  if (!iso) return ''
-  const then = new Date(iso).getTime()
-  if (Number.isNaN(then)) return ''
-  const secs = Math.max(0, Math.round((now - then) / 1000))
-  if (secs < 60) return `${secs}s`
-  const mins = Math.round(secs / 60)
-  if (mins < 60) return `${mins}m`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.round(hours / 24)}d`
-}
-
 // Format an RFC 3339 timestamp as a compact relative string ("3m ago").
 export function relativeTime(iso: string, now: number = Date.now()): string {
   const then = new Date(iso).getTime()

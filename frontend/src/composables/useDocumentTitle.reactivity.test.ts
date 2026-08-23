@@ -32,8 +32,6 @@ function session(over: Partial<Session> = {}): Session {
     rows: 24,
     cols: 80,
     clientCount: 1,
-    activity: 'idle',
-    activitySince: '2026-08-03T10:00:00Z',
     command: 'bash',
     cwd: '.',
     ...over,

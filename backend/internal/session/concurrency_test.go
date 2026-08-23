@@ -69,7 +69,7 @@ func TestConcurrentSamplingBroadcastAndSubscribers(t *testing.T) {
 	}
 
 	// The sampler itself, far faster than its real 1 Hz.
-	spin(func() { mgr.sampleActivity() })
+	spin(func() { mgr.sampleForeground() })
 
 	// Readers of the same fields, through the paths the API uses.
 	spin(func() { _, _ = mgr.List() })
@@ -158,7 +158,7 @@ func TestConcurrentShutdownDuringSampling(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					mgr.sampleActivity()
+					mgr.sampleForeground()
 				}
 			}
 		}()

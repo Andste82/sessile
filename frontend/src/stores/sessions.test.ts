@@ -71,8 +71,6 @@ function session(over: Partial<Session> = {}): Session {
     rows: 24,
     cols: 80,
     clientCount: 1,
-    activity: 'idle',
-    activitySince: '2026-08-03T10:00:00Z',
     command: 'bash',
     cwd: '.',
     ...over,
@@ -214,10 +212,10 @@ describe('applyEvent', () => {
     const store = useSessionsStore()
     store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
 
-    store.applyEvent({ type: 'session', session: session({ id: 'b', activity: 'waiting' }) })
+    store.applyEvent({ type: 'session', session: session({ id: 'b', command: 'htop' }) })
 
     expect(store.sessions.map((s) => s.id)).toEqual(['a', 'b'])
-    expect(store.sessions[1].activity).toBe('waiting')
+    expect(store.sessions[1].command).toBe('htop')
   })
 
   it('inserts a session created by another client', () => {

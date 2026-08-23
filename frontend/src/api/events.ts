@@ -4,7 +4,7 @@
 // where text frames are control messages alongside binary terminal bytes. This
 // one is /ws/events, which carries session list state and nothing else.
 
-import type { Activity, Session, Status } from './types'
+import type { Session, Status } from './types'
 
 export interface SessionsEvent {
   type: 'sessions'
@@ -22,14 +22,13 @@ export interface SessionGoneEvent {
 export type ServerEvent = SessionsEvent | SessionEvent | SessionGoneEvent
 
 const statuses: Status[] = ['running', 'stopped']
-const activities: Activity[] = ['', 'busy', 'waiting', 'idle']
 
 /**
  * Narrow one session object, or null if it is not one.
  *
  * Validated field by field rather than cast, because everything downstream — the
- * indicator, the card — switches on `status` and `activity`, and a value outside
- * the union would render as nothing at all with no clue why.
+ * indicator, the card — switches on `status`, and a value outside the union
+ * would render as nothing at all with no clue why.
  */
 function parseSession(v: unknown): Session | null {
   if (typeof v !== 'object' || v === null) return null
@@ -37,7 +36,6 @@ function parseSession(v: unknown): Session | null {
   if (typeof s.id !== 'string' || s.id === '') return null
   if (typeof s.name !== 'string' || typeof s.shell !== 'string') return null
   if (!statuses.includes(s.status as Status)) return null
-  if (!activities.includes(s.activity as Activity)) return null
 
   return {
     id: s.id,
@@ -51,8 +49,6 @@ function parseSession(v: unknown): Session | null {
     rows: num(s.rows),
     cols: num(s.cols),
     clientCount: num(s.clientCount),
-    activity: s.activity as Activity,
-    activitySince: str(s.activitySince),
     command: str(s.command),
     cwd: str(s.cwd),
   }

@@ -104,6 +104,112 @@ func (s *ScrollbackStore) Delete(id string) error {
 	return nil
 }
 
+// altScreenModes are the DEC private modes that switch to the alternate screen
+// buffer: the original 47, 1047 (clears on exit) and 1049 (saves and restores
+// the cursor as well). Programs use all three, sometimes in the same sequence.
+var altScreenModes = map[string]bool{"47": true, "1047": true, "1049": true}
+
+// endsInAltScreen reports whether data leaves the terminal in the alternate
+// screen buffer, by replaying the mode switches it contains and keeping the
+// last one to win.
+//
+// It walks the stream the way sanitizeReplay does and for the same reason: an
+// escape sequence is the only thing here that is not text, and everything
+// between an introducer and its final byte has to be stepped over rather than
+// searched for. String sequences (OSC, DCS) are skipped wholesale — a Sixel
+// image or a tmux passthrough can carry any bytes at all, including ones that
+// spell a mode switch.
+//
+// A snapshot is the tail of a ring buffer, so it can begin mid-sequence and the
+// switch that entered the alternate screen may have been cut off the front. In
+// that case this reports false and the separator simply does not reset a mode
+// the terminal was in — the same outcome as before this check existed, and
+// still no worse than overwriting the history in every ordinary session.
+func endsInAltScreen(data []byte) bool {
+	var (
+		alt     bool
+		st      vtParse
+		params  []byte
+		tooLong bool
+	)
+	for _, b := range data {
+		switch st {
+		case vtGround:
+			if b == 0x1b {
+				st = vtEsc
+			}
+			// Every other byte is text. UTF-8 cannot hide an ESC in a
+			// multi-byte sequence — lead bytes are 0xc2-0xf4 and continuation
+			// bytes 0x80-0xbf — so scanning byte by byte here is safe.
+
+		case vtEsc:
+			switch b {
+			case '[':
+				st, params, tooLong = vtCSI, params[:0], false
+			case ']', 'P', 'X', '^', '_':
+				st = vtString
+			case 0x1b:
+				st = vtEsc // ESC ESC: the second one introduces the sequence
+			default:
+				st = vtGround
+			}
+
+		case vtCSI:
+			switch {
+			case b >= 0x40 && b <= 0x7e: // final byte
+				// DEC private mode set (h) and reset (l), which is the only
+				// sequence this cares about: ESC [ ? 1049 h.
+				if !tooLong && (b == 'h' || b == 'l') && len(params) > 0 && params[0] == '?' {
+					for _, p := range splitParams(params[1:]) {
+						if altScreenModes[p] {
+							alt = b == 'h'
+						}
+					}
+				}
+				st = vtGround
+			case b >= 0x20 && b <= 0x3f: // parameter or intermediate byte
+				if len(params) < maxParams {
+					params = append(params, b)
+				} else {
+					tooLong = true
+				}
+			default:
+				// A control byte aborts the sequence; the terminal acts on it
+				// and returns to ground.
+				st = vtGround
+			}
+
+		case vtString:
+			switch b {
+			case 0x07:
+				st = vtGround // BEL terminates — xterm accepts it for all of them
+			case 0x1b:
+				st = vtStringEsc
+			}
+
+		case vtStringEsc:
+			// ESC \ is ST and ends the string. Anything else means the string
+			// was aborted by a fresh escape sequence, and this byte introduces
+			// it.
+			if b == '\\' {
+				st = vtGround
+			} else {
+				// The byte after that ESC has already arrived: dispatch it here
+				// rather than going back through vtEsc for it.
+				switch b {
+				case '[':
+					st, params, tooLong = vtCSI, params[:0], false
+				case ']', 'P', 'X', '^', '_':
+					st = vtString
+				default:
+					st = vtGround
+				}
+			}
+		}
+	}
+	return alt
+}
+
 // restoreSeparator is written between a restored snapshot and the output of the
 // shell that replaces it. inAltScreen says whether the snapshot leaves the
 // terminal in the alternate screen buffer — endsInAltScreen answers that.
