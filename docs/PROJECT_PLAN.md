@@ -87,9 +87,7 @@ Reconnect/restore works like this — implement it exactly:
    (default 512 KiB, configurable).
 2. A single goroutine per session reads from the PTY and, for each chunk:
    a. appends it to the ring buffer,
-   b. feeds it to the mode scanner (§4.7) — a byte loop over bytes already
-      being copied, which keeps three booleans and stores nothing,
-   c. broadcasts it to all attached clients.
+   b. broadcasts it to all attached clients.
 3. When a client attaches, the server first sends the **entire current ring
    buffer contents** as one or more binary frames, then streams live output.
 4. xterm.js re-renders ANSI sequences from that replay, restoring colors,
@@ -835,10 +833,11 @@ audit log. Future: SSH remotes, tmux import, session sharing, read-only mode.
 ## 13. Testing Strategy
 
 - **Unit (Go):** RingBuffer (wraparound, exact-boundary), path sandbox
-  (§4.5 cases), shell allowlist, session state transitions, the escape scanner
-  (§4.7 — sequences split across chunk boundaries and BEL as an OSC terminator
-  are the two cases a naive scanner gets wrong), `classify()` as a table over
-  all six rules, and the event fan-out including its slow-subscriber drop.
+  (§4.5 cases), shell allowlist, session state transitions, the replay filter
+  and the alternate-screen check (§8 — sequences split across chunk boundaries
+  and BEL as an OSC terminator are the two cases a naive scan gets wrong), the
+  foreground chain's label (§4.7), and the event fan-out including its
+  slow-subscriber drop.
 - **Integration (Go):** `httptest` + real PTY: create → attach → I/O →
   replay → delete. Use `sh -c 'echo READY; cat'` as a deterministic shell
   for tests instead of bash.
@@ -855,12 +854,11 @@ audit log. Future: SSH remotes, tmux import, session sharing, read-only mode.
 2. Raw byte replay via ring buffer — no server-side terminal emulation. The
    server holds no character grid, no cursor and no cell attributes; there is
    exactly one terminal emulator in the system and it is the xterm.js the user
-   is looking at. §4.7's scanner does not weaken this: it reads mode switches
-   and prompt marks out of the stream and keeps a handful of booleans, and it
-   can answer "is something reading a line" and "is a shell at its prompt" but
-   never "what is on the screen". Both are announcements the programs make on
-   purpose; neither requires knowing a single printable character, and the
-   scanner never looks at one.
+   is looking at. The two places that do walk the byte stream — `sanitizeReplay`
+   (§8) and `endsInAltScreen` — do not weaken this: they step over escape
+   sequences to drop a query or to read one mode switch, and never look at a
+   printable character. Neither builds a grid, and neither can answer "what is
+   on the screen".
 
    This is the line that keeps the dashboard from showing a preview of each
    session's screen. That feature needs `tmux capture-pane`, which needs

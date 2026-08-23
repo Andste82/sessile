@@ -64,7 +64,7 @@ func (m *Manager) publishGone(id string) {
 // down the sampler that feeds every other one.
 //
 // Close runs on its own goroutine because it can block on the write pump, and
-// this is called from the activity sampler's single loop.
+// this is called from the foreground sampler's single loop.
 func (m *Manager) publish(v any) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()

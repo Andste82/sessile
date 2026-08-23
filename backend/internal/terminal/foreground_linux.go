@@ -26,8 +26,8 @@ import (
 // Errors are not reported: every one of them means "cannot tell right now" —
 // the shell exited between the read loop noticing and this call, the process
 // left no /proc entry, the fd is closed. The caller's answer is the zero value
-// either way, and an activity indicator is not worth an error path that has to
-// be logged once a second.
+// either way, and a foreground label is not worth an error path that has to be
+// logged once a second.
 func (p *PTY) Foreground() Foreground {
 	if p == nil || p.File == nil {
 		return Foreground{}

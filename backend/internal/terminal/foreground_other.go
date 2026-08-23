@@ -10,10 +10,8 @@ package terminal
 // (sysctl KERN_PROC on the BSDs, proc_pidinfo on macOS). tmux carries one
 // osdep file per system for exactly this.
 //
-// Linux is what sessile ships on. A macOS development build keeps the activity
-// classification that runs on output cadence and terminal modes; what it loses
-// is the ability to tell a shell prompt from a program's prompt, since both
-// look like "something is reading a line" once the foreground process is
-// unknown. classify resolves that ambiguity towards idle, so such a build never
-// claims a session wants attention — see the fgUnknown case in activity.go.
+// Linux is what sessile ships on. On a macOS development build a session's
+// `command` and `cwd` are simply empty, and the dashboard card shows the name
+// and the shell alone — the same as a session whose foreground could not be
+// read on Linux either (§4.7).
 func (p *PTY) Foreground() Foreground { return Foreground{} }

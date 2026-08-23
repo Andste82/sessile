@@ -280,9 +280,6 @@ func restoreSeparator(at time.Time, inAltScreen bool) []byte {
 	return []byte(b.String())
 }
 
-// endsInAltScreen lives in vtscan.go: the mode parsing it needs is the same
-// parsing the activity scanner does, and one stream format deserves one parser.
-
 // validID reports whether id is safe to use as a path element: non-empty, no
 // separators, no "." or ".." and no characters outside the UUID alphabet. It
 // guards every filesystem path derived from a session id — scrollback snapshots
