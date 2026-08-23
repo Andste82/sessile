@@ -133,6 +133,11 @@ type activityInput struct {
 	// and only the first may fall back to the foreground lookup.
 	promptMarks bool
 	atPrompt    bool
+	// screenOwned is true while something is drawing an interface here — the
+	// alternate screen, mouse reports or focus reports. It is what separates a
+	// program's question from a shell's prompt when both look identical from
+	// outside: a line editor reading, and silence.
+	screenOwned bool
 }
 
 // classify turns a snapshot of the three signals into a state. It is pure — no
@@ -177,7 +182,7 @@ func classify(now time.Time, in activityInput) Activity {
 	// dwell, leaving it needs positive evidence too. A state that flickers is
 	// worse than one that is a second late.
 	if in.previous == ActivityWaiting && in.fg == fgProgram &&
-		in.bracketedPaste && !in.sustainedOutput {
+		in.bracketedPaste && in.screenOwned && !in.sustainedOutput {
 		return ActivityWaiting
 	}
 
@@ -195,11 +200,33 @@ func classify(now time.Time, in activityInput) Activity {
 	case in.bracketedPaste && in.fg != fgProgram:
 		return ActivityIdle
 
-	// 3. A program is reading a line and has been silent long enough that this
-	// is a question rather than a pause. The only rule that claims attention
-	// from the output stream.
-	case in.bracketedPaste && quiet >= waitQuiet:
+	// 3. A program is reading a line, has been silent long enough that this is a
+	// question rather than a pause, and has taken the terminal over. The only
+	// rule that claims attention from the output stream.
+	//
+	// The last condition is what a shell behind a wrapper hangs on. Through
+	// `docker run -it` or ssh the foreground lookup sees the wrapper, so an
+	// idling container shell and a program with a question are the same two
+	// facts: a line editor is reading, and nothing has been written for a while.
+	// Measured, they part on a third (§4.7): a shell asks for nothing — it wants
+	// a line of text on the screen it shares with its own history — while
+	// anything drawing an interface asks for the alternate screen, mouse reports
+	// or focus reports, and asks in bytes a proxy forwards. So the same
+	// container reads idle with a shell in it and waiting with Claude Code in
+	// it, and neither answer needs the name of what is running.
+	case in.bracketedPaste && quiet >= waitQuiet && in.screenOwned:
 		return ActivityWaiting
+
+	// 3b. The same, without the takeover: an ordinary prompt, wherever it is.
+	// Reaching here means a line editor has been waiting quietly on a terminal
+	// nobody is drawing on, which is what a prompt is.
+	//
+	// The cost is a program that asks its question at a plain prompt — no
+	// alternate screen, no mouse — and is now reported idle rather than waiting.
+	// That is a false negative, the direction this section errs in everywhere
+	// else: the UI stays quiet instead of claiming attention it cannot justify.
+	case in.bracketedPaste && quiet >= waitQuiet:
+		return ActivityIdle
 
 	// 4. The shell owns the terminal but never announced a line editor — dash
 	// has no readline at all. At the prompt regardless.
@@ -305,6 +332,7 @@ func (m *Manager) sampleSession(s *Session, now time.Time) (Info, bool) {
 		fg:              kind,
 		promptMarks:     s.vt.promptSeen,
 		atPrompt:        s.vt.promptActive,
+		screenOwned:     s.vt.screenOwned(),
 	})
 	changed := next != s.activity || command != s.fgCommand || cwd != s.fgCwd
 	if next != s.activity {

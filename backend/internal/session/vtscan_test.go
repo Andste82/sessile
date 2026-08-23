@@ -48,6 +48,46 @@ func TestVTScannerBracketedPaste(t *testing.T) {
 	}
 }
 
+// screenOwned: has something taken this terminal over? Measured against real
+// programs at a real pty (`cmd/ptycapture`) — a shell at its prompt asks for
+// none of these, Claude Code waiting asks for all three.
+func TestVTScannerScreenOwned(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{"a bare shell prompt owns nothing", "\x1b[?2004h$ ", false},
+		{"a container shell reaching us through a proxy owns nothing",
+			"\x1b[?2004h\x1b[?2004l\x1b[?2004hroot@c:/# ", false},
+
+		{"alternate screen", "\x1b[?1049h", true},
+		{"legacy alternate screen", "\x1b[?47h", true},
+		{"mouse button tracking", "\x1b[?1000h", true},
+		{"mouse drag tracking", "\x1b[?1002h", true},
+		{"mouse any-event tracking", "\x1b[?1003h", true},
+		{"focus reporting", "\x1b[?1004h", true},
+		// Measured from a real `claude` at its prompt: all three at once.
+		{"claude code waiting", "\x1b[?1049h\x1b[?1000h\x1b[?1004h\x1b[?2004h", true},
+		// An encoding says how a report is spelled, not that one was asked for.
+		{"an SGR encoding alone is not a takeover", "\x1b[?1006h", false},
+
+		{"released again", "\x1b[?1049h\x1b[?1000h\x1b[?1049l\x1b[?1000l", false},
+		{"released all but one", "\x1b[?1049;1000;1004h\x1b[?1049;1000l", true},
+		{"htop leaving", "\x1b[?1049h\x1b[?1002h\x1b[?1002l\x1b[?1049l", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var v vtScanner
+			v.Feed([]byte(tt.data))
+			if got := v.screenOwned(); got != tt.want {
+				t.Errorf("screenOwned after %q = %v, want %v", tt.data, got, tt.want)
+			}
+		})
+	}
+}
+
 // The semantic prompt marks. Two booleans rather than one because "this shell
 // emits no marks" and "this shell is not at a prompt" lead to opposite answers
 // in classify, and the first must fall back to the foreground lookup.
