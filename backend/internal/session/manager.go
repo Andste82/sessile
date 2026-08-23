@@ -67,9 +67,9 @@ func NewManager(root string, shells []string, bufferSize int, dataDir string, st
 		m.scrollback = NewScrollbackStore(dataDir)
 		go m.flushLoop()
 	}
-	// Unconditional, unlike the flush loop: activity is derived from the PTY
-	// and the output stream, neither of which needs a data directory (§4.7).
-	go m.activityLoop()
+	// Unconditional, unlike the flush loop: the foreground is read from the PTY
+	// and needs no data directory (§4.7).
+	go m.foregroundLoop()
 	return m
 }
 
@@ -375,7 +375,7 @@ func (m *Manager) readLoop(s *Session) {
 		m.log.Info("session stopped", "id", s.ID)
 		// Clear the derived state before announcing it, or the dashboard keeps
 		// showing the program the session was running when its shell died.
-		info, _ := s.clearActivity()
+		info, _ := s.clearForeground()
 		// Unless the session has already been deleted. This loop can outlive a
 		// delete by as long as some process outside the shell's group holds the
 		// terminal open, and by then every subscriber has been told the session

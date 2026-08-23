@@ -136,9 +136,9 @@ func TestEventChannelPushesCreateAndDelete(t *testing.T) {
 	})
 }
 
-// The activity state has to reach the channel, or the dashboard indicator has
-// nothing to render. A fresh sh session settles at its prompt.
-func TestEventChannelPushesActivity(t *testing.T) {
+// The foreground has to reach the channel, or the dashboard has nothing to
+// render but a name. A fresh sh session reports the shell it was started with.
+func TestEventChannelPushesTheForeground(t *testing.T) {
 	ts, wsURL := eventsServer(t)
 	c := dialWS(t, wsURL)
 	defer c.Close()
@@ -148,18 +148,11 @@ func TestEventChannelPushesActivity(t *testing.T) {
 	}
 	id := createSession(t, ts.URL, `{"name":"active","directory":".","shell":"sh"}`)
 
-	ev := waitForEvent(t, c, "an idle activity update", func(e eventEnvelope) bool {
-		return e.Type == "session" && e.Session.ID == id &&
-			e.Session.Activity == string(session.ActivityIdle)
+	ev := waitForEvent(t, c, "a foreground update", func(e eventEnvelope) bool {
+		return e.Type == "session" && e.Session.ID == id && e.Session.Command == "sh"
 	})
-	if ev.Session.Command != "sh" {
-		t.Errorf("foreground command %q, want %q", ev.Session.Command, "sh")
-	}
 	if ev.Session.Cwd != "." {
 		t.Errorf("cwd %q, want %q — the session was created in the root", ev.Session.Cwd, ".")
-	}
-	if ev.Session.ActivitySince == "" {
-		t.Error("activitySince is empty on a session that has changed state")
 	}
 }
 

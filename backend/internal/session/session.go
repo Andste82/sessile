@@ -26,7 +26,7 @@ const (
 // scrollback ring buffer. Metadata fields are persisted (§8); runtime fields
 // are never persisted.
 type Session struct {
-	// mu guards the mutable runtime fields below (status, geometry, activity,
+	// mu guards the mutable runtime fields below (status, geometry, foreground,
 	// clients, buffer coordination). Held during broadcast and attach so the
 	// buffer-replay / live-stream ordering is race-free (§3, §4.4).
 	mu sync.Mutex
@@ -41,25 +41,14 @@ type Session struct {
 	LastActivity time.Time
 	Rows, Cols   uint16
 
-	// derived activity, refreshed by the manager's sampler (§4.7). Empty
-	// activity means the session is not running.
-	activity      Activity
-	activitySince time.Time
-	fgCommand     string // foreground program name
-	fgCwd         string // its working directory, relative to root
-
-	// outputBytes counts every byte broadcast; the sampler compares it against
-	// sampledBytes to tell whether output kept coming, and outputRun is how
-	// many samples in a row it has. Only the comparison matters, so the counter
-	// wrapping after 16 exabytes is not a case worth handling.
-	outputBytes  uint64
-	sampledBytes uint64
-	outputRun    int
+	// derived foreground, refreshed by the manager's sampler (§4.7). Both are
+	// empty for a session that is not running.
+	fgCommand string // foreground program name
+	fgCwd     string // its working directory, relative to root
 
 	// runtime-only
 	pty         *terminal.PTY
 	buffer      *RingBuffer
-	vt          vtScanner // terminal modes seen in the output stream (§4.7)
 	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
 	exited      chan struct{} // closed by the read loop once the shell is reaped
@@ -88,12 +77,10 @@ type Info struct {
 	Rows, Cols   uint16
 	ClientCount  int
 
-	// Derived, never persisted (§4.7). Activity is empty for a stopped
-	// session; Command and Cwd are empty where they cannot be determined.
-	Activity      Activity
-	ActivitySince time.Time
-	Command       string
-	Cwd           string
+	// Derived, never persisted (§4.7). Empty for a stopped session, and where
+	// they cannot be determined.
+	Command string
+	Cwd     string
 }
 
 // Info returns a copy of the session's public fields.
@@ -105,21 +92,19 @@ func (s *Session) Info() Info {
 
 func (s *Session) infoLocked() Info {
 	return Info{
-		ID:            s.ID,
-		Name:          s.Name,
-		Directory:     s.Directory,
-		Shell:         s.Shell,
-		Status:        s.Status,
-		PID:           s.PID,
-		Created:       s.Created,
-		LastActivity:  s.LastActivity,
-		Rows:          s.Rows,
-		Cols:          s.Cols,
-		ClientCount:   len(s.clients),
-		Activity:      s.activity,
-		ActivitySince: s.activitySince,
-		Command:       s.fgCommand,
-		Cwd:           s.fgCwd,
+		ID:           s.ID,
+		Name:         s.Name,
+		Directory:    s.Directory,
+		Shell:        s.Shell,
+		Status:       s.Status,
+		PID:          s.PID,
+		Created:      s.Created,
+		LastActivity: s.LastActivity,
+		Rows:         s.Rows,
+		Cols:         s.Cols,
+		ClientCount:  len(s.clients),
+		Command:      s.fgCommand,
+		Cwd:          s.fgCwd,
 	}
 }
 
@@ -229,13 +214,6 @@ func (s *Session) broadcast(data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, _ = s.buffer.Write(data)
-	// The scanner runs here rather than on its own goroutine because this is
-	// already the one place every output byte passes, under the lock that makes
-	// the session's view of itself consistent. It is a byte loop over bytes the
-	// ring buffer just copied anyway, so there is nothing to queue and nothing
-	// that can be dropped — unlike the client fan-out below (§4.7).
-	s.vt.Feed(data)
-	s.outputBytes += uint64(len(data))
 	s.LastActivity = timeNow()
 	for c := range s.clients {
 		if !c.Send(data) {

@@ -3,14 +3,6 @@
 
 export type Status = 'running' | 'stopped'
 
-/**
- * What a running session is doing, derived from its own PTY (§4.7). Empty for a
- * stopped session. Nothing here reads terminal content: 'waiting' means a
- * program announced that it is reading a line, not that we understood a
- * question.
- */
-export type Activity = '' | 'busy' | 'waiting' | 'idle'
-
 export interface Session {
   id: string
   name: string
@@ -23,8 +15,6 @@ export interface Session {
   rows: number
   cols: number
   clientCount: number
-  activity: Activity
-  activitySince: string // RFC 3339 UTC, or "" if never set
   command: string // foreground program, or "bash › ping" for a script and what it started; "" if unknown
   cwd: string // working directory relative to root, "" if unknown
 }

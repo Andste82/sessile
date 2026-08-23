@@ -23,39 +23,34 @@ type JSON struct {
 	Cols         uint16 `json:"cols"`
 	ClientCount  int    `json:"clientCount"`
 
-	// Derived state (§4.7). Activity is "" for a stopped session; Command and
-	// Cwd are "" where they could not be determined.
-	Activity      string `json:"activity"`
-	ActivitySince string `json:"activitySince"`
-	Command       string `json:"command"`
-	Cwd           string `json:"cwd"`
+	// Derived state (§4.7). Both are "" for a stopped session, and where they
+	// could not be determined.
+	Command string `json:"command"`
+	Cwd     string `json:"cwd"`
 }
 
 // ToJSON converts a session snapshot to its wire shape.
 func ToJSON(i Info) JSON {
 	return JSON{
-		ID:            i.ID,
-		Name:          i.Name,
-		Directory:     i.Directory,
-		Shell:         i.Shell,
-		Status:        string(i.Status),
-		PID:           i.PID,
-		Created:       rfc3339(i.Created),
-		LastActivity:  rfc3339(i.LastActivity),
-		Rows:          i.Rows,
-		Cols:          i.Cols,
-		ClientCount:   i.ClientCount,
-		Activity:      string(i.Activity),
-		ActivitySince: rfc3339(i.ActivitySince),
-		Command:       i.Command,
-		Cwd:           i.Cwd,
+		ID:           i.ID,
+		Name:         i.Name,
+		Directory:    i.Directory,
+		Shell:        i.Shell,
+		Status:       string(i.Status),
+		PID:          i.PID,
+		Created:      rfc3339(i.Created),
+		LastActivity: rfc3339(i.LastActivity),
+		Rows:         i.Rows,
+		Cols:         i.Cols,
+		ClientCount:  i.ClientCount,
+		Command:      i.Command,
+		Cwd:          i.Cwd,
 	}
 }
 
 // rfc3339 formats a timestamp the way §6 requires, and renders the zero time as
-// an empty string rather than year 1. A session that has never left its initial
-// state has no ActivitySince, and "0001-01-01T00:00:00Z" would arrive in the
-// browser as a date to render rather than as the absence of one.
+// an empty string rather than year 1: "0001-01-01T00:00:00Z" would arrive in
+// the browser as a date to render rather than as the absence of one.
 func rfc3339(t time.Time) string {
 	if t.IsZero() {
 		return ""

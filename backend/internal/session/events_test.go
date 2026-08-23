@@ -169,7 +169,7 @@ func TestUnsubscribeStopsDeliveryAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// The activity sampler publishes only on a real change. Without that, every
+// The foreground sampler publishes only on a real change. Without that, every
 // session would produce a message every second whether or not anything moved.
 func TestSamplerPublishesOnlyOnChange(t *testing.T) {
 	mgr, _, _ := testManager(t)
@@ -182,16 +182,16 @@ func TestSamplerPublishesOnlyOnChange(t *testing.T) {
 	// Let the session settle before subscribing, so the transitions of startup
 	// are not counted.
 	waitFor(t, "the session to settle", func() bool {
-		mgr.sampleActivity()
+		mgr.sampleForeground()
 		got, err := mgr.Get(info.ID)
-		return err == nil && got.Activity == ActivityIdle
+		return err == nil && got.Command == "sh"
 	})
 
 	sub := newFakeSubscriber()
 	defer mgr.Subscribe(sub)()
 
 	for range 5 {
-		mgr.sampleActivity()
+		mgr.sampleForeground()
 	}
 	if got := len(sub.received()); got != 0 {
 		t.Errorf("a settled session published %d messages across 5 samples, want 0", got)
