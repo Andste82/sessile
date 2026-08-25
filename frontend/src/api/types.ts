@@ -17,6 +17,7 @@ export interface Session {
   clientCount: number
   command: string // foreground program, or "bash › ping" for a script and what it started; "" if unknown
   cwd: string // working directory relative to root, "" if unknown
+  title: string // window title the running program set for itself (OSC 0/2), "" if none
 }
 
 export interface CreateSessionBody {

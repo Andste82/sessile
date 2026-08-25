@@ -34,6 +34,7 @@ function session(over: Partial<Session> = {}): Session {
     clientCount: 1,
     command: 'bash',
     cwd: '.',
+    title: '',
     ...over,
   }
 }
