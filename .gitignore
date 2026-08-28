@@ -30,3 +30,4 @@
 
 # Go
 /backend/vendor/
+/.go/
