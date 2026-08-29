@@ -31,3 +31,6 @@
 # Go
 /backend/vendor/
 /.go/
+
+# Node
+/.node/
