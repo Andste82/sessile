@@ -1,33 +1,55 @@
-# SSH Session Manager — Implementation Spec
+# Terminal Host Session Service — Implementation Spec
 
-A lightweight, browser-based terminal session manager with persistent sessions.
-Think **tmux + VS Code integrated terminal, in the browser**.
+A lightweight, browser-based, **multi-user** terminal session manager with
+persistent sessions against SSH-reachable hosts. Think **tmux + VS Code
+integrated terminal, in the browser, per user, per host**.
 
 This document is written to be directly implementable. All technology choices
 are final (no either/or options). Build milestone by milestone, in order, and
 verify each milestone's acceptance criteria before moving on.
+
+> **v0.4 scope change.** Milestones M0–M7 below shipped the original
+> single-tenant, local-shell-only design. Starting at M8 (§12b), the project
+> deliberately pivots to multi-user accounts and per-user SSH host sessions.
+> Sections below are updated in place to describe the system as it now
+> stands; §12 keeps the original milestone history for record, and §12b holds
+> the new one.
 
 ---
 
 ## 1. Product Definition
 
 ### In Scope
-- Persistent local terminal sessions (PTY) that survive browser disconnects
+- Multi-user accounts: username/password login, an "unlocked" first-run that
+  lets the first user become admin, optional self-service registration
+  (admin-controlled)
+- Per-user SSH host configuration: name, group, address, auth (password
+  and/or private key), target OS, terminal/shell type
+- Persistent terminal sessions (PTY) against those SSH hosts, or — when an
+  admin enables it — against the server's own local shell, that survive
+  browser disconnects
+- SSH host-key trust-on-first-use, with explicit user prompts on first
+  connect and on any host-key change
+- An "Exchange SSH keys" host action that sets up passwordless login without
+  ever persisting the password used to set it up
 - Web UI (responsive SPA) to create, list, attach, and kill sessions
 - Multiple simultaneous clients attached to the same session
 - Scrollback restoration on reconnect
-- Per-session foreground program and working directory, read from the session's
-  own PTY (§4.7), so the dashboard can say what each session is running
+- Per-session foreground program and working directory for local sessions,
+  read from the session's own PTY (§4.7) — not available for SSH sessions,
+  see §4.7's note
 
 ### Explicitly Out of Scope (do NOT build these, even partially)
 - File manager, SFTP, upload/download
 - Docker/Kubernetes management
 - RDP/VNC, host monitoring (CPU/RAM/disk/service dashboards), server inventory
 - Script execution framework
-- Remote SSH sessions (future — design must not block it, but write zero SSH code now)
+- Encryption-at-rest for stored host credentials (tracked as a TODO — see
+  §11 — not built in v0.4)
 
 ### Guiding Principle
-> One browser. One terminal. Persistent sessions. Zero distractions.
+> One browser. Your terminals, your hosts. Persistent sessions. Zero
+> distractions.
 
 ---
 
@@ -40,12 +62,16 @@ verify each milestone's acceptance criteria before moving on.
 | WebSocket | `github.com/gorilla/websocket` | Mature, actively maintained, well-documented |
 | PTY | `github.com/creack/pty` | De-facto standard |
 | SQLite driver | `modernc.org/sqlite` | Pure Go — **no CGO**, keeps the static binary trivial |
-| DB access | stdlib `database/sql` with hand-written queries | Only 2 tiny tables; an ORM is overkill |
+| DB access | stdlib `database/sql` with hand-written queries | Session metadata only; an ORM is overkill |
+| Auth hashing | `golang.org/x/crypto/bcrypt` | Already an indirect dep (via gin/validator); no new framework |
+| SSH client | `golang.org/x/crypto/ssh` | Same package as bcrypt; pure Go, no CGO |
+| YAML config | `gopkg.in/yaml.v3` | Already an indirect dep; used for `config.yml`/`users.yml`/`hosts.yml` — hand-editable by design, not a config framework |
+| Web sessions | Server-side random tokens in an in-memory store, `HttpOnly` cookie | Not JWT — no persistence needed, a restart logging everyone out is acceptable (§11) |
 | Logging | stdlib `log/slog` (JSON handler) | No dependency needed |
-| Config | CLI flags via stdlib `flag`, with env-var fallbacks | See §9 |
+| Config | CLI flags via stdlib `flag`, with env-var fallbacks, plus `config.yml`/`users.yml`/`hosts.yml` | See §9 |
 | Frontend embedding | `embed.FS` (`//go:embed`) | Single-binary distribution |
 
-Do **not** add GORM, sqlc, zap, or viper.
+Do **not** add GORM, sqlc, zap, viper, socket.io, or an E2E test framework.
 
 ### Frontend — Vue 3 + TypeScript + Vite
 - `vue@3`, `vue-router@4`, `pinia`
@@ -64,14 +90,20 @@ Prod mode: Go serves the built frontend from `embed.FS`.
 ## 3. Architecture Overview
 
 ```
-Browser (xterm.js) ⇄ WebSocket ⇄ Go backend ⇄ PTY ⇄ shell process
+Browser (xterm.js) ⇄ WebSocket ⇄ Go backend ⇄ session.Backend ⇄ local shell (PTY)
+     (session cookie)            (auth-gated)  ⇄ session.Backend ⇄ remote shell (SSH)
                      REST (JSON) ⇅
-                              SQLite (metadata only)
+                    SQLite (session metadata) + config.yml/users.yml/hosts.yml
 ```
 
-**Core invariant:** the PTY and shell live in the backend process. Browser
-connections are ephemeral views onto it. Killing every browser tab must not
-affect the shell.
+Every request — REST and WS alike — carries the browser's session cookie and
+is scoped to the authenticated user (§10's auth model, §6). `session.Backend`
+(§4.2) is the abstraction that lets one `Manager` drive both a local PTY and
+an SSH-backed remote shell through identical read/broadcast/scrollback code.
+
+**Core invariant:** the PTY (or SSH session) lives in the backend process.
+Browser connections are ephemeral views onto it. Killing every browser tab
+must not affect the shell.
 
 **Consequence:** live sessions cannot survive a *backend* restart. On startup,
 any session marked `running` in SQLite is transitioned to `stopped`
@@ -108,30 +140,47 @@ backend/
   internal/
     api/                    # Gin handlers + router setup + middleware
       router.go
-      sessions.go           # REST handlers
+      middleware.go         # requireAuth, requireAdmin
+      auth.go                # bootstrap/login/logout/me, admin config
+      admin_users.go          # admin user list/delete/promote
+      hosts.go                 # per-user host CRUD
+      hostkeys.go                # host-key probe/trust
+      sessions.go                 # REST handlers (local + SSH)
       directories.go
-      errors.go             # unified error responses
+      errors.go                   # unified error responses
     ws/                     # WebSocket endpoint + client pumps
       handler.go
       client.go             # read pump / write pump per client
       events.go             # /ws/events: session state fan-out (see §5)
       protocol.go           # message types (see §5)
     session/
-      manager.go            # SessionManager (the core component)
-      session.go            # Session struct + lifecycle
+      manager.go            # Manager (the core component; local + SSH)
+      session.go             # Session struct + lifecycle
+      backend.go               # Backend interface (§4.2) — local PTY / SSH
       ringbuffer.go
-      replay.go             # strips terminal queries from a snapshot (§8)
-      foreground.go         # foreground lookup + sampler (§4.7)
-      events.go             # subscriber fan-out for /ws/events
+      replay.go              # strips terminal queries from a snapshot (§8)
+      foreground.go           # foreground lookup + sampler (§4.7)
+      events.go                # subscriber fan-out for /ws/events
     terminal/
-      pty.go                # PTY start/resize/kill wrappers
+      pty.go                # local PTY start/resize/kill; implements Backend
       foreground_linux.go   # TIOCGPGRP + /proc lookup (§4.7)
       foreground_other.go   # build fallback: reports nothing
+    sshpty/
+      sshpty.go              # SSH-backed Backend implementation
+      hostkey.go               # TOFU HostKeyCallback, ProbeHostKey
+      exchange.go                # ExchangeKeys — passwordless setup
+    auth/
+      users.go               # users.yml store, bcrypt
+      sessions.go              # in-memory web session store (sliding TTL)
+    hosts/
+      hosts.go                # per-user hosts.yml store
+    serverconfig/
+      serverconfig.go          # config.yml store
     storage/
       sqlite.go             # open + migrate
-      sessions.go           # CRUD queries
+      sessions.go            # CRUD queries (now user/target scoped)
     config/
-      config.go
+      config.go             # CLI flags (--data-dir, --shells, …)
 frontend/                   # see §7
 Dockerfile
 docker-compose.yml
@@ -149,11 +198,23 @@ const (
     StatusStopped Status = "stopped" // process exited or was killed
 )
 
+type TargetType string
+
+const (
+    TargetLocal TargetType = "local"
+    TargetSSH   TargetType = "ssh"
+)
+
 type Session struct {
     ID           string    // UUID v4
     Name         string
-    Directory    string    // relative to root, e.g. "project-a"
-    Shell        string    // "bash" | "zsh" | "fish"
+    UserID       string     // owner — every lookup is scoped to this (§4.5, §10)
+    TargetType   TargetType // "local" | "ssh"
+    Directory    string    // relative to root, e.g. "project-a" (local only)
+    Shell        string    // "bash" | "zsh" | "fish" (local only)
+    HostID       string     // the owning user's host id (ssh only)
+    HostDisplayName string  // snapshotted host name at creation (ssh only) —
+                             // survives the host being renamed or deleted
     Status       Status
     PID          int
     Created      time.Time
@@ -161,23 +222,63 @@ type Session struct {
     Rows, Cols   uint16
 
     // runtime-only (never persisted)
-    cmd     *exec.Cmd
-    pty     *os.File
+    backend Backend // local PTY or SSH-backed shell — see below
     buffer  *RingBuffer
     clients map[*Client]struct{}
     mu      sync.Mutex
 }
 ```
 
-### 4.3 SessionManager responsibilities
-- `Create(name, dir, shell) (*Session, error)` — validates dir (§4.5) and
-  shell (must be in allowlist and exist on PATH), starts PTY, spawns the
-  read-broadcast goroutine, persists metadata, returns session.
-- `Get(id)`, `List()` — from in-memory map, merged with `stopped` rows from
-  SQLite that are no longer in memory after restart.
-- `Delete(id)` — SIGTERM the process group, 5 s grace, then SIGKILL; close
-  PTY; disconnect clients with an `exit` control message; delete DB row.
-- `Attach(id, client)` / `Detach(id, client)`.
+**`Backend`** (`internal/session/backend.go`) is what lets one `Manager` drive
+both target types through identical `readLoop`/ring-buffer/broadcast/
+scrollback/terminate code — neither of those has any idea whether it's
+talking to a local PTY or a remote shell:
+
+```go
+type Backend interface {
+    Read(p []byte) (int, error)
+    Write(data []byte) error
+    Resize(rows, cols uint16) error
+    Pid() int                  // 0 for SSH — no local meaning
+    Signal(sig syscall.Signal) // best-effort for SSH; many sshd reject it
+    Wait()
+    CloseFile()
+    Foreground() terminal.Foreground // always zero-value for SSH — §4.7
+}
+```
+
+`*terminal.PTY` (local) and `*sshpty.PTY` (SSH, `internal/sshpty`) both
+implement it. Nothing above `Backend` — `Manager`, `Session`, `readLoop`, the
+WS layer — branches on target type; only `Manager.CreateLocal` /
+`Manager.CreateSSH` construct the right one.
+
+### 4.3 Manager responsibilities
+- `CreateLocal(userID, name, dir, shell) (Info, error)` — validates dir
+  (§4.5) and shell (must be in allowlist and exist on PATH), starts a local
+  PTY, spawns the read-broadcast goroutine, persists metadata stamped with
+  `UserID`/`TargetType:"local"`, returns a snapshot.
+- `CreateSSH(userID, name, hostID, hostDisplayName, target) (Info, error)` —
+  dials the host via `internal/sshpty` (host-key TOFU checked first, §4.5.1);
+  on an untrusted/changed host key, returns the connection's
+  `ErrHostKeyUnknown`/`ErrHostKeyChanged` unwrapped and creates **no**
+  session or DB row — the caller retries after the user trusts the key
+  (§6). On success, otherwise identical to `CreateLocal`.
+- `Get(id, userID)`, `List(userID)` — from in-memory map, merged with
+  `stopped` rows from SQLite that are no longer in memory after restart.
+  **Every call is scoped to `userID`**: a session owned by someone else is
+  reported exactly like a session that doesn't exist (`ErrNotFound`), never
+  a distinct "forbidden" — an id probe for a session you don't own learns
+  nothing (§10).
+- `Delete(id, userID)` — SIGTERM the process group (local) or best-effort
+  SSH signal + force-close (remote), 5 s grace, then SIGKILL/force-close;
+  disconnect clients with an `exit` control message; delete DB row.
+- `Restart(id, userID)` — local: identical dir/shell revalidation as
+  `CreateLocal`. SSH: re-resolves the *current* host config (including its
+  current pinned host-key fingerprint) through a `HostResolver`; a deleted
+  host fails with `ErrHostNotFound`, a changed host key surfaces the same
+  `host_key_changed` response a fresh connect would. SSH credentials are
+  never persisted to SQLite, so this re-fetch is required on every restart.
+- `Attach(id, userID, client)` / `Detach(id, client)`.
 - Store: `map[string]*Session` guarded by `sync.RWMutex`.
 
 ### 4.4 Concurrency model (follow exactly)
@@ -196,8 +297,11 @@ type Session struct {
 - PTY writes from multiple clients are serialized by a mutex on the PTY.
 
 ### 4.5 Directory sandbox (security-critical)
-Root is given at startup (`--root=/workspace`). For any user-supplied
-directory:
+Root is the fixed local-host workspace `<data-dir>/workspace` (§9), only
+reachable when an admin has enabled `allowLocalHost` in `config.yml` (§9,
+§10). It is **one shared root for every permitted user** — not a
+per-user root — matching the pre-multi-user behavior exactly. For any
+user-supplied directory:
 1. Reject empty, absolute paths, and any path containing `..` segments.
 2. `full := filepath.Join(root, filepath.Clean(userPath))`
 3. `resolved, err := filepath.EvalSymlinks(full)` — must succeed.
@@ -206,6 +310,44 @@ directory:
 5. Must be an existing directory.
 Write unit tests for: `..`, `../..`, absolute paths, symlinks pointing
 outside root, and valid nested paths.
+
+**The same "never trust the caller" discipline applies to ownership.** Every
+session and host lookup is scoped to the authenticated user id taken from the
+session cookie (§10) — never one supplied by the client in a request body or
+query string. `Manager`'s `userID`-scoped methods (§4.3) are this rule's
+session-side instance; `internal/hosts.Store` being opened strictly by
+`c.MustGet("userID")` (§6) is its host-side instance.
+
+### 4.5.1 SSH host-key trust (security-critical)
+`internal/sshpty` never connects to a host whose key it hasn't been told to
+trust, and never silently accepts a key that changed:
+- Each host in `hosts.yml` (§9) pins the fingerprint (`ssh.FingerprintSHA256`)
+  of the key it last connected with. Empty means "not yet trusted."
+- The `ssh.ClientConfig.HostKeyCallback` compares the presented key's
+  fingerprint against the pin: no pin → `ErrHostKeyUnknown`; pin present but
+  mismatched → `ErrHostKeyChanged`; match → proceed. **Never**
+  `ssh.InsecureIgnoreHostKey()`.
+- Both errors abort the dial before any session is created and are
+  propagated, typed, up through `Manager.CreateSSH`/`Restart` to the API
+  layer (§6) as a 409 the frontend turns into an explicit "trust this key?"
+  prompt (§7) — the user must act before a connection is made.
+- Trusting a key (`POST /api/hosts/:id/host-key/trust`) re-probes the host
+  server-side before writing the pin, so a stale or client-forged fingerprint
+  can't be persisted.
+- The same TOFU check gates `ExchangeKeys` (§4.5.2) — passwordless setup is
+  not a bypass.
+
+### 4.5.2 SSH key exchange (passwordless login setup)
+`internal/sshpty.ExchangeKeys(target, username, password)` is the backend for
+the Hosts page's "Exchange SSH keys" action: generate an ed25519 keypair,
+dial the host with the supplied password (subject to §4.5.1's TOFU check),
+run one idempotent remote command that appends the new public key to
+`~/.ssh/authorized_keys`, then return the generated key material so the
+caller can switch that host to `authMethod:"privateKey"`. **The password is
+used for exactly that one dial and is never written to disk, to `hosts.yml`,
+or logged** — enforced at the API layer too: `POST /api/hosts/:id/exchange-keys`
+clears any stored `Password` on that host regardless of what the client
+sends, once the exchange succeeds.
 
 ### 4.6 Session lifecycle & housekeeping
 - `LastActivity` updated on any PTY read or client input (throttle DB writes
@@ -217,6 +359,13 @@ outside root, and valid nested paths.
 - Start shells with `Setsid`/process group so `Delete` can kill the whole tree.
 
 ### 4.7 Session foreground (app-agnostic, no emulation)
+
+**Local sessions only.** This entire section applies to `TargetLocal`
+sessions. An SSH-backed session's `Backend.Foreground()` always returns the
+zero value — there is no way to introspect a remote process's `/proc` from
+here, and `sampleSession`'s existing diff logic already treats the zero
+value as "nothing to report," so an SSH session's dashboard card simply
+shows no foreground program. No code in this section changes for SSH.
 
 A running session reports the name of the program in its foreground and that
 program's working directory. Both are facts read from the kernel and passed
@@ -305,8 +454,15 @@ numbers.
 
 ## 5. WebSocket Protocol (exact spec)
 
-Endpoint: `GET /ws/sessions/:id` (upgraded). Connecting to a `stopped`
-session is rejected with WS close code 4404 + reason.
+Endpoint: `GET /ws/sessions/:id` (upgraded), gated by `requireAuth` (§10)
+exactly like any other route — the browser attaches the session cookie to
+the upgrade handshake automatically, since it's a same-origin HTTP request
+before it's a WS request; no token-in-query-string plumbing is needed, in
+dev (Vite proxy) or prod alike. `mgr.Attach(id, userID, client)` folds
+ownership checking into the same "session not found" close path a missing
+id already used (§4.3) — attaching to a session you don't own is
+indistinguishable from attaching to one that doesn't exist. Connecting to a
+`stopped` session is rejected with WS close code 4404 + reason.
 
 Framing rules:
 - **Binary frames** carry raw terminal bytes, both directions
@@ -382,7 +538,10 @@ unchanged, so there is still exactly one writer goroutine per connection (§14.3
 
 Sequence: upgrade → `sessions` snapshot → subscribe → incremental messages.
 A `session` message is published on foreground change (§4.7), status change,
-create, rename and restart; `sessionGone` on delete.
+create, rename and restart; `sessionGone` on delete. Like `/ws/sessions/:id`,
+this endpoint is `requireAuth`-gated and the snapshot/incremental messages
+carry only the connecting user's own sessions (§4.3, §10) — never another
+user's, admin included.
 
 This channel replaces the 5 s list poll of §12 M4. The frontend keeps polling
 as a **fallback while the socket is down** — the socket closing is itself the
@@ -404,34 +563,64 @@ code `already_running` (still 409): with several browsers on one session that
 race has a loser every time, and the loser wanted a live session and now has
 one, so it reconnects rather than reporting a failure.
 
+All routes except `/api/health` and `/api/auth/*` require a valid session
+cookie (§10); every handler resolves `userID := c.MustGet("userID")` and
+never trusts a client-supplied user id.
+
 | Method & Path | Purpose | Notes |
 |---|---|---|
-| `GET /api/sessions` | List all sessions | Includes `clientCount` per session |
-| `POST /api/sessions` | Create | Body below; 201 + session JSON |
-| `GET /api/sessions/:id` | Get one | |
+| `GET /api/health` | `{"status":"ok"}` | Public, for Docker healthcheck |
+| `GET /api/auth/status` | Bootstrap/login page state | Public. `{needsSetup, allowRegistration, displayName, version}` |
+| `POST /api/auth/bootstrap` | Create the first (admin) user | Public, only while `needsSetup`. `{username,password}` → sets session cookie. 409 once a user exists |
+| `POST /api/auth/register` | Self-service signup | Public, only if `allowRegistration && !needsSetup`. Same body; auto-logs in. 403 if disabled |
+| `POST /api/auth/login` | Log in | Public. `{username,password}` → sets cookie. 401 generic message on failure |
+| `POST /api/auth/logout` | Log out | 204; revokes the session token |
+| `GET /api/auth/me` | Current user | `{id,username,isAdmin}` |
+| `GET /api/admin/config` / `PUT` | Server config | Admin only. `serverconfig.Config` (§9) |
+| `GET /api/admin/users` | List users | Admin only. No password hashes |
+| `DELETE /api/admin/users/:id` | Remove a user | Admin only. 409 `conflict` if `id` is the last admin |
+| `PATCH /api/admin/users/:id` | Promote/demote (`{"isAdmin":bool}`) | Admin only. Same 409 guard |
+| `GET /api/hosts` | List the caller's hosts | Secrets masked (`hasPassword`/`hasPrivateKey`); host-key fingerprint fields included (not secret) |
+| `POST /api/hosts` | Create a host | Body: `Host` fields (§9) minus id/timestamps |
+| `GET /api/hosts/:id` | Get one host | Owner-scoped; 404 if not the caller's |
+| `PUT /api/hosts/:id` | Update a host | Omitted secret fields mean "leave unchanged"; changing `authMethod` drops the other method's secret |
+| `DELETE /api/hosts/:id` | Delete a host | Sessions that already snapshotted its display name are unaffected; a later restart fails cleanly with "host not found" |
+| `POST /api/hosts/:id/host-key/probe` | Check the host's current key | `{keyType,fingerprint,status:"new"\|"unchanged"\|"changed",previousFingerprint?}`. No session created |
+| `POST /api/hosts/:id/host-key/trust` | Pin a host key | `{fingerprint,keyType}` → re-probes server-side before writing, TOCTOU-safe |
+| `POST /api/hosts/:id/exchange-keys` | Passwordless login setup (§4.5.2) | `{username,password}`, password used once, never stored. Same host-key 409s as session creation |
+| `GET /api/sessions` | List the caller's sessions | Includes `clientCount` per session; strictly owner-scoped, admins included (§4.3) |
+| `POST /api/sessions` | Create | Body below; 201 + session JSON. 409 `host_key_unverified`/`host_key_changed` for SSH targets whose key needs trusting first (§4.5.1) |
+| `GET /api/sessions/:id` | Get one | Owner-scoped |
 | `DELETE /api/sessions/:id` | Kill + remove permanently | 204; also drops the session's scrollback snapshot and history file (§8) |
-| `PATCH /api/sessions/:id` | Rename (`{"name":"…"}`) | v0.3, stub not needed earlier |
-| `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (§8) |
-| `GET /api/directories` | Browse dirs under root; optional `?path=` (relative, validated by §4.5) navigates into subdirs | `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
-| `GET /api/config` | Root path, available shells, version | Shells = allowlist ∩ installed |
-| `GET /api/health` | `{"status":"ok"}` | For Docker healthcheck |
+| `PATCH /api/sessions/:id` | Rename (`{"name":"…"}`) | |
+| `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (local), 404 `host_not_found` or 409 host-key responses (SSH) |
+| `GET /api/directories` | Browse dirs under the local-host workspace; optional `?path=` (relative, validated by §4.5) navigates into subdirs | 403 if `allowLocalHost` is off. `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
+| `GET /api/config` | Display name, available shells, `allowLocalHost`, version | Shells = allowlist ∩ installed |
 
-Create body:
+Create-session body is a discriminator on `target`:
 ```json
-{"name":"Backend","directory":"project-a","shell":"bash"}
+{"name":"Backend","target":"local","directory":"project-a","shell":"bash"}
+{"name":"prod-db","target":"ssh","hostId":"…"}
 ```
-Validation: name 1–64 chars; directory passes §4.5; shell in allowlist.
+Validation: name 1–64 chars; `target:"local"` requires `allowLocalHost` on,
+directory passes §4.5, shell in allowlist; `target:"ssh"` requires `hostId`
+to resolve to one of the caller's own hosts.
 
 Session JSON shape (single source of truth — mirror in TS types):
 ```json
 {
-  "id":"…","name":"Backend","directory":"project-a","shell":"bash",
+  "id":"…","name":"Backend",
+  "targetType":"local","directory":"project-a","shell":"bash",
+  "hostId":null,"hostDisplayName":null,
   "status":"running","pid":12345,
   "created":"2026-07-16T12:00:00Z","lastActivity":"2026-07-16T12:34:56Z",
   "rows":32,"cols":120,"clientCount":2,
   "command":"claude","cwd":"project-a/backend"
 }
 ```
+An SSH session instead carries `"targetType":"ssh","directory":null,
+"shell":null,"hostId":"…","hostDisplayName":"prod-db"` and `pid` is always
+`0` (§4.2's `Backend.Pid()`).
 
 The shape is defined once, in Go, as `session.JSON` with `session.ToJSON(Info)`
 — not in `internal/api`. Both the REST handlers and the event channel (§5.1)
@@ -462,18 +651,40 @@ frontend/src/
                 # useSessionEvents.ts (/ws/events → store, §5.1)
   stores/       # sessions.ts (Pinia): list, create, delete, fallback polling
                 # ui.ts: view state + persisted client preferences
+                # auth.ts: current user, login/logout/bootstrap/register
+                # hosts.ts: per-user host CRUD, host-key probe/trust
+                # admin.ts: admin user list/delete/promote
   components/   # Sidebar.vue, SessionListItem.vue, NewSessionDialog.vue,
-                # TerminalView.vue, StatusDot.vue, TabBar.vue
-  pages/        # DashboardPage.vue, TerminalPage.vue, SettingsPage.vue
-  router/
+                # TerminalView.vue, StatusDot.vue, TabBar.vue,
+                # HostDialog.vue, HostKeyTrustDialog.vue
+  pages/        # DashboardPage.vue, TerminalPage.vue, SettingsPage.vue,
+                # LoginPage.vue, HostsPage.vue, UsersPage.vue (admin-only)
+  router/       # beforeEach guard: redirect to /login when unauthenticated,
+                # redirect away from adminOnly routes when not an admin
 ```
 
 ### Pages
-- **Dashboard** (`/`): session cards, "New Session" button, root dir shown.
-  A card carries the status indicator, name, shell, the foreground program
-  (§4.7), the working directory — `cwd` when known, falling back to the stored
-  `directory` — the client count when more than one browser is attached, and
-  last activity.
+- **Login** (`/login`, public): fetches `GET /api/auth/status` on mount.
+  While `needsSetup`, shows a "create the admin account" form
+  (`POST /api/auth/bootstrap`); otherwise a normal login form, with a
+  "Create account" link shown only when `allowRegistration` is on. The
+  router's `beforeEach` guard sends any unauthenticated visit to a
+  non-public route here.
+- **Hosts** (`/hosts`): the caller's own SSH hosts, grouped by `group`,
+  add/edit dialog (`HostDialog.vue`) for name/group/address/username/
+  auth-method/password-or-key/target-OS/terminal-type, a read-only pinned
+  host-key fingerprint, a "Verify host key" action, and "Exchange SSH keys"
+  (§4.5.2) for passwordless setup. Both host-key actions can surface
+  `HostKeyTrustDialog.vue` (§5, §6) when the presented key is unknown or has
+  changed — no action silently trusts a key.
+- **Users** (`/admin/users`, admin only): list of accounts with a
+  promote/demote toggle and delete, surfacing the "can't remove the last
+  admin" 409 inline.
+- **Dashboard** (`/`): session cards, "New Session" button. A card carries
+  the status indicator, name, target (local shell or the SSH host's display
+  name), the foreground program for local sessions only (§4.7), the working
+  directory — `cwd` when known, falling back to the stored `directory` — the
+  client count when more than one browser is attached, and last activity.
 
   The indicator is one component (`StatusDot.vue`) used on the card, in the
   sidebar and in the tab bar. Two states, reusing the palette already in the app
@@ -488,7 +699,10 @@ frontend/src/
   distractions" (§1).
 - **Terminal** (`/sessions/:id`): full-height xterm, tab bar of open
   sessions, dark theme default.
-- **Settings** (`/settings`): read-only server config display, plus the client
+- **Settings** (`/settings`): read-only server config display (display name,
+  shells, version, whether local-host sessions are allowed), plus — admin
+  only — an editable panel for `displayName`/`allowRegistration`/
+  `allowLocalHost` (`GET`/`PUT /api/admin/config`), plus the client
   preferences the browser owns — the terminal font size (8–32 px, default 13),
   with a live sample, and copy-on-select (default on). Alongside the
   copy-on-select toggle sits a short clipboard help: the copy, paste and
@@ -579,33 +793,72 @@ frontend/src/
 ### Responsiveness
 - ≥1024 px: persistent sidebar | terminal.
 - 640–1024 px: collapsible icon sidebar.
-- <640 px: bottom navigation (Dashboard / Terminal / Settings),
-  full-screen terminal, horizontally scrollable tab bar, 44 px+ touch
-  targets.
+- <640 px: bottom navigation (Dashboard / Hosts / Settings, admin gets
+  Users too), full-screen terminal, horizontally scrollable tab bar,
+  44 px+ touch targets.
 
-New-session flow: single dialog with name input, directory `<select>`
-(from `/api/directories`), shell `<select>` (from `/api/config`) → create
-→ navigate straight to the terminal page.
+New-session flow: single dialog, name input, then a host picker (from
+`/api/hosts`, grouped) as the primary path. When `allowLocalHost` is on, a
+secondary "Use this host (local)" option reveals the original directory
+`<select>` (from `/api/directories`) and shell `<select>` (from
+`/api/config`). Submitting an SSH target that returns
+`host_key_unverified`/`host_key_changed` opens `HostKeyTrustDialog.vue`
+instead of creating a session (§4.5.1, §6); accepting retries the same
+create request. On success: navigate straight to the terminal page — this
+part is unchanged for both target types, since `useTerminal.ts`'s
+`connect(id)` only ever needs a session id (§4.2's `Backend` is what makes
+that true).
 
 ---
 
-## 8. Persistence (SQLite)
+## 8. Persistence (SQLite + YAML)
 
-Metadata only. Schema (run as embedded migration on startup):
+Session runtime metadata lives in SQLite, unchanged in kind from v0.1–v0.2.
+Everything that is *configuration* rather than session state — server
+settings, user accounts, per-user host definitions, including credentials
+(decision recorded in §11) — lives in hand-editable YAML files instead, none
+of it ever written into SQLite:
+
+```
+<data-dir>/
+  config.yml           # serverconfig.Config — display name, allowRegistration,
+                        # allowLocalHost (§9)
+  users.yml             # []auth.User — id, username, bcrypt hash, isAdmin
+  users/<user-id>/
+    hosts.yml            # []hosts.Host — SSH targets, credentials, host-key pin
+  workspace/             # the shared local-host sandbox root (§4.5), only used
+                          # when allowLocalHost is on
+  sessions.db
+  scrollback/<session-id>.bin
+  history/<session-id>
+```
+
+Sessions table schema (run as an embedded migration on startup; `M17`/§12b
+added the last four columns to the v0.1–v0.2 table via
+`ALTER TABLE ... ADD COLUMN`, guarded by a `PRAGMA table_info` check since
+this was the project's first real schema migration):
 
 ```sql
 CREATE TABLE IF NOT EXISTS sessions (
-  id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  directory     TEXT NOT NULL,
-  shell         TEXT NOT NULL,
-  status        TEXT NOT NULL DEFAULT 'running',
-  created       TEXT NOT NULL,          -- RFC 3339 UTC
-  last_activity TEXT NOT NULL
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  user_id           TEXT NOT NULL DEFAULT '',
+  target_type       TEXT NOT NULL DEFAULT 'local',
+  host_id           TEXT NOT NULL DEFAULT '',
+  host_display_name TEXT NOT NULL DEFAULT '',
+  directory         TEXT NOT NULL,
+  shell             TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'running',
+  created           TEXT NOT NULL,          -- RFC 3339 UTC
+  last_activity     TEXT NOT NULL
 );
 ```
-App config lives in flags/env (§9), not the DB — drop the config table from
-the original plan; it adds state with no benefit.
+Rows created before the migration carry `user_id=''` and become invisible
+under strict per-owner scoping (§4.3, §10) — an expected, one-time
+consequence of adding auth to a previously single-tenant table.
+
+Web login sessions are **not** persisted anywhere (§10) — they live only in
+an in-memory token store, by design.
 
 On startup: `UPDATE sessions SET status='stopped' WHERE status='running';`
 
@@ -623,10 +876,12 @@ session worth reopening:
 ```
 
 The directory is `--data-dir`, resolved to an absolute path, and is
-deliberately **outside `--root`**: a shell that could read or rewrite its own
-history file inside the sandbox would make the restored history worthless, and
-a relative path would resolve against the *session's* directory once it reaches
-a shell's environment.
+deliberately **outside `<data-dir>/workspace`** (§4.5, §9): a local-host shell
+that could read or rewrite its own history file inside the sandbox would make
+the restored history worthless, and a relative path would resolve against the
+*session's* directory once it reaches a shell's environment. SSH sessions have
+no `HISTFILE` injected — the remote shell's own history config applies,
+unmodified; only scrollback (below) is captured for them, same as local.
 
 - **Scrollback.** The ring buffer is written out when a shell exits, on
   graceful shutdown, and on a timer (reusing `activityThrottle`) so a SIGKILLed
@@ -696,21 +951,44 @@ introduces.
 
 ## 9. Configuration
 
+`--root` is gone. Everything the server keeps — session DB, scrollback,
+history, `config.yml`, `users.yml`, per-user `hosts.yml`, and (when enabled)
+the local-host workspace — lives under one operator-supplied directory:
+
 | Flag | Env | Default |
 |---|---|---|
-| `--root` | `TSM_ROOT` | required |
 | `--addr` | `TSM_ADDR` | `:8080` |
-| `--data-dir` | `TSM_DATA_DIR` | `<root>/.tsm` → in Docker: `/config`. Holds `sessions.db`, `scrollback/`, `history/` |
-| `--shells` | `TSM_SHELLS` | `bash,zsh,fish` (allowlist) |
+| `--data-dir` | `TSM_DATA_DIR` | `./data` → in Docker: `/data`. Holds `config.yml`, `users.yml`, `users/`, `workspace/`, `sessions.db`, `scrollback/`, `history/` |
+| `--shells` | `TSM_SHELLS` | `bash,zsh,fish` (local-host allowlist only — irrelevant unless `allowLocalHost` is on) |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` (bytes) |
 | `--session-retention` | `TSM_SESSION_RETENTION` | `0` (keep forever); Go duration, e.g. `720h` |
 | `--log-level` | `TSM_LOG_LEVEL` | `info` |
+
+A `--root` flag is now rejected with a helpful error explaining the
+local-host sandbox is `<data-dir>/workspace`, fixed, gated by `config.yml`'s
+`allowLocalHost` — not an operator flag — following the same
+retired-flag-with-a-helpful-error pattern `--db`'s removal already
+established in `internal/config`.
+
+`config.yml` (`internal/serverconfig`), created with hand-editable defaults
+on first run, admin-editable afterward via `PUT /api/admin/config` (§6):
+```yaml
+displayName: ""            # shown on the login page; empty = generic title
+allowRegistration: false   # self-service signup on the login page
+allowLocalHost: false      # permit local-shell sessions on this server
+```
+
+`users.yml` (`internal/auth`) and each user's `users/<id>/hosts.yml`
+(`internal/hosts`) are the other two hand-editable YAML files — see §8 for
+layout and §11 for what they do and don't encrypt.
 
 ---
 
 ## 10. Dev & Build Workflow
 
-- `backend`: `go run ./cmd/server --root=$(pwd)/../sandbox`
+- `backend`: `go run ./cmd/server --data-dir=$(pwd)/../sandbox/data --dev`.
+  First run is "unlocked" — visiting the dev frontend's `/login` shows the
+  admin-bootstrap form, not a flag or seeded credential.
 - `frontend`: `npm run dev` with Vite proxy:
   ```ts
   server: { proxy: {
@@ -737,35 +1015,83 @@ introduces.
   rebuilds.
 
 ### Docker (multi-stage)
-1. `node:22-alpine` → build frontend
-2. `golang:1.22-alpine` → copy `dist` in, `CGO_ENABLED=0 go build`
-3. Runtime: `alpine:3` (needs `bash` installed for shells; scratch won't work
-   since sessions need real shells) — copy single binary.
-   `EXPOSE 8080`; volumes `/config`, `/workspace`;
+1. `node:22-alpine` (`--platform=$BUILDPLATFORM`) → build frontend
+2. `golang:1.25-alpine` (`--platform=$BUILDPLATFORM`) → copy `dist` in,
+   `CGO_ENABLED=0 go build`, cross-compiled, version via `-ldflags`
+3. Runtime, two variants sharing everything below: `runtime-alpine`
+   (default, musl/BusyBox) and `runtime-ubuntu` (glibc, for anyone linking
+   glibc-only programs into their local-host shells) — both need `bash`
+   installed for shells; scratch won't work since sessions need real
+   shells. Single binary copied in.
+   `EXPOSE 8080`; **one volume, `/data`** (holds everything in §8/§9 —
+   `config.yml`, `users.yml`, `users/`, `workspace/`, `sessions.db`,
+   `scrollback/`, `history/`);
    `HEALTHCHECK` hitting `/api/health`;
-   default cmd: `server --root=/workspace --data-dir=/config`.
+   `ENTRYPOINT ["tini", "--", "sessile"]`;
+   default cmd: `--data-dir=/data --shells=bash`.
+- `docker-compose.yml` at repo root:
+  ```yaml
+  services:
+    sessile:
+      build: .
+      ports: ["8080:8080"]
+      volumes: ["./data:/data"]
+      restart: unless-stopped
+  ```
 
 ---
 
-## 11. Security (v0.1 baseline)
+## 11. Security (v0.4 baseline)
 
-- Directory sandbox per §4.5 (tested).
-- Shell allowlist — never exec a user-supplied path.
+- Directory sandbox per §4.5 (tested), now paired with per-user ownership
+  scoping for sessions and hosts (§4.5, §4.3, §6) — the same "never trust
+  the caller" discipline applied to identity, not just paths.
+- Shell allowlist — never exec a user-supplied path (local-host sessions
+  only; an SSH target's shell/command is the user's own choice on their own
+  host, not something this server allowlists).
+- **Auth model:** username + bcrypt-hashed password (`internal/auth`),
+  server-side random session tokens in an **in-memory** store with a
+  **sliding 30-day TTL** (renewed on every authenticated request), delivered
+  via an `HttpOnly`, `SameSite=Lax` cookie (`Secure` unless `--dev`). Not
+  JWT — no persistence is needed, and a server restart logging everyone out
+  is an accepted simplification. First run is "unlocked": no users exist,
+  `GET /api/auth/status` reports `needsSetup`, and the first
+  `POST /api/auth/bootstrap` becomes the admin. Self-service registration
+  is admin-controlled (`config.yml`'s `allowRegistration`, default off).
+- **CSRF:** `SameSite=Lax` plus same-origin JSON `fetch`/WS (no CORS origin
+  is ever allowed for the API) keeps CSRF risk low without a token — a
+  cross-site `<form>` POST can't set the JSON content-type this API
+  requires, and `SameSite=Lax` withholds the cookie from cross-site
+  sub-requests entirely.
+- **Host credentials are plaintext in `hosts.yml`, by design, not by
+  accident.** The operator is the trusted owner of their own server and
+  edits this file by hand. `// TODO(security):` marks the spot for optional
+  future encryption-at-rest; it is not built in v0.4 and should not be
+  added without discussion (§1).
+- **SSH host-key verification is trust-on-first-use with explicit user
+  prompts** (§4.5.1) — never `ssh.InsecureIgnoreHostKey()`. A host's pinned
+  fingerprint lives in its `hosts.yml` entry; an unknown or changed key
+  blocks the connection (and creates no session) until the user explicitly
+  trusts it.
+- **"Exchange SSH keys" never persists the password it's given** (§4.5.2) —
+  used for exactly one dial, then discarded; the endpoint clears any
+  previously stored password on that host once the exchange succeeds,
+  regardless of what the client sends.
 - WebSocket origin check: same-origin by default, `--allow-origin` flag to
   override (needed for Vite dev — allow `http://localhost:5173` when
   `--dev` flag set).
 - Body size limits on JSON endpoints (e.g. 4 KiB).
-- No auth in v0.1; deploy behind a reverse proxy. JWT auth arrives in v0.4 —
-  leave an `internal/auth` package with a no-op middleware so wiring exists.
-- Rate limiting & CSRF: defer to v0.4 with auth (CSRF is moot without
-  cookies; the API is same-origin fetch + WS).
+- Rate limiting: still deferred — not added in this pass either. Login
+  brute-forcing is the main gap this leaves open; worth revisiting before a
+  wider deployment than "an admin who trusts their own users."
 
 ---
 
-## 12. Milestones (implement in this order)
+## 12. Milestones — Shipped (v0.1–v0.2)
 
 Each milestone must compile, pass `go vet` + tests, and meet its acceptance
-criteria before starting the next.
+criteria before starting the next. M0–M7 below are shipped history — kept
+for record, not to be redone. New work continues at §12b.
 
 ### M0 — Scaffold
 Repo layout (§4.1), Go module, Gin server with `/api/health`, Vue+Vite+
@@ -824,9 +1150,100 @@ The derived activity state this milestone originally shipped (`busy` / `waiting`
 / `idle`) was removed again before the release; see the end of §4.7 for why and
 for where it is kept.
 
-### v0.3+ (later, do not start now)
-Search/filter, favorites, rename (PATCH), then v0.4 auth/multi-user/roles/
-audit log. Future: SSH remotes, tmux import, session sharing, read-only mode.
+---
+
+## 12b. Milestones — Multi-User Terminal Host Service (v0.4)
+
+Continues directly from M7. One milestone = one commit. `M8` lands first —
+every later commit would otherwise contradict `CLAUDE.md`'s hard rules the
+moment it landed.
+
+### M8 — Re-scope the docs
+`CLAUDE.md` and this document rewritten for the multi-user/SSH-host
+direction (no code). ✅ *Verify:* both files describe the system being
+built, not the v0.1 one; no lingering "no SSH/no auth" language.
+
+### M9 — Config consolidation
+`internal/serverconfig` (`config.yml`); `--root` removed, `--data-dir`
+defaults to `./data`; `Dockerfile`/`Makefile` updated to the single `/data`
+volume. ✅ *Verify:* `go vet ./... && go test ./...`; a fresh checkout with
+no flags starts and creates `./data/config.yml` with hand-editable defaults.
+
+### M10 — Auth backend
+`internal/auth` (users.yml store, bcrypt, sliding-TTL session store);
+bootstrap/login/logout/me endpoints; `requireAuth` gates all existing
+`/api/*` and `/ws/*` routes. ✅ *Verify:* fresh `./data` → `/api/auth/status`
+reports `needsSetup` → bootstrap creates the admin and sets a cookie → every
+previously-open endpoint now 401s without it.
+
+### M11 — Admin user management backend
+List/delete/promote/demote endpoints, with a guard that refuses to remove or
+demote the last admin. ✅ *Verify:* attempting to demote or delete the sole
+admin returns 409; a second admin can be created and then the first removed
+cleanly.
+
+### M12 — Frontend auth
+`stores/auth.ts`, `LoginPage.vue` (bootstrap/login/register modes), router
+guard, admin config panel in `SettingsPage.vue`. ✅ *Verify:* `npm run
+build`; visiting any route unauthenticated redirects to `/login`; bootstrap
+→ dashboard works end to end in a browser.
+
+### M13 — Frontend admin users page
+`UsersPage.vue`, nav entry visible to admins only. ✅ *Verify:* a non-admin
+visiting `/admin/users` is redirected away; an admin can promote/demote and
+delete, and sees the last-admin 409 surfaced inline.
+
+### M14 — Hosts backend
+`internal/hosts` (per-user `hosts.yml`, plaintext credentials, atomic
+writes); `/api/hosts*` CRUD, strictly scoped to the caller's own user id,
+with masked secret fields in responses. ✅ *Verify:* `go test ./...`; two
+different logged-in users each see only their own hosts.
+
+### M15 — Frontend hosts
+`stores/hosts.ts`, `HostsPage.vue` + `HostDialog.vue` (grouped list,
+add/edit, read-only host-key display), nav entry. ✅ *Verify:* `npm run
+build`; create/edit/delete a host end to end in a browser.
+
+### M16 — `session.Backend` interface (pure refactor)
+`internal/session/backend.go`; `*terminal.PTY` gains `Read` and now
+satisfies it; `Session.pty` renamed to `Session.backend`. Zero behavior
+change. ✅ *Verify:* `go vet ./... && go test ./...` pass with **no test
+file changes** — the diff is a mechanical rename.
+
+### M17 — SSH-backed sessions, with TOFU host-key trust
+`internal/sshpty` (§4.5.1's `Start`, `ProbeHostKey`); host-key probe/trust
+endpoints; `Manager.CreateSSH`/`Restart` branching via a `HostResolver`;
+sqlite migration adding `user_id`/`target_type`/`host_id`/
+`host_display_name`; every session/WS operation becomes owner-scoped.
+✅ *Verify:* `go test ./...`; connecting to a host for the first time
+returns `host_key_unverified` with a real fingerprint and creates no
+session; trusting it then lets the same request through; editing
+`hosts.yml`'s pinned fingerprint by hand to a wrong value and reconnecting
+returns `host_key_changed`, not a silent connect.
+
+### M18 — Frontend session-creation flow + host-key trust dialog
+`NewSessionDialog.vue` rewrite (host picker primary, local secondary gated
+on `allowLocalHost`); `HostKeyTrustDialog.vue`. ✅ *Verify:* `npm run
+build`; the full "create SSH session → trust prompt → connect → run a
+command → refresh → state restored" flow works in a browser, and the
+local-host fallback still works exactly as it did before M8.
+
+### M19 — SSH key exchange backend
+`sshpty.ExchangeKeys`; `POST /api/hosts/:id/exchange-keys`, never persisting
+the supplied password. ✅ *Verify:* `go test ./...`; after a successful
+exchange, `hosts.yml` shows `authMethod: privateKey` with the generated key
+and no password field, and grepping the data directory for the password
+string used in the request finds nothing.
+
+### M20 — SSH key exchange frontend
+"Exchange SSH keys" action in `HostDialog.vue`, one-time credentials modal.
+✅ *Verify:* `npm run build`; running the action against a real host results
+in a subsequent session connecting with no password prompt.
+
+### M21 — Docker Compose + README
+`docker-compose.yml`; README rewritten for the single `./data` volume and
+web-UI bootstrap flow. ✅ *Verify:* `make docker` succeeds; `docker compose
+up` against a fresh `./data` reaches the bootstrap screen at `:8080`.
 
 ---
 
@@ -865,7 +1282,20 @@ audit log. Future: SSH remotes, tmux import, session sharing, read-only mode.
    tmux's `grid.c` — and a second, less complete emulator would disagree with
    xterm.js exactly in the cases where the answer matters, with no way for the
    user to tell which one is lying.
-3. One writer goroutine per WS connection; broadcasts never block.
+3. One writer goroutine per WS connection; broadcasts never block. This
+   still holds for SSH-backed sessions — they reuse `Manager`'s existing
+   `readLoop`/`ws.Client` machinery through the `Backend` interface (§4.2),
+   not a parallel implementation.
 4. Every user-supplied path goes through the sandbox function. No exceptions.
-5. Decisions in this spec are final for v0.1–0.2; do not introduce
-   alternative libraries or extra features without updating this document.
+5. Every session/host lookup is scoped to the authenticated user; a
+   client-supplied user id is never trusted. This is §4's path-sandbox
+   principle applied to identity: `Manager`'s `userID`-scoped methods (§4.3)
+   and `internal/hosts.Store` being opened strictly by the session's own
+   user id (§6) are its two instances. An unauthorized id probe must be
+   indistinguishable from a nonexistent one.
+6. SSH host-key trust is explicit and user-driven, never silent (§4.5.1).
+   `ssh.InsecureIgnoreHostKey()` is never acceptable, including as a
+   shortcut during development.
+7. Decisions in this spec are final for the milestones they cover; do not
+   introduce alternative libraries or extra features without updating this
+   document.
