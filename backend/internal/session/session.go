@@ -4,8 +4,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/Andste82/sessile/backend/internal/terminal"
 )
 
 // Status is a session's lifecycle state.
@@ -47,7 +45,7 @@ type Session struct {
 	fgCwd     string // its working directory, relative to root
 
 	// runtime-only
-	pty         *terminal.PTY
+	backend     Backend
 	buffer      *RingBuffer
 	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
@@ -198,7 +196,7 @@ func (s *Session) applySize(rows, cols uint16) error {
 	if unchanged {
 		return nil
 	}
-	if err := s.pty.Resize(rows, cols); err != nil {
+	if err := s.backend.Resize(rows, cols); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -353,15 +351,15 @@ func (s *Session) closeClients(code int, reason string) {
 // read loop is not leaked, only late: it finishes on its own the moment the last
 // holder of the slave lets go, and runs its usual cleanup then.
 func (s *Session) terminate(grace time.Duration) bool {
-	s.pty.Signal(syscall.SIGHUP)
-	s.pty.Signal(syscall.SIGTERM)
+	s.backend.Signal(syscall.SIGHUP)
+	s.backend.Signal(syscall.SIGTERM)
 	select {
 	case <-s.exited:
 		return true
 	case <-time.After(grace):
 	}
 
-	s.pty.Signal(syscall.SIGKILL)
+	s.backend.Signal(syscall.SIGKILL)
 	select {
 	case <-s.exited:
 		return true
@@ -378,9 +376,9 @@ func (s *Session) terminate(grace time.Duration) bool {
 // user state — so it goes straight to SIGKILL, and this goroutine is the only
 // reaper it will ever have.
 func (s *Session) discard() {
-	s.pty.Signal(syscall.SIGKILL)
-	s.pty.Wait()
-	s.pty.CloseFile()
+	s.backend.Signal(syscall.SIGKILL)
+	s.backend.Wait()
+	s.backend.CloseFile()
 }
 
 // WebSocket close codes (application range).

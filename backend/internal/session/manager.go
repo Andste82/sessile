@@ -285,7 +285,7 @@ func (m *Manager) spawn(id, name, dir, shell string, created time.Time) (*Sessio
 		LastActivity: now,
 		Rows:         defaultRows,
 		Cols:         defaultCols,
-		pty:          pty,
+		backend:      pty,
 		buffer:       NewRingBuffer(m.bufferSize),
 		clients:      make(map[Client]clientGeom),
 		lastPersist:  now,
@@ -345,7 +345,7 @@ func (m *Manager) resolveShell(shell string) (string, error) {
 func (m *Manager) readLoop(s *Session) {
 	buf := make([]byte, 32<<10)
 	for {
-		n, err := s.pty.File.Read(buf)
+		n, err := s.backend.Read(buf)
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
@@ -387,8 +387,8 @@ func (m *Manager) readLoop(s *Session) {
 	}
 	// Reap the shell process (single reaper), close the master, then signal
 	// that termination is complete for any waiter in terminate().
-	s.pty.Wait()
-	s.pty.CloseFile()
+	s.backend.Wait()
+	s.backend.CloseFile()
 	close(s.exited)
 }
 
@@ -683,7 +683,7 @@ func (m *Manager) WriteInput(id string, data []byte) error {
 	if s.Info().Status != StatusRunning {
 		return ErrStopped
 	}
-	return s.pty.Write(data)
+	return s.backend.Write(data)
 }
 
 // Resize records what one client can display and sizes the PTY to the smallest

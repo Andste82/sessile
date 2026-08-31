@@ -65,6 +65,13 @@ func (p *PTY) Write(data []byte) error {
 	return nil
 }
 
+// Read reads PTY output. It satisfies session.Backend so the read loop
+// (internal/session/manager.go) reads a local shell the same way it reads an
+// SSH-backed one, through the interface rather than the concrete type.
+func (p *PTY) Read(b []byte) (int, error) {
+	return p.File.Read(b)
+}
+
 // Start launches shellPath in dir with a PTY of the given size. The shell is
 // placed in its own session/process group (Setsid) so the whole tree can be
 // signalled on teardown (PROJECT_PLAN.md §4.6). shellPath must already be an
