@@ -344,12 +344,22 @@ func (m *Manager) resolveShell(shell string) (string, error) {
 // until the shell exits (read error). One goroutine per session (§4.4).
 func (m *Manager) readLoop(s *Session) {
 	buf := make([]byte, 32<<10)
+	// One scanner per read loop, which is one per session: it carries the
+	// escape-sequence state across chunk boundaries (§4.8). A restart builds a
+	// new Session and a new loop, so a title never outlives the shell that set
+	// it.
+	var titles titleScanner
 	for {
 		n, err := s.pty.File.Read(buf)
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
+			// Output first: the title is derived state, and the terminals
+			// waiting on these bytes come before the dashboard.
 			s.broadcast(data)
+			if title, ok := titles.scan(data); ok {
+				s.setTitle(title)
+			}
 			m.maybePersistActivity(s)
 		}
 		if err != nil {
@@ -375,7 +385,7 @@ func (m *Manager) readLoop(s *Session) {
 		m.log.Info("session stopped", "id", s.ID)
 		// Clear the derived state before announcing it, or the dashboard keeps
 		// showing the program the session was running when its shell died.
-		info, _ := s.clearForeground()
+		info, _ := s.clearDerived()
 		// Unless the session has already been deleted. This loop can outlive a
 		// delete by as long as some process outside the shell's group holds the
 		// terminal open, and by then every subscriber has been told the session

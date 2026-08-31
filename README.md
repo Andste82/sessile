@@ -28,6 +28,11 @@ specification.
   smallest window attached to it, so its output fits every one of them — a
   larger window has unused space, as a tmux client does, and gets it back when
   the smaller one disconnects.
+- **Sessions that say what they are doing.** Every card names the program in
+  the session's foreground — read from the pty and the kernel, not guessed — and
+  under it the window title that program set for itself, the same `ESC ] 0 ;`
+  sequence a desktop terminal puts in its title bar. Both are kept current about
+  once a second for every session, attached or not.
 - **Resilient UI.** Automatic reconnect with exponential backoff, a session tab
   bar, and a responsive layout that adapts from desktop to mobile.
 - **Usable by touch.** A one-finger drag scrolls the backlog and keeps coasting

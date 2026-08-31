@@ -51,6 +51,7 @@ function parseSession(v: unknown): Session | null {
     clientCount: num(s.clientCount),
     command: str(s.command),
     cwd: str(s.cwd),
+    title: str(s.title),
   }
 }
 

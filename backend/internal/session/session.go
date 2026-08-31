@@ -46,6 +46,13 @@ type Session struct {
 	fgCommand string // foreground program name
 	fgCwd     string // its working directory, relative to root
 
+	// title is the window title the program in the session last set (§4.8).
+	// Unlike the two above it is scanned out of the output stream by the read
+	// loop rather than sampled, so titleDirty carries the news to the sampler,
+	// which is what publishes it.
+	title      string
+	titleDirty bool
+
 	// runtime-only
 	pty         *terminal.PTY
 	buffer      *RingBuffer
@@ -77,10 +84,11 @@ type Info struct {
 	Rows, Cols   uint16
 	ClientCount  int
 
-	// Derived, never persisted (§4.7). Empty for a stopped session, and where
-	// they cannot be determined.
+	// Derived, never persisted (§4.7, §4.8). Empty for a stopped session, and
+	// where they cannot be determined.
 	Command string
 	Cwd     string
+	Title   string
 }
 
 // Info returns a copy of the session's public fields.
@@ -105,6 +113,7 @@ func (s *Session) infoLocked() Info {
 		ClientCount:  len(s.clients),
 		Command:      s.fgCommand,
 		Cwd:          s.fgCwd,
+		Title:        s.title,
 	}
 }
 

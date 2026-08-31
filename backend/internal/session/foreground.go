@@ -67,7 +67,7 @@ func (m *Manager) sampleForeground() {
 func (m *Manager) sampleSession(s *Session) (Info, bool) {
 	pty := s.runningPTY()
 	if pty == nil {
-		return s.clearForeground()
+		return s.clearDerived()
 	}
 
 	// Outside the lock: this is the slow part, and broadcast must never wait on
@@ -79,8 +79,8 @@ func (m *Manager) sampleSession(s *Session) (Info, bool) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	changed := command != s.fgCommand || cwd != s.fgCwd
-	s.fgCommand, s.fgCwd = command, cwd
+	changed := command != s.fgCommand || cwd != s.fgCwd || s.titleDirty
+	s.fgCommand, s.fgCwd, s.titleDirty = command, cwd, false
 	return s.infoLocked(), changed
 }
 
@@ -94,15 +94,17 @@ func (s *Session) runningPTY() *terminal.PTY {
 	return s.pty
 }
 
-// clearForeground drops the derived state of a session that has stopped, so a
-// dead session cannot keep showing the program it was running when it died.
-func (s *Session) clearForeground() (Info, bool) {
+// clearDerived drops the derived state of a session that has stopped, so a dead
+// session cannot keep showing the program it was running when it died — nor the
+// title that program left behind, which nothing will overwrite now that there
+// is no shell to reach the next prompt.
+func (s *Session) clearDerived() (Info, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.fgCommand == "" && s.fgCwd == "" {
+	if s.fgCommand == "" && s.fgCwd == "" && s.title == "" {
 		return s.infoLocked(), false
 	}
-	s.fgCommand, s.fgCwd = "", ""
+	s.fgCommand, s.fgCwd, s.title, s.titleDirty = "", "", "", false
 	return s.infoLocked(), true
 }
 

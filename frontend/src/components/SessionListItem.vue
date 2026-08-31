@@ -4,7 +4,7 @@ import { RouterLink } from 'vue-router'
 import { ArrowPathIcon, FolderIcon, TrashIcon, UsersIcon } from '@heroicons/vue/24/outline'
 import StatusDot from './StatusDot.vue'
 import type { Session } from '@/api/types'
-import { displayCommand, displayDirectory } from '@/utils/session'
+import { displayCommand, displayDirectory, displayTitle } from '@/utils/session'
 import { relativeTime } from '@/utils/time'
 
 const props = defineProps<{ session: Session }>()
@@ -15,6 +15,7 @@ const emit = defineEmits<{
 
 const command = computed(() => displayCommand(props.session))
 const directory = computed(() => displayDirectory(props.session))
+const title = computed(() => displayTitle(props.session))
 </script>
 
 <template>
@@ -44,12 +45,14 @@ const directory = computed(() => displayDirectory(props.session))
     </div>
 
     <!--
-      What is running in the session. The row keeps its height even when the
-      foreground is unknown, so the grid does not reflow each time a session
-      changes.
+      What is running in the session: the foreground program as the kernel names
+      it (§4.7), and under it the title that program gave itself (§4.8). Each
+      row keeps its height while it is unknown, so the grid does not reflow each
+      time a session changes what it is doing.
     -->
-    <div class="flex min-h-4 items-center gap-2 text-xs">
-      <span class="truncate font-mono text-slate-400">{{ command }}</span>
+    <div class="flex flex-col gap-0.5 text-xs">
+      <span class="min-h-4 truncate font-mono text-slate-400">{{ command }}</span>
+      <span class="min-h-4 truncate text-slate-500" :title="title || undefined">{{ title }}</span>
     </div>
 
     <div class="flex items-center gap-4 text-xs text-slate-400">
