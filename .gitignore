@@ -11,6 +11,7 @@
 # Runtime state
 /sandbox/
 /workspace/
+/data/
 *.db
 *.db-journal
 *.db-wal

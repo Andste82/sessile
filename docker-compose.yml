@@ -10,12 +10,11 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # Mount the directory tree sessions may open shells in.
-      - ./workspace:/workspace
-      # Persist session metadata, scrollback snapshots and per-session shell
-      # history, so stopped sessions can be restarted with their state intact.
-      - sessile-config:/config
+      # config.yml, users.yml, per-user hosts.yml, sessions.db, scrollback
+      # and history — the small, sensitive state (PROJECT_PLAN.md §9).
+      - ./data/config:/config
+      # The local-host sandbox root, only reachable once an admin turns on
+      # allowLocalHost in Settings — irrelevant if every session targets an
+      # SSH host instead.
+      - ./data/workspace:/workspace
     restart: unless-stopped
-
-volumes:
-  sessile-config:
