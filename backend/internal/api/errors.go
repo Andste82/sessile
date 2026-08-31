@@ -29,6 +29,11 @@ const (
 	// — the client that lost it wanted a live session and there is one, so it
 	// needs to tell this apart from the other conflicts and just reconnect.
 	CodeAlreadyRunning = "already_running"
+	// CodeUnauthorized is for a missing or invalid session cookie (§10).
+	CodeUnauthorized = "unauthorized"
+	// CodeForbidden is for a valid session that isn't allowed to do this —
+	// an admin-only route hit by a non-admin, for example.
+	CodeForbidden = "forbidden"
 )
 
 // respondError writes a JSON error envelope with the given HTTP status.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
@@ -31,16 +32,22 @@ type Server struct {
 	// (PROJECT_PLAN.md §4.5, §9) — fixed, not operator-supplied.
 	workspaceRoot string
 	// serverConfig holds config.yml (displayName, allowRegistration,
-	// allowLocalHost). Not yet consumed by any handler in this milestone —
-	// wired in ahead of the auth/admin-config and allowLocalHost-gating
-	// milestones that need it, so NewServer's signature doesn't have to
-	// change again for them.
+	// allowLocalHost). Not yet consumed by any handler beyond auth.go's admin
+	// endpoints — the allowLocalHost gate on session creation/directories
+	// lands with SSH sessions (§12b M17).
 	serverConfig *serverconfig.Store
+
+	users       *auth.UserStore
+	webSessions *auth.SessionStore
 }
 
 // NewServer constructs a Server.
-func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger, workspaceRoot string, serverCfg *serverconfig.Store) *Server {
-	return &Server{cfg: cfg, manager: manager, ws: wsHandler, log: log, workspaceRoot: workspaceRoot, serverConfig: serverCfg}
+func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger, workspaceRoot string, serverCfg *serverconfig.Store, users *auth.UserStore, webSessions *auth.SessionStore) *Server {
+	return &Server{
+		cfg: cfg, manager: manager, ws: wsHandler, log: log,
+		workspaceRoot: workspaceRoot, serverConfig: serverCfg,
+		users: users, webSessions: webSessions,
+	}
 }
 
 // Router builds the Gin engine with all routes registered.
@@ -51,26 +58,49 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 	r.Use(requestLogger(s.log))
 	r.Use(limitBody(maxBodyBytes))
 
-	apiGroup := r.Group("/api")
+	// Public: no session cookie required. Everything else in /api/* is
+	// gated by requireAuth (§10, §11) — a client-supplied user id is never
+	// trusted, so every authed handler resolves its actor from the cookie,
+	// not from anything in the request body or query string.
+	publicGroup := r.Group("/api")
 	{
-		apiGroup.GET("/health", s.health)
-		apiGroup.GET("/config", s.getConfig)
-		apiGroup.GET("/sessions", s.listSessions)
-		apiGroup.POST("/sessions", s.createSession)
-		apiGroup.GET("/sessions/:id", s.getSession)
-		apiGroup.DELETE("/sessions/:id", s.deleteSession)
-		apiGroup.PATCH("/sessions/:id", s.renameSession)
-		apiGroup.POST("/sessions/:id/restart", s.restartSession)
-		apiGroup.GET("/directories", s.listDirectories)
+		publicGroup.GET("/health", s.health)
+		publicGroup.GET("/auth/status", s.authStatus)
+		publicGroup.POST("/auth/bootstrap", s.authBootstrap)
+		publicGroup.POST("/auth/register", s.authRegister)
+		publicGroup.POST("/auth/login", s.authLogin)
+	}
+
+	authGroup := r.Group("/api")
+	authGroup.Use(s.requireAuth())
+	{
+		authGroup.POST("/auth/logout", s.authLogout)
+		authGroup.GET("/auth/me", s.authMe)
+
+		admin := authGroup.Group("")
+		admin.Use(s.requireAdmin())
+		{
+			admin.GET("/admin/config", s.getAdminConfig)
+			admin.PUT("/admin/config", s.updateAdminConfig)
+		}
+
+		authGroup.GET("/config", s.getConfig)
+		authGroup.GET("/sessions", s.listSessions)
+		authGroup.POST("/sessions", s.createSession)
+		authGroup.GET("/sessions/:id", s.getSession)
+		authGroup.DELETE("/sessions/:id", s.deleteSession)
+		authGroup.PATCH("/sessions/:id", s.renameSession)
+		authGroup.POST("/sessions/:id/restart", s.restartSession)
+		authGroup.GET("/directories", s.listDirectories)
 	}
 
 	if s.ws != nil {
-		r.GET("/ws/sessions/:id", func(c *gin.Context) {
+		r.GET("/ws/sessions/:id", s.requireAuth(), func(c *gin.Context) {
 			s.ws.Handle(c.Writer, c.Request, c.Param("id"))
 		})
 		// Session list state rather than terminal bytes (§5.1). Separate from
 		// the terminal socket because the dashboard mounts no terminal.
-		r.GET("/ws/events", func(c *gin.Context) {
+		r.GET("/ws/events", s.requireAuth(), func(c *gin.Context) {
 			s.ws.HandleEvents(c.Writer, c.Request)
 		})
 	}

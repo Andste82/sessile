@@ -16,12 +16,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the full contents of config.yml. Both fields default to false:
-// an operator opts into wider access rather than discovering it was on.
+// Config is the full contents of config.yml, and also what GET/PUT
+// /api/admin/config (§6) serves and accepts directly — the json tags matter
+// as much as the yaml ones. Both bool fields default to false: an operator
+// opts into wider access rather than discovering it was on.
 type Config struct {
-	DisplayName       string `yaml:"displayName"`
-	AllowRegistration bool   `yaml:"allowRegistration"`
-	AllowLocalHost    bool   `yaml:"allowLocalHost"`
+	DisplayName       string `yaml:"displayName" json:"displayName"`
+	AllowRegistration bool   `yaml:"allowRegistration" json:"allowRegistration"`
+	AllowLocalHost    bool   `yaml:"allowLocalHost" json:"allowLocalHost"`
 }
 
 // Store guards the current Config and persists changes to path.

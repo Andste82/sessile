@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Andste82/sessile/backend/internal/api"
+	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
@@ -61,6 +62,16 @@ func run(args []string) error {
 		return fmt.Errorf("open config.yml: %w", err)
 	}
 
+	users, err := auth.OpenUsers(filepath.Join(cfg.DataDir, "users.yml"))
+	if err != nil {
+		return fmt.Errorf("open users.yml: %w", err)
+	}
+	if users.Count() == 0 {
+		log.Info("no users yet — the server is unlocked; the first login creates the admin account")
+	}
+	webSessions := auth.NewSessionStore(auth.DefaultSessionTTL)
+	defer webSessions.Stop()
+
 	// Open the metadata store; it reconciles any session left "running" by a
 	// previous process to "stopped" on open (§8).
 	store, err := storage.Open(cfg.DB)
@@ -78,7 +89,7 @@ func run(args []string) error {
 	}
 	wsHandler := ws.NewHandler(manager, cfg, log)
 
-	srv := api.NewServer(cfg, manager, wsHandler, log, cfg.WorkspaceDir, serverCfg)
+	srv := api.NewServer(cfg, manager, wsHandler, log, cfg.WorkspaceDir, serverCfg, users, webSessions)
 	handler := srv.Router(dist)
 
 	httpServer := &http.Server{
