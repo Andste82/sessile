@@ -82,6 +82,9 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		{
 			admin.GET("/admin/config", s.getAdminConfig)
 			admin.PUT("/admin/config", s.updateAdminConfig)
+			admin.GET("/admin/users", s.listUsers)
+			admin.DELETE("/admin/users/:id", s.deleteUser)
+			admin.PATCH("/admin/users/:id", s.setUserAdmin)
 		}
 
 		authGroup.GET("/config", s.getConfig)
