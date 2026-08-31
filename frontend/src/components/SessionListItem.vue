@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ArrowPathIcon, FolderIcon, TrashIcon, UsersIcon } from '@heroicons/vue/24/outline'
+import { ArrowPathIcon, FolderIcon, ServerIcon, TrashIcon, UsersIcon } from '@heroicons/vue/24/outline'
 import StatusDot from './StatusDot.vue'
 import type { Session } from '@/api/types'
 import { displayCommand, displayDirectory, displayTitle } from '@/utils/session'
@@ -16,6 +16,12 @@ const emit = defineEmits<{
 const command = computed(() => displayCommand(props.session))
 const directory = computed(() => displayDirectory(props.session))
 const title = computed(() => displayTitle(props.session))
+const isSSH = computed(() => props.session.targetType === 'ssh')
+// The header badge that names the shell for a local session has nothing to
+// show there for an SSH one — directory and shell are both "" by design
+// (§6) — so it names the target kind instead; the host itself gets the row
+// below, in the slot the local directory otherwise fills.
+const targetBadge = computed(() => (isSSH.value ? 'ssh' : props.session.shell))
 </script>
 
 <template>
@@ -26,7 +32,7 @@ const title = computed(() => displayTitle(props.session))
     <div class="flex items-center gap-2">
       <StatusDot :status="session.status" />
       <span class="truncate font-medium text-slate-100">{{ session.name }}</span>
-      <span class="ml-auto font-mono text-xs text-slate-400">{{ session.shell }}</span>
+      <span class="ml-auto font-mono text-xs text-slate-400">{{ targetBadge }}</span>
       <button
         v-if="session.status === 'stopped'"
         class="rounded p-1 text-slate-500 opacity-100 transition hover:bg-slate-700 hover:text-emerald-400 sm:opacity-0 sm:group-hover:opacity-100"
@@ -56,7 +62,11 @@ const title = computed(() => displayTitle(props.session))
     </div>
 
     <div class="flex items-center gap-4 text-xs text-slate-400">
-      <span class="flex min-w-0 items-center gap-1">
+      <span v-if="isSSH" class="flex min-w-0 items-center gap-1">
+        <ServerIcon class="h-4 w-4 shrink-0" />
+        <span class="truncate font-mono">{{ session.hostDisplayName }}</span>
+      </span>
+      <span v-else class="flex min-w-0 items-center gap-1">
         <FolderIcon class="h-4 w-4 shrink-0" />
         <span class="truncate font-mono">{{ directory }}</span>
       </span>
