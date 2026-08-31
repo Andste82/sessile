@@ -97,6 +97,7 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.DELETE("/hosts/:id", s.deleteHost)
 		authGroup.POST("/hosts/:id/host-key/probe", s.probeHostKey)
 		authGroup.POST("/hosts/:id/host-key/trust", s.trustHostKey)
+		authGroup.POST("/hosts/:id/exchange-keys", s.exchangeHostKeys)
 		authGroup.GET("/sessions", s.listSessions)
 		authGroup.POST("/sessions", s.createSession)
 		authGroup.GET("/sessions/:id", s.getSession)
