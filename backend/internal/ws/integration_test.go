@@ -32,14 +32,13 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 
 	root := t.TempDir()
 	cfg := &config.Config{
-		Root:       root,
 		Shells:     []string{"sh"},
 		BufferSize: 512 << 10,
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	wsHandler := ws.NewHandler(mgr, cfg, log)
-	srv := api.NewServer(cfg, mgr, wsHandler, log)
+	srv := api.NewServer(cfg, mgr, wsHandler, log, root, nil)
 
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
@@ -88,10 +87,10 @@ func TestMultiClientMirroring(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 512 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 512 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -135,10 +134,10 @@ func TestAttachStoppedSessionRejected(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -187,10 +186,10 @@ func TestExitFrameDeliveredAndConnectionKept(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -229,10 +228,10 @@ func TestRestartReattachesEveryClient(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -306,10 +305,10 @@ func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 

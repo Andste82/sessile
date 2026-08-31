@@ -16,7 +16,7 @@ import (
 func (s *Server) listDirectories(c *gin.Context) {
 	path := c.Query("path")
 
-	dirs, err := session.ListDirs(s.cfg.Root, path)
+	dirs, err := session.ListDirs(s.workspaceRoot, path)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, "invalid directory")
 		return

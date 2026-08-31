@@ -25,12 +25,11 @@ func capture(t *testing.T) *bytes.Buffer {
 // the session's directory rather than the server's. A relative --data-dir that
 // stayed relative would send every session's history somewhere unwritable.
 func TestDataDirIsAbsolute(t *testing.T) {
-	root := t.TempDir()
+	base := t.TempDir()
 
 	for _, args := range [][]string{
-		{"--root", root},                               // default: <root>/.tsm
-		{"--root", root, "--data-dir", "state"},        // relative
-		{"--root", root, "--data-dir", "./x/../state"}, // relative with traversal
+		{"--data-dir", filepath.Join(base, "state")},
+		{"--data-dir", filepath.Join(base, "x", "..", "state2")}, // traversal
 	} {
 		cfg, err := Parse(args)
 		if err != nil {
@@ -45,14 +44,32 @@ func TestDataDirIsAbsolute(t *testing.T) {
 	}
 }
 
+// Without --data-dir, the default is the relative "./data" — resolved against
+// the server's working directory, and created if it doesn't exist yet, so a
+// zero-flag start (Docker's default CMD, a fresh `go run`) always has
+// somewhere to put config.yml, users.yml and everything else in §8.
+func TestDataDirDefaultsToDataUnderCwd(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse(nil): %v", err)
+	}
+	if base := filepath.Base(cfg.DataDir); base != "data" {
+		t.Errorf("DataDir = %q, want it to end in \"data\"", cfg.DataDir)
+	}
+	if !filepath.IsAbs(cfg.DataDir) {
+		t.Errorf("DataDir = %q, want an absolute path", cfg.DataDir)
+	}
+}
+
 // The database is not separately addressable any more: it is one of the things
 // inside the state directory, and every other one is found relative to that
 // same directory.
 func TestDatabaseLivesInTheDataDir(t *testing.T) {
-	root := t.TempDir()
 	dir := t.TempDir()
 
-	cfg, err := Parse([]string{"--root", root, "--data-dir", dir})
+	cfg, err := Parse([]string{"--data-dir", dir})
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -64,32 +81,15 @@ func TestDatabaseLivesInTheDataDir(t *testing.T) {
 	}
 }
 
-// Without --data-dir the state goes under the sandbox root, where it went when
-// the default was spelled as a database path.
-func TestDataDirDefaultsUnderRoot(t *testing.T) {
-	root := t.TempDir()
-
-	cfg, err := Parse([]string{"--root", root})
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if want := filepath.Join(root, ".tsm"); cfg.DataDir != want {
-		t.Errorf("DataDir = %q, want %q", cfg.DataDir, want)
-	}
-}
-
 // --db named a file and then claimed the directory around it. Answering it with
 // the flag package's "flag provided but not defined" would say it is gone
 // without saying what replaced it, and the replacement takes a different kind
 // of value — a directory, not a file — so a silent rename would be wrong too.
 func TestRemovedDBFlagExplainsItself(t *testing.T) {
-	root := t.TempDir()
-
 	for _, args := range [][]string{
-		{"--root", root, "--db", "/tmp/x.db"},
-		{"--root", root, "--db=/tmp/x.db"},
-		{"--root", root, "-db", "/tmp/x.db"},
-		{"-db=/tmp/x.db"},
+		{"--db", "/tmp/x.db"},
+		{"--db=/tmp/x.db"},
+		{"-db", "/tmp/x.db"},
 	} {
 		_, err := Parse(args)
 		if err == nil {
@@ -101,8 +101,28 @@ func TestRemovedDBFlagExplainsItself(t *testing.T) {
 	}
 
 	// A session directory that happens to be called "db" is not the flag.
-	if _, err := Parse([]string{"--root", root, "--shells", "bash", "--", "db"}); err != nil {
+	if _, err := Parse([]string{"--data-dir", t.TempDir(), "--shells", "bash", "--", "db"}); err != nil {
 		t.Errorf("Parse with a positional \"db\": %v", err)
+	}
+}
+
+// --root named the local-host sandbox directory, which is now a fixed
+// <data-dir>/workspace gated by config.yml's allowLocalHost, not an operator
+// flag. The error must say so rather than just "flag provided but not
+// defined".
+func TestRemovedRootFlagExplainsItself(t *testing.T) {
+	for _, args := range [][]string{
+		{"--root", "/tmp/x"},
+		{"--root=/tmp/x"},
+		{"-root", "/tmp/x"},
+	} {
+		_, err := Parse(args)
+		if err == nil {
+			t.Fatalf("Parse(%v) succeeded, want an error", args)
+		}
+		if !strings.Contains(err.Error(), "workspace") {
+			t.Errorf("Parse(%v) error = %q, want it to explain the workspace replacement", args, err)
+		}
 	}
 }
 
@@ -110,8 +130,6 @@ func TestRemovedDBFlagExplainsItself(t *testing.T) {
 // and history, so the off switch has to be the default and a typo has to be an
 // error rather than a silently different window.
 func TestSessionRetention(t *testing.T) {
-	root := t.TempDir()
-
 	tests := []struct {
 		name    string
 		args    []string
@@ -133,7 +151,7 @@ func TestSessionRetention(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			capture(t)
-			cfg, err := Parse(append([]string{"--root", root}, tc.args...))
+			cfg, err := Parse(append([]string{"--data-dir", t.TempDir()}, tc.args...))
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("Parse(%v) succeeded, want an error", tc.args)
@@ -177,17 +195,12 @@ func TestParseIntentFlags(t *testing.T) {
 	}
 }
 
-// --version must not require --root: asking a binary its version should never
-// depend on a valid sandbox being present.
-func TestVersionIgnoresMissingRoot(t *testing.T) {
+// --version must work with no other flags at all: asking a binary its version
+// should never depend on any other configuration being present.
+func TestVersionNeedsNoOtherFlags(t *testing.T) {
 	capture(t)
 	if _, err := Parse([]string{"--version"}); !errors.Is(err, ErrVersionRequested) {
 		t.Fatalf("Parse(--version) error = %v, want ErrVersionRequested", err)
-	}
-	// Sanity: without --version the same empty args do fail on root, proving the
-	// test above passed for the right reason.
-	if _, err := Parse(nil); err == nil {
-		t.Fatal("Parse(nil) succeeded; want a --root error")
 	}
 }
 
@@ -198,7 +211,7 @@ func TestHelpListsFlags(t *testing.T) {
 		t.Fatalf("Parse(--help) error = %v, want flag.ErrHelp", err)
 	}
 	usage := buf.String()
-	for _, want := range []string{"-root", "-addr", "-data-dir", "-shells", "-version", "sessile"} {
+	for _, want := range []string{"-addr", "-data-dir", "-shells", "-version", "sessile"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage text missing %q; got:\n%s", want, usage)
 		}

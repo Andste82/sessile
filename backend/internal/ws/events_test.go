@@ -32,10 +32,11 @@ func eventsServer(t *testing.T) (*httptest.Server, string) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
-	cfg := &config.Config{Root: t.TempDir(), Shells: []string{"sh"}, BufferSize: 64 << 10}
+	root := t.TempDir()
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil)
 
 	ts := httptest.NewServer(srv.Router(nil))
 	t.Cleanup(func() {

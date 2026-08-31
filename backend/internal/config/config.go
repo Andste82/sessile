@@ -30,11 +30,10 @@ var ErrVersionRequested = errors.New("version requested")
 
 // Config is the fully-resolved application configuration.
 type Config struct {
-	Root       string   // sandbox root; all sessions run inside this tree
 	Addr       string   // listen address, e.g. ":8080"
 	DataDir    string   // directory holding every piece of server state
 	DB         string   // SQLite database file, always <DataDir>/sessions.db
-	Shells     []string // shell allowlist
+	Shells     []string // shell allowlist (local-host sessions only)
 	BufferSize int      // per-session ring buffer size in bytes
 	// SessionRetention discards stopped sessions idle for longer than this on
 	// startup. Zero keeps them forever, which is the default.
@@ -50,15 +49,24 @@ var errRemovedDB = errors.New(
 	"--db was removed: use --data-dir for the directory holding the database, " +
 		"scrollback and shell history (the database is always <data-dir>/sessions.db)")
 
-// removedDBFlag reports whether args mention the removed --db in any of the
-// spellings Go's flag package would have accepted.
-func removedDBFlag(args []string) bool {
+// errRemovedRoot explains where --root went. The local-host sandbox is no
+// longer an operator-supplied path: it is a fixed location inside --data-dir,
+// gated at runtime by config.yml's allowLocalHost (PROJECT_PLAN.md §9),
+// because local-host sessions are now an admin-toggled feature rather than
+// the server's only mode.
+var errRemovedRoot = errors.New(
+	"--root was removed: the local-host sandbox is now <data-dir>/workspace, " +
+		"fixed, and gated by config.yml's allowLocalHost — not an operator flag")
+
+// removedFlag reports whether args mention name (without its leading dashes)
+// in any of the spellings Go's flag package would have accepted.
+func removedFlag(args []string, name string) bool {
 	for _, a := range args {
 		if a == "--" {
 			return false // everything after this is not a flag
 		}
-		name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
-		if strings.HasPrefix(a, "-") && name == "db" {
+		got, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if strings.HasPrefix(a, "-") && got == name {
 			return true
 		}
 	}
@@ -71,10 +79,10 @@ func Parse(args []string) (*Config, error) {
 	fs := flag.NewFlagSet("sessile", flag.ContinueOnError)
 	fs.SetOutput(usageOut)
 
-	root := fs.String("root", env("TSM_ROOT", ""), "sandbox root directory (required)")
 	addr := fs.String("addr", env("TSM_ADDR", ":8080"), "listen address")
-	dataDir := fs.String("data-dir", env("TSM_DATA_DIR", ""),
-		"directory for server state: the database, scrollback snapshots and shell history (default <root>/.tsm)")
+	dataDir := fs.String("data-dir", env("TSM_DATA_DIR", "./data"),
+		"directory for all server state: config.yml, users.yml, per-user hosts.yml, the "+
+			"local-host workspace, the database, scrollback snapshots and shell history")
 	shells := fs.String("shells", env("TSM_SHELLS", "bash,zsh,fish"), "comma-separated shell allowlist")
 	bufferSize := fs.String("buffer-size", env("TSM_BUFFER_SIZE", "524288"), "per-session ring buffer size in bytes")
 	sessionRetention := fs.String("session-retention", env("TSM_SESSION_RETENTION", "0"),
@@ -85,54 +93,46 @@ func Parse(args []string) (*Config, error) {
 	showVersion := fs.Bool("version", false, "print version and exit")
 
 	// --db named a file and then silently claimed the directory around it for
-	// scrollback/ and history/. --data-dir names that directory instead. The
-	// flag package would answer the old spelling with "flag provided but not
-	// defined", which tells an operator it is gone but not what replaced it.
-	if removedDBFlag(args) {
+	// scrollback/ and history/. --root named the sandbox directory itself,
+	// which is now a fixed <data-dir>/workspace gated by config.yml. Both are
+	// answered with a helpful error instead of "flag provided but not
+	// defined", which tells an operator a flag is gone but not what replaced
+	// it.
+	if removedFlag(args, "db") {
 		return nil, errRemovedDB
+	}
+	if removedFlag(args, "root") {
+		return nil, errRemovedRoot
 	}
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
 
-	// Before any validation: --version must work without a --root, and asking
-	// for the version is not a request to start a server.
+	// Before any validation: --version must work with no other flags, and
+	// asking for the version is not a request to start a server.
 	if *showVersion {
 		return nil, ErrVersionRequested
 	}
 
-	if *root == "" {
-		return nil, fmt.Errorf("--root is required")
-	}
-	absRoot, err := filepath.Abs(*root)
-	if err != nil {
-		return nil, fmt.Errorf("resolve root: %w", err)
-	}
-	if fi, err := os.Stat(absRoot); err != nil || !fi.IsDir() {
-		return nil, fmt.Errorf("root %q is not an existing directory", absRoot)
-	}
-
 	// Everything the server keeps lives under one directory it owns: the
-	// database, the scrollback snapshots and the per-session shell history. It
-	// is named directly rather than inferred from a file inside it, which is
-	// what --db used to do — pointing that at /var/lib/sessions.db quietly made
-	// /var/lib the state directory and put history/ and scrollback/ in it.
+	// database, the scrollback snapshots, the per-session shell history,
+	// config.yml, users.yml, per-user hosts.yml, and — when allowLocalHost is
+	// on — the local-host workspace. It is named directly rather than
+	// inferred from a file inside it, which is what --db used to do —
+	// pointing that at /var/lib/sessions.db quietly made /var/lib the state
+	// directory and put history/ and scrollback/ in it.
 	//
-	// Deliberately outside --root: a shell that could read or rewrite its own
-	// history file inside the sandbox would make the restored history
-	// worthless.
-	dir := *dataDir
-	if dir == "" {
-		dir = filepath.Join(absRoot, ".tsm")
-	}
 	// A relative --data-dir is resolved here, against the server's working
 	// directory. It cannot be left relative: this path ends up in a shell's
-	// environment as HISTFILE, and that shell runs in the session's directory,
-	// where a relative path would point somewhere else entirely.
-	dir, err = filepath.Abs(dir)
+	// environment as HISTFILE, and that shell runs in the session's
+	// directory, where a relative path would point somewhere else entirely.
+	dir, err := filepath.Abs(*dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve data-dir: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create data-dir %q: %w", dir, err)
 	}
 	dbPath := filepath.Join(dir, "sessions.db")
 
@@ -166,7 +166,6 @@ func Parse(args []string) (*Config, error) {
 	}
 
 	return &Config{
-		Root:       absRoot,
 		Addr:       *addr,
 		DataDir:    dir,
 		DB:         dbPath,

@@ -9,18 +9,20 @@ import (
 	"github.com/Andste82/sessile/backend/internal/config"
 )
 
-// configResponse mirrors GET /api/config (PROJECT_PLAN.md §6).
+// configResponse mirrors GET /api/config (PROJECT_PLAN.md §6). The shape
+// changes again in M17 (§12b) once allowLocalHost replaces root here — kept
+// as-is for now so this milestone's diff stays purely structural.
 type configResponse struct {
 	Root    string   `json:"root"`
 	Shells  []string `json:"shells"`
 	Version string   `json:"version"`
 }
 
-// getConfig returns the sandbox root, the installed shells from the allowlist,
-// and the application version.
+// getConfig returns the local-host workspace root, the installed shells from
+// the allowlist, and the application version.
 func (s *Server) getConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, configResponse{
-		Root:    s.cfg.Root,
+		Root:    s.workspaceRoot,
 		Shells:  installedShells(s.cfg.Shells),
 		Version: config.Version,
 	})

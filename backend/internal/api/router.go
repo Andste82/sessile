@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/ws"
 )
@@ -25,11 +26,21 @@ type Server struct {
 	manager *session.Manager
 	ws      *ws.Handler
 	log     *slog.Logger
+
+	// workspaceRoot is the local-host sandbox root, <data-dir>/workspace
+	// (PROJECT_PLAN.md §4.5, §9) — fixed, not operator-supplied.
+	workspaceRoot string
+	// serverConfig holds config.yml (displayName, allowRegistration,
+	// allowLocalHost). Not yet consumed by any handler in this milestone —
+	// wired in ahead of the auth/admin-config and allowLocalHost-gating
+	// milestones that need it, so NewServer's signature doesn't have to
+	// change again for them.
+	serverConfig *serverconfig.Store
 }
 
 // NewServer constructs a Server.
-func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, manager: manager, ws: wsHandler, log: log}
+func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger, workspaceRoot string, serverCfg *serverconfig.Store) *Server {
+	return &Server{cfg: cfg, manager: manager, ws: wsHandler, log: log, workspaceRoot: workspaceRoot, serverConfig: serverCfg}
 }
 
 // Router builds the Gin engine with all routes registered.
