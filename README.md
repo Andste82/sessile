@@ -45,16 +45,30 @@ specification.
   under the same id with one click: same target, its scrollback replayed,
   and (for local sessions) arrow-up still walking the commands typed in that
   session.
-- **Multi-client.** Several browsers can attach to the same session and see
-  it mirrored live, with per-session client counts. The session is sized to
-  the smallest window attached to it, so its output fits every one of them.
-- **Resilient UI.** Automatic reconnect with exponential backoff, a session
-  tab bar, and a responsive layout that adapts from desktop to mobile.
-- **Usable by touch.** A one-finger drag scrolls the backlog and keeps
-  coasting after a flick, with an on-screen bar supplying Ctrl/Alt/Shift and
-  the keys a phone keyboard has none of.
-- **GPU rendering.** The terminal draws through WebGL, falling back to
-  xterm's DOM renderer where no WebGL context can be had.
+- **Multi-client.** Several browsers can attach to the same session and see it
+  mirrored live, with per-session client counts. The session is sized to the
+  smallest window attached to it, so its output fits every one of them — a
+  larger window has unused space, as a tmux client does, and gets it back when
+  the smaller one disconnects.
+- **Sessions that say what they are doing.** Every card names the program in
+  the session's foreground — read from the pty and the kernel, not guessed — and
+  under it the window title that program set for itself, the same `ESC ] 0 ;`
+  sequence a desktop terminal puts in its title bar. Both are kept current about
+  once a second for every session, attached or not.
+- **Resilient UI.** Automatic reconnect with exponential backoff, a session tab
+  bar, and a responsive layout that adapts from desktop to mobile.
+- **Usable by touch.** A one-finger drag scrolls the backlog and keeps coasting
+  after a flick. Where a program draws its own screen — `less`, `htop`, an
+  editor — the drag reaches the program instead, exactly as a mouse wheel does
+  on a desktop, since the alternate screen has no scrollback to move. An
+  on-screen bar supplies what a phone keyboard has no keys for: Ctrl, Alt and
+  Shift as sticky modifiers, plus Esc, Tab, the arrows, Home/End, PgUp/PgDn and
+  Del.
+- **GPU rendering.** The terminal draws through WebGL, the renderer VS Code's
+  terminal uses. Where no WebGL context can be had — an old device, a
+  blocklisted driver, or a context a mobile browser reclaims from a backgrounded
+  tab — it falls back to xterm's DOM renderer, which is slower but no less
+  correct.
 - **Single binary or container.** The frontend is embedded into a static,
   CGO-free Go binary; a small multi-stage container image is also provided.
 

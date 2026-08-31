@@ -30,10 +30,12 @@ type JSON struct {
 	Cols            uint16 `json:"cols"`
 	ClientCount     int    `json:"clientCount"`
 
-	// Derived state (§4.7). Both are "" for a stopped session, where they
-	// could not be determined, and always for an SSH session.
+	// Derived state (§4.7, §4.8). All three are "" for a stopped session,
+	// where they could not be determined, and Command/Cwd are always "" for
+	// an SSH session.
 	Command string `json:"command"`
 	Cwd     string `json:"cwd"`
+	Title   string `json:"title"`
 }
 
 // ToJSON converts a session snapshot to its wire shape.
@@ -55,6 +57,7 @@ func ToJSON(i Info) JSON {
 		ClientCount:     i.ClientCount,
 		Command:         i.Command,
 		Cwd:             i.Cwd,
+		Title:           i.Title,
 	}
 }
 

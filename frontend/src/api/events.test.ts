@@ -18,6 +18,7 @@ const validSession = {
   clientCount: 2,
   command: 'claude',
   cwd: 'project-a/backend',
+  title: 'npm run dev',
 }
 
 describe('parseEvent', () => {
@@ -93,8 +94,10 @@ describe('parseEvent', () => {
     const sparse = { ...validSession }
     delete (sparse as Record<string, unknown>).cwd
     delete (sparse as Record<string, unknown>).command
+    delete (sparse as Record<string, unknown>).title
     const ev = parseEvent(JSON.stringify({ type: 'session', session: sparse }))
     expect(ev).toHaveProperty('session.cwd', '')
     expect(ev).toHaveProperty('session.command', '')
+    expect(ev).toHaveProperty('session.title', '')
   })
 })

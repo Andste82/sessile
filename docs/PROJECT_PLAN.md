@@ -37,7 +37,9 @@ verify each milestone's acceptance criteria before moving on.
 - Scrollback restoration on reconnect
 - Per-session foreground program and working directory for local sessions,
   read from the session's own PTY (§4.7) — not available for SSH sessions,
-  see §4.7's note
+  see §4.7's note — plus the window title the program sets for itself (§4.8),
+  available for both local and SSH sessions since it is scanned out of the
+  output stream rather than read from /proc
 
 ### Explicitly Out of Scope (do NOT build these, even partially)
 - File manager, SFTP, upload/download
@@ -160,6 +162,7 @@ backend/
       ringbuffer.go
       replay.go              # strips terminal queries from a snapshot (§8)
       foreground.go           # foreground lookup + sampler (§4.7)
+      title.go                # OSC 0/2 window-title scanner (§4.8)
       events.go                # subscriber fan-out for /ws/events
     terminal/
       pty.go                # local PTY start/resize/kill; implements Backend
@@ -452,6 +455,63 @@ numbers.
 
 ---
 
+### 4.8 Window title (OSC 0/2)
+
+A running session also reports the window title the program inside it set. That
+is the sequence every terminal has implemented since xterm — `ESC ] 0 ; text
+BEL` sets the icon name and the title, `ESC ] 2 ; text ST` the title alone — and
+nothing about it is Windows-specific: bash and zsh emit it from
+`PROMPT_COMMAND` / `precmd`, vim from `'titlestring'`, and long-running tools
+use it to say what they are working on.
+
+**It is the other half of §4.7, and the weaker half.** `command` is read from
+the kernel and a program cannot be wrong about it. The title is that program's
+own account of itself: usually the better line to read — it says what `claude`
+is doing rather than merely that `claude` is running — but a claim rather than a
+fact, and one that goes stale, because a program that exits without restoring
+the title leaves its last one standing until the shell writes the next prompt.
+So both are reported and the foreground stays the headline. tmux draws the same
+line: it keeps the title in `pane_title`, but `allow-rename` is off by default
+and the window is named from `pane_current_command`.
+
+It is also passed through as the program wrote it, which `cwd` is not: a default
+bash prompt hook puts `\u@\h: \w` in the title, so the dashboard shows an
+absolute server path there while the line above it stays relative to root. That
+is the program's text, and rewriting it would be guessing at what it meant.
+
+**Where it is read.** `titleScanner` in `internal/session/title.go`, driven by
+the read loop over the same bytes it broadcasts. A state machine rather than a
+per-chunk search, because a PTY read ends wherever the kernel filled the buffer:
+`ESC ] 0 ;` in one chunk and the title in the next is routine. Only string
+sequences need a state of their own — a CSI cannot hide an ESC between its
+introducer and its final byte, and neither can UTF-8.
+
+**Cost, and why this stays inside §14.2.** The read loop is the hot path and
+had no byte inspection on it at all, so the fast path is the feature: a chunk
+with no ESC in it and no sequence still open is rejected by a single
+`IndexByte`, which is what ordinary output — a build log, a `cat` — always is.
+Past that the scanner reads one string out of one sequence. It builds no grid,
+tracks no cursor and answers nothing, exactly like `sanitizeReplay` and
+`endsInAltScreen` (§8) and for the same reason: an escape sequence is the only
+thing in a PTY stream that is not text.
+
+**Publishing is left to the §4.7 sampler.** The read loop stores the title and
+sets a flag; the once-a-second sampler carries it out with the foreground. That
+costs a second of latency on a label and buys the bound that matters — a program
+repainting its title inside a progress loop can move the event fan-out no faster
+than once per session per second.
+
+**What is dropped.** OSC 1, which sets the icon name — the label for a minimised
+window, not the title; xterm.js's `onTitleChange` ignores it too, and a session
+should read the same here as in a terminal beside it. Control characters and
+invalid UTF-8, neither of which is a line in a list. Everything past 256 payload
+bytes, the sequence itself kept: what a program put in the first 256 is still
+what it calls itself. An empty payload is a program clearing its title and is
+passed on as such, and a stopped session's title is cleared with the rest of its
+derived state — no shell is left to reach another prompt and overwrite it.
+
+---
+
 ## 5. WebSocket Protocol (exact spec)
 
 Endpoint: `GET /ws/sessions/:id` (upgraded), gated by `requireAuth` (§10)
@@ -537,11 +597,11 @@ slow-consumer policy as a terminal client (close 4001) — it reuses `ws.Client`
 unchanged, so there is still exactly one writer goroutine per connection (§14.3).
 
 Sequence: upgrade → `sessions` snapshot → subscribe → incremental messages.
-A `session` message is published on foreground change (§4.7), status change,
-create, rename and restart; `sessionGone` on delete. Like `/ws/sessions/:id`,
-this endpoint is `requireAuth`-gated and the snapshot/incremental messages
-carry only the connecting user's own sessions (§4.3, §10) — never another
-user's, admin included.
+A `session` message is published on foreground or title change (§4.7, §4.8),
+status change, create, rename and restart; `sessionGone` on delete. Like
+`/ws/sessions/:id`, this endpoint is `requireAuth`-gated and the
+snapshot/incremental messages carry only the connecting user's own sessions
+(§4.3, §10) — never another user's, admin included.
 
 This channel replaces the 5 s list poll of §12 M4. The frontend keeps polling
 as a **fallback while the socket is down** — the socket closing is itself the
@@ -615,7 +675,7 @@ Session JSON shape (single source of truth — mirror in TS types):
   "status":"running","pid":12345,
   "created":"2026-07-16T12:00:00Z","lastActivity":"2026-07-16T12:34:56Z",
   "rows":32,"cols":120,"clientCount":2,
-  "command":"claude","cwd":"project-a/backend"
+  "command":"claude","cwd":"project-a/backend","title":"claude — sessile"
 }
 ```
 An SSH session instead carries `"targetType":"ssh","directory":null,
@@ -628,16 +688,18 @@ serialise it, and `api` imports `ws`, so a shape owned by `api` could not be
 reached from either of the packages that push it. `session` already owns the
 control-message types for the same reason.
 
-The last two fields come from §4.7 and are runtime-only — neither is persisted,
-and the SQLite schema (§8) is unchanged:
+The last three fields come from §4.7 and §4.8 and are runtime-only — none of
+them is persisted, and the SQLite schema (§8) is unchanged:
 
 | Field | Meaning |
 |---|---|
 | `command` | foreground program, e.g. `claude`, `htop`, or the shell when at a prompt. A script and what it started are joined with ` › ` — `bash › ping` — and a chain past three links keeps its ends: `bash › … › cc1plus`. Empty where unavailable |
 | `cwd` | the shell's actual working directory, relative to root — follows `cd`, unlike `directory`. Empty when unknown or outside root |
+| `title` | the window title the program set for itself with OSC 0/2 (§4.8), e.g. `~/project` from a shell's prompt hook. Empty until something sets one |
 
-Both are empty for a stopped session: a dead session must not keep advertising
-the program it was running when it died.
+All three are empty for a stopped session: a dead session must not keep
+advertising the program it was running when it died, nor the title that program
+left behind.
 
 ---
 
@@ -682,9 +744,16 @@ frontend/src/
   admin" 409 inline.
 - **Dashboard** (`/`): session cards, "New Session" button. A card carries
   the status indicator, name, target (local shell or the SSH host's display
-  name), the foreground program for local sessions only (§4.7), the working
-  directory — `cwd` when known, falling back to the stored `directory` — the
-  client count when more than one browser is attached, and last activity.
+  name), the foreground program for local sessions only (§4.7) with the
+  session's window title (§4.8, both local and SSH) on the line below it,
+  the working directory — `cwd` when known, falling back to the stored
+  `directory` — the client count when more than one browser is attached, and
+  last activity.
+
+  The two middle lines are deliberately unequal: the foreground is mono and the
+  brighter of the two because it is the fact, the title is dimmer because it is
+  the program's own word for what it is doing. Both rows hold their height while
+  empty, so a grid of cards does not reflow every time one of them changes.
 
   The indicator is one component (`StatusDot.vue`) used on the card, in the
   sidebar and in the tab bar. Two states, reusing the palette already in the app
@@ -1173,6 +1242,17 @@ The derived activity state this milestone originally shipped (`busy` / `waiting`
 / `idle`) was removed again before the release; see the end of §4.7 for why and
 for where it is kept.
 
+### M7b — Window title
+The OSC 0/2 scanner (§4.8), the `title` field in §6, and the card's second line
+(§7). No new endpoint and no schema change: it travels on the session JSON that
+already exists. Shipped directly after M7, independently of the v0.4 pivot
+below — hence "M7b" rather than continuing the M8+ numbering, which §12b's
+milestones (also independently numbered from M8) already claim.
+✅ *Verify:* `printf '\033]0;hello\007'` in a session → the card's second line
+reads `hello` within a second, and the foreground line above it is unchanged.
+Open `vim` → the title follows it; `:q` → the shell's own title comes back. Let
+the session exit → both lines clear.
+
 ---
 
 ## 12b. Milestones — Multi-User Terminal Host Service (v0.4)
@@ -1273,6 +1353,10 @@ in a subsequent session connecting with no password prompt.
 one-`./data`-folder story and the web-UI bootstrap flow. ✅ *Verify:* `make
 docker` succeeds; `docker compose up` against a fresh `./data` reaches the
 bootstrap screen at `:8080`.
+### Future (post-v0.4, do not start now)
+Search/filter, favorites, tmux import, session sharing, read-only mode.
+Everything else this note used to list — rename, SSH remotes, multi-user,
+auth — shipped in M8-M21 above.
 
 ---
 
@@ -1282,8 +1366,9 @@ bootstrap screen at `:8080`.
   (§4.5 cases), shell allowlist, session state transitions, the replay filter
   and the alternate-screen check (§8 — sequences split across chunk boundaries
   and BEL as an OSC terminator are the two cases a naive scan gets wrong), the
-  foreground chain's label (§4.7), and the event fan-out including its
-  slow-subscriber drop.
+  foreground chain's label (§4.7), the title scanner (§4.8 — a sequence split
+  across chunks, and the OSC operations that look like a title and are not), and
+  the event fan-out including its slow-subscriber drop.
 - **Integration (Go):** `httptest` + real PTY: create → attach → I/O →
   replay → delete. Use `sh -c 'echo READY; cat'` as a deterministic shell
   for tests instead of bash.
