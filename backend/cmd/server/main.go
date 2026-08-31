@@ -17,6 +17,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/api"
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/storage"
@@ -72,6 +73,8 @@ func run(args []string) error {
 	webSessions := auth.NewSessionStore(auth.DefaultSessionTTL)
 	defer webSessions.Stop()
 
+	hostsRegistry := hosts.NewRegistry(cfg.DataDir)
+
 	// Open the metadata store; it reconciles any session left "running" by a
 	// previous process to "stopped" on open (§8).
 	store, err := storage.Open(cfg.DB)
@@ -89,7 +92,7 @@ func run(args []string) error {
 	}
 	wsHandler := ws.NewHandler(manager, cfg, log)
 
-	srv := api.NewServer(cfg, manager, wsHandler, log, cfg.WorkspaceDir, serverCfg, users, webSessions)
+	srv := api.NewServer(cfg, manager, wsHandler, log, cfg.WorkspaceDir, serverCfg, users, webSessions, hostsRegistry)
 	handler := srv.Router(dist)
 
 	httpServer := &http.Server{

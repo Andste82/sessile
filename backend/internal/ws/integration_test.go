@@ -41,7 +41,7 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	wsHandler := ws.NewHandler(mgr, cfg, log)
 	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, wsHandler, log, root, nil, users, webSessions)
+	srv := api.NewServer(cfg, mgr, wsHandler, log, root, nil, users, webSessions, nil)
 
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
@@ -95,7 +95,7 @@ func TestMultiClientMirroring(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -143,7 +143,7 @@ func TestAttachStoppedSessionRejected(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -196,7 +196,7 @@ func TestExitFrameDeliveredAndConnectionKept(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -239,7 +239,7 @@ func TestRestartReattachesEveryClient(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -317,7 +317,7 @@ func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 

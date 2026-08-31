@@ -22,7 +22,7 @@ func testRouter(t *testing.T) http.Handler {
 	}
 	cfg := &config.Config{Shells: []string{"sh"}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(cfg, nil, nil, log, t.TempDir(), nil, nil, nil).Router(dist)
+	return NewServer(cfg, nil, nil, log, t.TempDir(), nil, nil, nil, nil).Router(dist)
 }
 
 func get(t *testing.T, h http.Handler, path string, headers map[string]string) *httptest.ResponseRecorder {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/ws"
@@ -39,14 +40,15 @@ type Server struct {
 
 	users       *auth.UserStore
 	webSessions *auth.SessionStore
+	hosts       *hosts.Registry
 }
 
 // NewServer constructs a Server.
-func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger, workspaceRoot string, serverCfg *serverconfig.Store, users *auth.UserStore, webSessions *auth.SessionStore) *Server {
+func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger, workspaceRoot string, serverCfg *serverconfig.Store, users *auth.UserStore, webSessions *auth.SessionStore, hostsRegistry *hosts.Registry) *Server {
 	return &Server{
 		cfg: cfg, manager: manager, ws: wsHandler, log: log,
 		workspaceRoot: workspaceRoot, serverConfig: serverCfg,
-		users: users, webSessions: webSessions,
+		users: users, webSessions: webSessions, hosts: hostsRegistry,
 	}
 }
 
@@ -88,6 +90,11 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		}
 
 		authGroup.GET("/config", s.getConfig)
+		authGroup.GET("/hosts", s.listHosts)
+		authGroup.POST("/hosts", s.createHost)
+		authGroup.GET("/hosts/:id", s.getHost)
+		authGroup.PUT("/hosts/:id", s.updateHost)
+		authGroup.DELETE("/hosts/:id", s.deleteHost)
 		authGroup.GET("/sessions", s.listSessions)
 		authGroup.POST("/sessions", s.createSession)
 		authGroup.GET("/sessions/:id", s.getSession)
