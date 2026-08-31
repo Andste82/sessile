@@ -8,19 +8,36 @@ import type {
   DirectoriesResponse,
   Host,
   HostBody,
+  HostKeyErrorDetails,
+  HostKeyProbeResponse,
   Session,
   User,
 } from './types'
 
-/** Error carrying the backend's structured {code,message} envelope. */
+/**
+ * Error carrying the backend's structured {code,message} envelope. `details`
+ * holds any extra fields the error object carried beyond code/message — in
+ * practice just the host-key responses (§4.5.1), which add keyType/
+ * fingerprint/previousFingerprint alongside the standard two.
+ */
 export class ApiRequestError extends Error {
   constructor(
     public status: number,
     public code: string,
     message: string,
+    public details?: Record<string, unknown>,
   ) {
     super(message)
     this.name = 'ApiRequestError'
+  }
+
+  // Narrows details to the host-key shape when code says this is one of
+  // those responses — the two call sites that create sessions/restart are
+  // the only ones that need this, so it lives here rather than duplicating
+  // the check at each of them.
+  hostKeyDetails(): HostKeyErrorDetails | null {
+    if (this.code !== 'host_key_unverified' && this.code !== 'host_key_changed') return null
+    return this.details as unknown as HostKeyErrorDetails
   }
 }
 
@@ -54,8 +71,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const code = body?.error?.code ?? 'internal'
     const message = body?.error?.message ?? res.statusText
+    const { code: _code, message: _message, ...details } = body?.error ?? {}
     if (res.status === 401) unauthorizedHandler?.()
-    throw new ApiRequestError(res.status, code, message)
+    throw new ApiRequestError(res.status, code, message, Object.keys(details).length ? details : undefined)
   }
   return body as T
 }
@@ -104,6 +122,13 @@ export const api = {
   updateHost: (id: string, body: HostBody) =>
     request<Host>(`/api/hosts/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteHost: (id: string) => request<void>(`/api/hosts/${id}`, { method: 'DELETE' }),
+  probeHostKey: (id: string) =>
+    request<HostKeyProbeResponse>(`/api/hosts/${id}/host-key/probe`, { method: 'POST' }),
+  trustHostKey: (id: string, body: { fingerprint: string; keyType: string }) =>
+    request<void>(`/api/hosts/${id}/host-key/trust`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   listUsers: () => request<User[]>('/api/admin/users'),
   deleteUser: (id: string) => request<void>(`/api/admin/users/${id}`, { method: 'DELETE' }),

@@ -222,8 +222,10 @@ const stepBtn =
           Server configuration
         </h2>
         <dl v-if="store.config" class="grid grid-cols-[7rem_1fr] gap-y-3 text-sm">
-          <dt class="text-slate-400">Root</dt>
-          <dd class="break-all font-mono text-slate-200">{{ store.config.root }}</dd>
+          <dt class="text-slate-400">Local host</dt>
+          <dd class="font-mono text-slate-200">
+            {{ store.config.allowLocalHost ? 'Enabled' : 'Disabled' }}
+          </dd>
           <dt class="text-slate-400">Shells</dt>
           <dd class="font-mono text-slate-200">{{ store.config.shells.join(', ') }}</dd>
           <dt class="text-slate-400">Version</dt>

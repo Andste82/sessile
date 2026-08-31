@@ -4,8 +4,11 @@ import { parseEvent } from './events'
 const validSession = {
   id: 'abc',
   name: 'build',
+  targetType: 'local',
   directory: 'project-a',
   shell: 'bash',
+  hostId: '',
+  hostDisplayName: '',
   status: 'running',
   pid: 42,
   created: '2026-08-07T10:00:00Z',

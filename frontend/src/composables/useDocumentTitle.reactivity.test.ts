@@ -23,8 +23,11 @@ function session(over: Partial<Session> = {}): Session {
   return {
     id: 'a',
     name: 'build-server',
+    targetType: 'local',
     directory: '.',
     shell: 'bash',
+    hostId: '',
+    hostDisplayName: '',
     status: 'running',
     pid: 42,
     created: '2026-08-03T10:00:00Z',

@@ -50,10 +50,10 @@ describe('fetchConfig', () => {
     const store = useSessionsStore()
     store.error = 'stale failure from an earlier attempt'
 
-    configMock.mockResolvedValue({ root: '/srv', shells: ['bash'], version: '1.2.3' })
+    configMock.mockResolvedValue({ shells: ['bash'], version: '1.2.3', allowLocalHost: true })
     await store.fetchConfig()
 
-    expect(store.config).toEqual({ root: '/srv', shells: ['bash'], version: '1.2.3' })
+    expect(store.config).toEqual({ shells: ['bash'], version: '1.2.3', allowLocalHost: true })
     expect(store.error).toBeNull()
   })
 })
@@ -62,8 +62,11 @@ function session(over: Partial<Session> = {}): Session {
   return {
     id: 'a',
     name: 'a',
+    targetType: 'local',
     directory: '.',
     shell: 'bash',
+    hostId: '',
+    hostDisplayName: '',
     status: 'running',
     pid: 42,
     created: '2026-08-03T10:00:00Z',

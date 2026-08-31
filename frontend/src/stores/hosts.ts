@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { api } from '@/api/client'
-import type { Host, HostBody } from '@/api/types'
+import type { Host, HostBody, HostKeyProbeResponse } from '@/api/types'
 
 // Per-user SSH host list (§12b M14's API surface). Grouped for the Hosts
 // page and, later, the new-session host picker (M18) — both want "hosts by
@@ -40,6 +40,20 @@ export const useHostsStore = defineStore('hosts', () => {
     hosts.value = hosts.value.filter((h) => h.id !== id)
   }
 
+  function probeHostKey(id: string): Promise<HostKeyProbeResponse> {
+    return api.probeHostKey(id)
+  }
+
+  // Pins the fingerprint on the host, then refreshes it locally so callers
+  // (the Hosts page, or a retry after §4.5.1's trust dialog) see the new
+  // pin without a full refetch.
+  async function trustHostKey(id: string, body: { fingerprint: string; keyType: string }) {
+    await api.trustHostKey(id, body)
+    const updated = await api.getHost(id)
+    hosts.value = hosts.value.map((h) => (h.id === id ? updated : h))
+    return updated
+  }
+
   // Grouped by Host.group, "Ungrouped" for an empty one, insertion order
   // otherwise preserved within each group.
   const grouped = computed(() => {
@@ -51,5 +65,16 @@ export const useHostsStore = defineStore('hosts', () => {
     return out
   })
 
-  return { hosts, loading, error, grouped, fetchHosts, createHost, updateHost, deleteHost }
+  return {
+    hosts,
+    loading,
+    error,
+    grouped,
+    fetchHosts,
+    createHost,
+    updateHost,
+    deleteHost,
+    probeHostKey,
+    trustHostKey,
+  }
 })

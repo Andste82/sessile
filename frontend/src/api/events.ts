@@ -4,7 +4,7 @@
 // where text frames are control messages alongside binary terminal bytes. This
 // one is /ws/events, which carries session list state and nothing else.
 
-import type { Session, Status } from './types'
+import type { Session, Status, TargetType } from './types'
 
 export interface SessionsEvent {
   type: 'sessions'
@@ -22,6 +22,7 @@ export interface SessionGoneEvent {
 export type ServerEvent = SessionsEvent | SessionEvent | SessionGoneEvent
 
 const statuses: Status[] = ['running', 'stopped']
+const targetTypes: TargetType[] = ['local', 'ssh']
 
 /**
  * Narrow one session object, or null if it is not one.
@@ -40,8 +41,11 @@ function parseSession(v: unknown): Session | null {
   return {
     id: s.id,
     name: s.name,
+    targetType: targetTypes.includes(s.targetType as TargetType) ? (s.targetType as TargetType) : 'local',
     directory: str(s.directory),
     shell: s.shell,
+    hostId: str(s.hostId),
+    hostDisplayName: str(s.hostDisplayName),
     status: s.status as Status,
     pid: num(s.pid),
     created: str(s.created),

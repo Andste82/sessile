@@ -2,12 +2,16 @@
 // Keep these in exact sync with the backend responses.
 
 export type Status = 'running' | 'stopped'
+export type TargetType = 'local' | 'ssh'
 
 export interface Session {
   id: string
   name: string
-  directory: string
-  shell: string
+  targetType: TargetType
+  directory: string // local only
+  shell: string // local only
+  hostId: string // ssh only
+  hostDisplayName: string // ssh only — snapshotted at creation, survives a host rename/delete
   status: Status
   pid: number
   created: string // RFC 3339 UTC
@@ -15,20 +19,19 @@ export interface Session {
   rows: number
   cols: number
   clientCount: number
-  command: string // foreground program, or "bash › ping" for a script and what it started; "" if unknown
-  cwd: string // working directory relative to root, "" if unknown
+  command: string // foreground program, or "bash › ping" for a script and what it started; "" if unknown or ssh
+  cwd: string // working directory relative to root, "" if unknown or ssh
 }
 
-export interface CreateSessionBody {
-  name: string
-  directory: string
-  shell: string
-}
+// Discriminated on target: "local" needs directory+shell, "ssh" needs hostId.
+export type CreateSessionBody =
+  | { name: string; target: 'local'; directory: string; shell: string }
+  | { name: string; target: 'ssh'; hostId: string }
 
 export interface AppConfig {
-  root: string
   shells: string[]
   version: string
+  allowLocalHost: boolean
 }
 
 export interface DirectoriesResponse {
@@ -39,6 +42,21 @@ export interface DirectoriesResponse {
 
 export interface ApiError {
   error: { code: string; message: string }
+}
+
+// The 409 shape session creation/restart and the host-key endpoints share
+// when a host's key is unrecognized or has changed (§4.5.1).
+export interface HostKeyErrorDetails {
+  keyType: string
+  fingerprint: string
+  previousFingerprint?: string
+}
+
+export interface HostKeyProbeResponse {
+  keyType: string
+  fingerprint: string
+  status: 'new' | 'unchanged' | 'changed'
+  previousFingerprint?: string
 }
 
 export interface User {
