@@ -23,12 +23,17 @@ const emit = defineEmits<{
 const store = useSessionsStore()
 const hostsStore = useHostsStore()
 
-// The host picker is the primary control (§12b M18) — an SSH host is the
-// normal target. "Use this host" only exists at all when the admin has
-// turned allowLocalHost on, and even then it's a secondary option.
-const target = ref<'ssh' | 'local'>('ssh')
+// One picker for the session's target (§12b M18): every configured SSH host,
+// plus "This host (local)" as an ordinary entry in the same list when the
+// admin has turned allowLocalHost on — not a separate mode switch. localValue
+// is the sentinel selection identifies that entry by; it can't collide with a
+// real host id (those are UUIDs).
+const localValue = '__local__'
+const selection = ref('')
+const target = computed<'ssh' | 'local'>(() => (selection.value === localValue ? 'local' : 'ssh'))
+const hostId = computed(() => (target.value === 'ssh' ? selection.value : ''))
+
 const name = ref('')
-const hostId = ref('')
 const directory = ref('.')
 const shell = ref('')
 const submitting = ref(false)
@@ -63,8 +68,7 @@ watch(
     name.value = ''
     directory.value = '.'
     shell.value = shells.value[0] ?? ''
-    target.value = 'ssh'
-    hostId.value = ''
+    selection.value = ''
     if (hostsStore.hosts.length === 0) void hostsStore.fetchHosts()
   },
 )
@@ -162,31 +166,21 @@ function retryAfterTrust() {
               <label class="flex flex-col gap-1 text-sm">
                 <span class="text-slate-400">Host</span>
                 <select
-                  v-model="hostId"
-                  :disabled="target !== 'ssh'"
-                  class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500 disabled:opacity-50"
+                  v-model="selection"
+                  class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
                 >
                   <option value="" disabled>
-                    {{ hosts.length ? 'Select a host…' : 'No hosts configured yet' }}
+                    {{ hosts.length || allowLocalHost ? 'Select a host…' : 'No hosts configured yet' }}
                   </option>
+                  <option v-if="allowLocalHost" :value="localValue">This host (local)</option>
                   <option v-for="h in hosts" :key="h.id" :value="h.id">
                     {{ h.group ? `${h.group} / ${h.name}` : h.name }}
                   </option>
                 </select>
               </label>
-              <p v-if="target === 'ssh' && hosts.length === 0" class="text-xs text-slate-400">
-                Add a host on the Hosts page before starting an SSH session.
+              <p v-if="hosts.length === 0 && !allowLocalHost" class="text-xs text-slate-400">
+                Add a host on the Hosts page before starting a session.
               </p>
-
-              <label v-if="allowLocalHost" class="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
-                <input
-                  type="checkbox"
-                  class="accent-emerald-400"
-                  :checked="target === 'local'"
-                  @change="target = target === 'local' ? 'ssh' : 'local'"
-                />
-                Use this host (local shell), instead of an SSH host
-              </label>
 
               <template v-if="target === 'local'">
                 <label class="flex flex-col gap-1 text-sm">
