@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -106,10 +107,8 @@ func TestRemovedDBFlagExplainsItself(t *testing.T) {
 	}
 }
 
-// --root named the local-host sandbox directory, which is now a fixed
-// <data-dir>/workspace gated by config.yml's allowLocalHost, not an operator
-// flag. The error must say so rather than just "flag provided but not
-// defined".
+// --root was renamed to --workspace-dir. The error must say so rather than
+// just "flag provided but not defined".
 func TestRemovedRootFlagExplainsItself(t *testing.T) {
 	for _, args := range [][]string{
 		{"--root", "/tmp/x"},
@@ -120,8 +119,8 @@ func TestRemovedRootFlagExplainsItself(t *testing.T) {
 		if err == nil {
 			t.Fatalf("Parse(%v) succeeded, want an error", args)
 		}
-		if !strings.Contains(err.Error(), "workspace") {
-			t.Errorf("Parse(%v) error = %q, want it to explain the workspace replacement", args, err)
+		if !strings.Contains(err.Error(), "workspace-dir") {
+			t.Errorf("Parse(%v) error = %q, want it to name --workspace-dir", args, err)
 		}
 	}
 }
@@ -211,9 +210,39 @@ func TestHelpListsFlags(t *testing.T) {
 		t.Fatalf("Parse(--help) error = %v, want flag.ErrHelp", err)
 	}
 	usage := buf.String()
-	for _, want := range []string{"-addr", "-data-dir", "-shells", "-version", "sessile"} {
+	for _, want := range []string{"-addr", "-data-dir", "-workspace-dir", "-shells", "-version", "sessile"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage text missing %q; got:\n%s", want, usage)
 		}
+	}
+}
+
+// Left unset, --workspace-dir defaults to a subdirectory of --data-dir — a
+// bare `go run` or single-volume deployment still needs only one directory.
+// Set explicitly, it is honored as its own path (Docker's default /config +
+// /workspace split), so the two can be backed up or mounted separately.
+func TestWorkspaceDirDefaultsUnderDataDir(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg, err := Parse([]string{"--data-dir", dir})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if want := filepath.Join(dir, "workspace"); cfg.WorkspaceDir != want {
+		t.Errorf("WorkspaceDir = %q, want %q", cfg.WorkspaceDir, want)
+	}
+
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "config")
+	workspaceDir := filepath.Join(base, "workspace")
+	cfg, err = Parse([]string{"--data-dir", dataDir, "--workspace-dir", workspaceDir})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.WorkspaceDir != workspaceDir {
+		t.Errorf("WorkspaceDir = %q, want %q", cfg.WorkspaceDir, workspaceDir)
+	}
+	if fi, err := os.Stat(cfg.WorkspaceDir); err != nil || !fi.IsDir() {
+		t.Errorf("WorkspaceDir %q was not created", cfg.WorkspaceDir)
 	}
 }

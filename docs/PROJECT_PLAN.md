@@ -297,11 +297,11 @@ WS layer — branches on target type; only `Manager.CreateLocal` /
 - PTY writes from multiple clients are serialized by a mutex on the PTY.
 
 ### 4.5 Directory sandbox (security-critical)
-Root is the fixed local-host workspace `<data-dir>/workspace` (§9), only
-reachable when an admin has enabled `allowLocalHost` in `config.yml` (§9,
-§10). It is **one shared root for every permitted user** — not a
-per-user root — matching the pre-multi-user behavior exactly. For any
-user-supplied directory:
+Root is the local-host workspace, `--workspace-dir` (default
+`<data-dir>/workspace`, §9), only reachable when an admin has enabled
+`allowLocalHost` in `config.yml` (§9, §10). It is **one shared root for
+every permitted user** — not a per-user root — matching the pre-multi-user
+behavior exactly. For any user-supplied directory:
 1. Reject empty, absolute paths, and any path containing `..` segments.
 2. `full := filepath.Join(root, filepath.Clean(userPath))`
 3. `resolved, err := filepath.EvalSymlinks(full)` — must succeed.
@@ -820,17 +820,21 @@ settings, user accounts, per-user host definitions, including credentials
 of it ever written into SQLite:
 
 ```
-<data-dir>/
-  config.yml           # serverconfig.Config — display name, allowRegistration,
-                        # allowLocalHost (§9)
-  users.yml             # []auth.User — id, username, bcrypt hash, isAdmin
+<data-dir>/                # --data-dir; /config in Docker
+  config.yml                # serverconfig.Config — display name, allowRegistration,
+                             # allowLocalHost (§9)
+  users.yml                  # []auth.User — id, username, bcrypt hash, isAdmin
   users/<user-id>/
-    hosts.yml            # []hosts.Host — SSH targets, credentials, host-key pin
-  workspace/             # the shared local-host sandbox root (§4.5), only used
-                          # when allowLocalHost is on
+    hosts.yml                 # []hosts.Host — SSH targets, credentials, host-key pin
   sessions.db
   scrollback/<session-id>.bin
   history/<session-id>
+
+<workspace-dir>/           # --workspace-dir; /workspace in Docker; defaults to
+                            # <data-dir>/workspace when unset (§9) — the shared
+                            # local-host sandbox root (§4.5), only used when
+                            # allowLocalHost is on. Kept separate from --data-dir
+                            # so the two can be backed up independently.
 ```
 
 Sessions table schema (run as an embedded migration on startup; `M17`/§12b
@@ -876,11 +880,12 @@ session worth reopening:
 ```
 
 The directory is `--data-dir`, resolved to an absolute path, and is
-deliberately **outside `<data-dir>/workspace`** (§4.5, §9): a local-host shell
-that could read or rewrite its own history file inside the sandbox would make
-the restored history worthless, and a relative path would resolve against the
-*session's* directory once it reaches a shell's environment. SSH sessions have
-no `HISTFILE` injected — the remote shell's own history config applies,
+deliberately **a separate directory from `--workspace-dir`** (§4.5, §9): a
+local-host shell that could read or rewrite its own history file inside the
+sandbox would make the restored history worthless, and a relative path would
+resolve against the *session's* directory once it reaches a shell's
+environment. SSH sessions have no `HISTFILE` injected — the remote shell's
+own history config applies,
 unmodified; only scrollback (below) is captured for them, same as local.
 
 - **Scrollback.** The ring buffer is written out when a shell exits, on
@@ -951,24 +956,37 @@ introduces.
 
 ## 9. Configuration
 
-`--root` is gone. Everything the server keeps — session DB, scrollback,
-history, `config.yml`, `users.yml`, per-user `hosts.yml`, and (when enabled)
-the local-host workspace — lives under one operator-supplied directory:
+`--root` is gone, renamed to `--workspace-dir` — same meaning (the
+local-host sandbox directory), but now optional and access-gated at runtime
+by `config.yml`'s `allowLocalHost` rather than being the server's only mode.
+Everything else the server keeps — session DB, scrollback, history,
+`config.yml`, `users.yml`, per-user `hosts.yml` — lives under
+`--data-dir`, a **separate** directory from `--workspace-dir` on purpose: the
+small, sensitive state in `--data-dir` (`users.yml`, `hosts.yml` with
+credentials) can then be backed up, or excluded from a backup, independently
+of a workspace that's only used when local-host sessions are enabled and is
+never sensitive on its own.
 
 | Flag | Env | Default |
 |---|---|---|
 | `--addr` | `TSM_ADDR` | `:8080` |
-| `--data-dir` | `TSM_DATA_DIR` | `./data` → in Docker: `/data`. Holds `config.yml`, `users.yml`, `users/`, `workspace/`, `sessions.db`, `scrollback/`, `history/` |
+| `--data-dir` | `TSM_DATA_DIR` | `./data` → in Docker: `/config`. Holds `config.yml`, `users.yml`, `users/`, `sessions.db`, `scrollback/`, `history/` |
+| `--workspace-dir` | `TSM_WORKSPACE_DIR` | `<data-dir>/workspace` → in Docker: `/workspace`. The local-host sandbox root, only reachable when `allowLocalHost` is on |
 | `--shells` | `TSM_SHELLS` | `bash,zsh,fish` (local-host allowlist only — irrelevant unless `allowLocalHost` is on) |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` (bytes) |
 | `--session-retention` | `TSM_SESSION_RETENTION` | `0` (keep forever); Go duration, e.g. `720h` |
 | `--log-level` | `TSM_LOG_LEVEL` | `info` |
 
-A `--root` flag is now rejected with a helpful error explaining the
-local-host sandbox is `<data-dir>/workspace`, fixed, gated by `config.yml`'s
-`allowLocalHost` — not an operator flag — following the same
-retired-flag-with-a-helpful-error pattern `--db`'s removal already
-established in `internal/config`.
+Left unset, `--workspace-dir` defaults to a subdirectory of `--data-dir`, so
+a bare `go run` or a single-volume deployment still needs only one
+directory; set explicitly — Docker's default `CMD` does — the two nest under
+whatever the operator points them at, e.g. a compose file mounting
+`./data/config:/config` and `./data/workspace:/workspace` so both still live
+under one `./data` folder on the host (§10).
+
+A `--root` flag is now rejected with a helpful error pointing at
+`--workspace-dir` instead, following the same retired-flag-with-a-helpful-
+error pattern `--db`'s removal already established in `internal/config`.
 
 `config.yml` (`internal/serverconfig`), created with hand-editable defaults
 on first run, admin-editable afterward via `PUT /api/admin/config` (§6):
@@ -1023,19 +1041,24 @@ layout and §11 for what they do and don't encrypt.
    glibc-only programs into their local-host shells) — both need `bash`
    installed for shells; scratch won't work since sessions need real
    shells. Single binary copied in.
-   `EXPOSE 8080`; **one volume, `/data`** (holds everything in §8/§9 —
-   `config.yml`, `users.yml`, `users/`, `workspace/`, `sessions.db`,
-   `scrollback/`, `history/`);
+   `EXPOSE 8080`; **two volumes**, `/config` (holds `config.yml`,
+   `users.yml`, `users/`, `sessions.db`, `scrollback/`, `history/` — §8/§9)
+   and `/workspace` (the local-host sandbox, only used when `allowLocalHost`
+   is on);
    `HEALTHCHECK` hitting `/api/health`;
    `ENTRYPOINT ["tini", "--", "sessile"]`;
-   default cmd: `--data-dir=/data --shells=bash`.
-- `docker-compose.yml` at repo root:
+   default cmd: `--data-dir=/config --workspace-dir=/workspace --shells=bash`.
+- `docker-compose.yml` at repo root — both volumes nest under one `./data`
+  folder on the host, so there's still one thing to back up or point a
+  deploy tool at, even though the container sees two mount points:
   ```yaml
   services:
     sessile:
       build: .
       ports: ["8080:8080"]
-      volumes: ["./data:/data"]
+      volumes:
+        - "./data/config:/config"
+        - "./data/workspace:/workspace"
       restart: unless-stopped
   ```
 
@@ -1164,15 +1187,19 @@ direction (no code). ✅ *Verify:* both files describe the system being
 built, not the v0.1 one; no lingering "no SSH/no auth" language.
 
 ### M9 — Config consolidation
-`internal/serverconfig` (`config.yml`); `--root` removed, `--data-dir`
-defaults to `./data`; `Dockerfile`/`Makefile` updated to the single `/data`
-volume. ✅ *Verify:* `go vet ./... && go test ./...`; a fresh checkout with
-no flags starts and creates `./data/config.yml` with hand-editable defaults.
+`internal/serverconfig` (`config.yml`); `--root` renamed to
+`--workspace-dir` (now optional, defaulting under `--data-dir`);
+`--data-dir` defaults to `./data`; `Dockerfile`/`Makefile` updated to the
+`/config` + `/workspace` volumes. ✅ *Verify:* `go vet ./... && go test
+./...`; a fresh checkout with no flags starts and creates
+`./data/config.yml` with hand-editable defaults; `--data-dir`/
+`--workspace-dir` set to separate paths keep credentials and the
+local-host sandbox on disjoint directories.
 
 ### M10 — Auth backend
 `internal/auth` (users.yml store, bcrypt, sliding-TTL session store);
 bootstrap/login/logout/me endpoints; `requireAuth` gates all existing
-`/api/*` and `/ws/*` routes. ✅ *Verify:* fresh `./data` → `/api/auth/status`
+`/api/*` and `/ws/*` routes. ✅ *Verify:* fresh `--data-dir` → `/api/auth/status`
 reports `needsSetup` → bootstrap creates the admin and sets a cookie → every
 previously-open endpoint now 401s without it.
 
@@ -1241,9 +1268,11 @@ string used in the request finds nothing.
 in a subsequent session connecting with no password prompt.
 
 ### M21 — Docker Compose + README
-`docker-compose.yml`; README rewritten for the single `./data` volume and
-web-UI bootstrap flow. ✅ *Verify:* `make docker` succeeds; `docker compose
-up` against a fresh `./data` reaches the bootstrap screen at `:8080`.
+`docker-compose.yml` (mounting `./data/config:/config` and
+`./data/workspace:/workspace`); README rewritten for the two-volume-under-
+one-`./data`-folder story and the web-UI bootstrap flow. ✅ *Verify:* `make
+docker` succeeds; `docker compose up` against a fresh `./data` reaches the
+bootstrap screen at `:8080`.
 
 ---
 

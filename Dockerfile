@@ -54,7 +54,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          bash ca-certificates tini wget \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /data
+    && mkdir -p /config /workspace
 # Without this the shells inherit glibc's C locale, which is ASCII-only: bash
 # rejects a typed umlaut with a BEL. C.UTF-8 is built in and needs no locale
 # package. sessile defaults to it too, but set it here so the whole container
@@ -63,34 +63,36 @@ ENV LANG=C.UTF-8
 COPY --from=backend /sessile /usr/local/bin/sessile
 
 EXPOSE 8080
-# Everything sessile keeps — config.yml, users.yml, per-user hosts.yml, the
-# local-host workspace (when enabled), the session database, scrollback and
-# history — lives under this one directory now (PROJECT_PLAN.md §8, §9).
-VOLUME ["/data"]
+# Two volumes, so the small, sensitive state in /config (users.yml, hosts.yml
+# with credentials) can be backed up separately from /workspace — only used
+# when an admin turns on allowLocalHost, potentially large, never sensitive on
+# its own. A compose file can still point both at one host directory, e.g.
+# ./data/config:/config and ./data/workspace:/workspace (PROJECT_PLAN.md §9).
+VOLUME ["/config", "/workspace"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8080/api/health >/dev/null 2>&1 || exit 1
 
 # tini reaps zombies (shells are grandchildren of PID 1).
 ENTRYPOINT ["/usr/bin/tini", "--", "sessile"]
-CMD ["--data-dir=/data", "--shells=bash"]
+CMD ["--data-dir=/config", "--workspace-dir=/workspace", "--shells=bash"]
 
 # --- Stage 3b: alpine runtime (default) ------------------------------------
 # alpine, not scratch: sessions spawn real shells, so bash must be present.
 FROM alpine:3 AS runtime-alpine
 RUN apk add --no-cache bash ca-certificates tini \
-    && mkdir -p /data
+    && mkdir -p /config /workspace
 # musl treats its C locale as UTF-8, so this is belt-and-braces here — but it
 # keeps both variants identical rather than relying on that difference.
 ENV LANG=C.UTF-8
 COPY --from=backend /sessile /usr/local/bin/sessile
 
 EXPOSE 8080
-VOLUME ["/data"]
+VOLUME ["/config", "/workspace"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8080/api/health >/dev/null 2>&1 || exit 1
 
 # tini reaps zombies (shells are grandchildren of PID 1).
 ENTRYPOINT ["/sbin/tini", "--", "sessile"]
-CMD ["--data-dir=/data", "--shells=bash"]
+CMD ["--data-dir=/config", "--workspace-dir=/workspace", "--shells=bash"]

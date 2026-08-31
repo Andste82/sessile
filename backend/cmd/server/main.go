@@ -48,20 +48,12 @@ func run(args []string) error {
 
 	log := newLogger(cfg.LogLevel)
 	log.Info("starting sessile",
-		"version", config.Version, "data-dir", cfg.DataDir, "addr", cfg.Addr, "dev", cfg.Dev)
+		"version", config.Version, "data-dir", cfg.DataDir, "workspace-dir", cfg.WorkspaceDir,
+		"addr", cfg.Addr, "dev", cfg.Dev)
 
 	dist, err := web.Dist()
 	if err != nil {
 		return fmt.Errorf("load embedded frontend: %w", err)
-	}
-
-	// The local-host sandbox is now a fixed location inside --data-dir,
-	// gated at runtime by config.yml's allowLocalHost (§4.5, §9) — not an
-	// operator-supplied path. Created unconditionally so the toggle can be
-	// flipped on later without a restart needing to bootstrap the directory.
-	workspaceRoot := filepath.Join(cfg.DataDir, "workspace")
-	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
-		return fmt.Errorf("create workspace: %w", err)
 	}
 
 	serverCfg, err := serverconfig.Open(filepath.Join(cfg.DataDir, "config.yml"))
@@ -78,7 +70,7 @@ func run(args []string) error {
 	defer store.Close()
 	log.Info("store ready", "db", cfg.DB)
 
-	manager := session.NewManager(workspaceRoot, cfg.Shells, cfg.BufferSize, cfg.DataDir, store, log)
+	manager := session.NewManager(cfg.WorkspaceDir, cfg.Shells, cfg.BufferSize, cfg.DataDir, store, log)
 	// Discard long-idle stopped sessions before anything can attach to them.
 	// Off unless --session-retention is set.
 	if _, err := manager.PruneStopped(cfg.SessionRetention); err != nil {
@@ -86,7 +78,7 @@ func run(args []string) error {
 	}
 	wsHandler := ws.NewHandler(manager, cfg, log)
 
-	srv := api.NewServer(cfg, manager, wsHandler, log, workspaceRoot, serverCfg)
+	srv := api.NewServer(cfg, manager, wsHandler, log, cfg.WorkspaceDir, serverCfg)
 	handler := srv.Router(dist)
 
 	httpServer := &http.Server{
