@@ -1,9 +1,13 @@
 // Typed fetch wrappers around the REST API (PROJECT_PLAN.md §6).
 import type {
+  AdminConfig,
   AppConfig,
+  AuthStatus,
+  Credentials,
   CreateSessionBody,
   DirectoriesResponse,
   Session,
+  User,
 } from './types'
 
 /** Error carrying the backend's structured {code,message} envelope. */
@@ -26,6 +30,17 @@ export function isAlreadyRunning(e: unknown): boolean {
   return e instanceof ApiRequestError && e.code === 'already_running'
 }
 
+// unauthorizedHandler fires whenever a request comes back 401. The auth store
+// wires itself up here (in main.ts) so a lapsed or missing session cookie
+// sends the app back to /login from wherever request() was called — every
+// call site would otherwise need to check for this itself. A plain callback
+// rather than an import of the store, which would make this module depend on
+// Pinia being installed before any request can even fail.
+let unauthorizedHandler: (() => void) | null = null
+export function setUnauthorizedHandler(fn: () => void) {
+  unauthorizedHandler = fn
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -37,6 +52,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const code = body?.error?.code ?? 'internal'
     const message = body?.error?.message ?? res.statusText
+    if (res.status === 401) unauthorizedHandler?.()
     throw new ApiRequestError(res.status, code, message)
   }
   return body as T
@@ -65,4 +81,17 @@ export const api = {
     }),
   restartSession: (id: string) =>
     request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),
+
+  authStatus: () => request<AuthStatus>('/api/auth/status'),
+  bootstrap: (creds: Credentials) =>
+    request<User>('/api/auth/bootstrap', { method: 'POST', body: JSON.stringify(creds) }),
+  register: (creds: Credentials) =>
+    request<User>('/api/auth/register', { method: 'POST', body: JSON.stringify(creds) }),
+  login: (creds: Credentials) =>
+    request<User>('/api/auth/login', { method: 'POST', body: JSON.stringify(creds) }),
+  logout: () => request<void>('/api/auth/logout', { method: 'POST' }),
+  me: () => request<User>('/api/auth/me'),
+  getAdminConfig: () => request<AdminConfig>('/api/admin/config'),
+  updateAdminConfig: (cfg: AdminConfig) =>
+    request<AdminConfig>('/api/admin/config', { method: 'PUT', body: JSON.stringify(cfg) }),
 }

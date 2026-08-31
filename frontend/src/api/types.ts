@@ -40,3 +40,27 @@ export interface DirectoriesResponse {
 export interface ApiError {
   error: { code: string; message: string }
 }
+
+export interface User {
+  id: string
+  username: string
+  isAdmin: boolean
+}
+
+export interface AuthStatus {
+  needsSetup: boolean
+  allowRegistration: boolean
+  displayName: string
+  version: string
+}
+
+export interface Credentials {
+  username: string
+  password: string
+}
+
+export interface AdminConfig {
+  displayName: string
+  allowRegistration: boolean
+  allowLocalHost: boolean
+}

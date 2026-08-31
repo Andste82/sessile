@@ -1,11 +1,45 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useSessionsStore } from '@/stores/sessions'
+import { useAuthStore } from '@/stores/auth'
 import { useUiStore, minFontSize, maxFontSize, defaultFontSize } from '@/stores/ui'
 import { isApplePlatform } from '@/utils/clipboard'
+import { api } from '@/api/client'
+import type { AdminConfig } from '@/api/types'
 
 const store = useSessionsStore()
+const auth = useAuthStore()
 const ui = useUiStore()
+
+const adminConfig = ref<AdminConfig | null>(null)
+const adminLoadError = ref<string | null>(null)
+const adminSaving = ref(false)
+const adminSaveError = ref<string | null>(null)
+const adminSaved = ref(false)
+
+async function loadAdminConfig() {
+  if (!auth.user?.isAdmin) return
+  try {
+    adminConfig.value = await api.getAdminConfig()
+  } catch (e) {
+    adminLoadError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function saveAdminConfig() {
+  if (!adminConfig.value || adminSaving.value) return
+  adminSaving.value = true
+  adminSaveError.value = null
+  adminSaved.value = false
+  try {
+    adminConfig.value = await api.updateAdminConfig(adminConfig.value)
+    adminSaved.value = true
+  } catch (e) {
+    adminSaveError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    adminSaving.value = false
+  }
+}
 
 // The help below names the keys this browser actually listens for, so it is
 // worth knowing which platform we are on: the copy and paste chords are Cmd on
@@ -42,6 +76,7 @@ const kbd =
 onMounted(() => {
   // Deliberately not awaited: the page renders while the config loads.
   if (!store.config) void store.fetchConfig()
+  void loadAdminConfig()
 })
 
 // The store clamps, so the buttons can step past either end without checking —
@@ -203,9 +238,76 @@ const stepBtn =
       </section>
 
       <p class="mt-4 text-xs text-slate-500">
-        Server configuration is read-only and set via server flags /
-        environment variables.
+        The section above is read-only and set via server flags / environment
+        variables{{ auth.user?.isAdmin ? ' — the settings below are the exception.' : '.' }}
       </p>
+
+      <section
+        v-if="auth.user?.isAdmin"
+        class="mt-4 rounded-lg border border-slate-700 bg-slate-800/50 p-6"
+      >
+        <h2 class="mb-4 text-sm font-medium uppercase tracking-wide text-slate-400">
+          Admin
+        </h2>
+
+        <form v-if="adminConfig" class="flex flex-col gap-4" @submit.prevent="saveAdminConfig">
+          <label class="flex flex-col gap-1 text-sm">
+            <span class="text-slate-400">Display name</span>
+            <input
+              v-model="adminConfig.displayName"
+              type="text"
+              maxlength="64"
+              placeholder="sessile"
+              class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
+            />
+            <span class="text-xs text-slate-500">Shown on the login page. Empty uses the generic title.</span>
+          </label>
+
+          <label class="flex cursor-pointer items-start gap-3">
+            <input
+              v-model="adminConfig.allowRegistration"
+              type="checkbox"
+              class="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-emerald-400"
+            />
+            <span>
+              <span class="text-sm text-slate-200">Allow self-service registration</span>
+              <span class="mt-1 block text-xs text-slate-500">
+                Lets anyone create their own account from the login page. Off by default.
+              </span>
+            </span>
+          </label>
+
+          <label class="flex cursor-pointer items-start gap-3">
+            <input
+              v-model="adminConfig.allowLocalHost"
+              type="checkbox"
+              class="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-emerald-400"
+            />
+            <span>
+              <span class="text-sm text-slate-200">Allow sessions on this host</span>
+              <span class="mt-1 block text-xs text-slate-500">
+                Lets any logged-in user open a local shell on the server itself, in addition to
+                their own SSH hosts. Off by default.
+              </span>
+            </span>
+          </label>
+
+          <p v-if="adminSaveError" class="text-sm text-rose-400">{{ adminSaveError }}</p>
+
+          <div class="mt-1 flex items-center gap-3">
+            <button
+              type="submit"
+              :disabled="adminSaving"
+              class="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {{ adminSaving ? 'Saving…' : 'Save' }}
+            </button>
+            <span v-if="adminSaved" class="text-sm text-slate-500">Saved.</span>
+          </div>
+        </form>
+        <p v-else-if="adminLoadError" class="text-sm text-rose-400">{{ adminLoadError }}</p>
+        <p v-else class="text-sm text-slate-500">Loading…</p>
+      </section>
     </main>
   </div>
 </template>
