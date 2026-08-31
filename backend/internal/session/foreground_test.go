@@ -51,11 +51,11 @@ func TestCommandLabel(t *testing.T) {
 // started with as its foreground program.
 func TestSampleForegroundReportsARealSession(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _ = mgr.Delete(info.ID) })
+	t.Cleanup(func() { _ = mgr.Delete(info.ID, "test-user") })
 
 	waitForForeground(t, mgr, info.ID, func(i Info) bool { return i.Command == "sh" })
 }
@@ -72,11 +72,11 @@ func TestSampleForegroundNamesTheProgramInsideAScript(t *testing.T) {
 		t.Fatalf("write script: %v", err)
 	}
 
-	info, err := mgr.Create("probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _ = mgr.Delete(info.ID) })
+	t.Cleanup(func() { _ = mgr.Delete(info.ID, "test-user") })
 
 	if err := mgr.WriteInput(info.ID, []byte("/bin/sh "+script+"\n")); err != nil {
 		t.Fatalf("write: %v", err)
@@ -94,7 +94,7 @@ func waitForForeground(t *testing.T, m *Manager, id string, ok func(Info) bool) 
 	var last Info
 	for {
 		m.sampleForeground()
-		got, err := m.Get(id)
+		got, err := m.Get(id, "test-user")
 		if err != nil {
 			t.Fatalf("get: %v", err)
 		}
@@ -112,7 +112,7 @@ func waitForForeground(t *testing.T, m *Manager, id string, ok func(Info) bool) 
 // A stopped session must not keep advertising the program it was running.
 func TestSampleForegroundClearsAStoppedSession(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestSampleForegroundClearsAStoppedSession(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		mgr.sampleForeground()
-		got, err := mgr.Get(info.ID)
+		got, err := mgr.Get(info.ID, "test-user")
 		if err != nil {
 			t.Fatalf("get: %v", err)
 		}

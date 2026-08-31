@@ -9,8 +9,20 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Andste82/sessile/backend/internal/sshpty"
 	"github.com/Andste82/sessile/backend/internal/terminal"
 )
+
+// HostResolver resolves a user's host id to the SSH target to connect with,
+// for Restart (§12b M17) — a fresh Create already has the target handed to
+// it by the caller, but a restart has only the session's stored user/host
+// ids, and SSH credentials are never persisted to sqlite. Implemented in
+// internal/api over the hosts.Registry (§14: scoped to userID, never a
+// client-supplied id — same discipline as everywhere else this interface's
+// implementation touches a filesystem path).
+type HostResolver interface {
+	Resolve(userID, hostID string) (target sshpty.Target, displayName string, err error)
+}
 
 // activityThrottle bounds how often LastActivity is written to the store (§4.6).
 const activityThrottle = 30 * time.Second
@@ -29,6 +41,10 @@ type Manager struct {
 	log        *slog.Logger
 	store      Store            // may be nil (in-memory only)
 	scrollback *ScrollbackStore // nil when dataDir is ""
+	// hostResolver is nil until SetHostResolver is called (main.go, after
+	// construction — a setter rather than a NewManager parameter so the many
+	// tests that never create an SSH session don't all need to pass one).
+	hostResolver HostResolver
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -39,9 +55,11 @@ type Manager struct {
 	shuttingDown bool
 
 	// subMu guards subs and is never held while taking another lock, so
-	// publish is safe to call from anywhere — see Subscribe.
+	// publish is safe to call from anywhere — see Subscribe. Maps each
+	// subscriber to the user id it was subscribed for, so publish can scope
+	// delivery to that user's own sessions (§10).
 	subMu sync.Mutex
-	subs  map[Subscriber]struct{}
+	subs  map[Subscriber]string
 
 	stop     chan struct{} // closed by Shutdown to end the background loops
 	stopOnce sync.Once
@@ -60,7 +78,7 @@ func NewManager(root string, shells []string, bufferSize int, dataDir string, st
 		store:      store,
 		sessions:   make(map[string]*Session),
 		restarting: make(map[string]struct{}),
-		subs:       make(map[Subscriber]struct{}),
+		subs:       make(map[Subscriber]string),
 		stop:       make(chan struct{}),
 	}
 	if dataDir != "" {
@@ -73,11 +91,18 @@ func NewManager(root string, shells []string, bufferSize int, dataDir string, st
 	return m
 }
 
-// Create validates inputs, starts a PTY-backed shell, begins its read/broadcast
-// goroutine, persists metadata and returns a snapshot.
-func (m *Manager) Create(name, dir, shell string) (Info, error) {
+// SetHostResolver wires the resolver Restart uses for an SSH session. Called
+// once at startup, before the server accepts requests — unsynchronized reads
+// of m.hostResolver elsewhere are safe under that happens-before.
+func (m *Manager) SetHostResolver(r HostResolver) {
+	m.hostResolver = r
+}
+
+// CreateLocal validates inputs, starts a local PTY-backed shell, begins its
+// read/broadcast goroutine, persists metadata and returns a snapshot.
+func (m *Manager) CreateLocal(userID, name, dir, shell string) (Info, error) {
 	now := timeNow()
-	s, err := m.spawn(uuid.NewString(), name, dir, shell, now)
+	s, err := m.spawnLocal(uuid.NewString(), userID, name, dir, shell, now)
 	if err != nil {
 		return Info{}, err
 	}
@@ -90,6 +115,29 @@ func (m *Manager) Create(name, dir, shell string) (Info, error) {
 	return info, nil
 }
 
+// CreateSSH connects to target and starts a remote shell/command under it.
+// hostDisplayName is snapshotted onto the session so it keeps showing a
+// sensible name even if the host is later renamed or deleted (§4.2).
+//
+// On a host-key rejection (*sshpty.ErrHostKeyUnknown / *ErrHostKeyChanged,
+// §4.5.1) this returns that error unwrapped and creates no session and no
+// store row — a clean no-op the caller retries after the user trusts the
+// key (§6).
+func (m *Manager) CreateSSH(userID, name, hostID, hostDisplayName string, target sshpty.Target) (Info, error) {
+	now := timeNow()
+	s, err := m.spawnSSH(uuid.NewString(), userID, name, hostID, hostDisplayName, target, now)
+	if err != nil {
+		return Info{}, err
+	}
+	info, err := m.register(s)
+	if err != nil {
+		return Info{}, err
+	}
+	m.log.Info("session created", "id", s.ID, "name", name, "target", "ssh", "hostId", hostID)
+	m.publishSession(info)
+	return info, nil
+}
+
 // Restart gives a stopped session a new shell under the same id, in the same
 // directory, with the same shell — and with its scrollback and command history
 // carried over (§8). The processes that were running when it stopped are gone;
@@ -98,13 +146,13 @@ func (m *Manager) Create(name, dir, shell string) (Info, error) {
 // Reusing the id is the whole point: it is what makes the persisted scrollback
 // file and the shell's HISTFILE line up again, and it keeps the row, the open
 // browser tab and any bookmarked URL pointing at the same session.
-func (m *Manager) Restart(id string) (Info, error) {
+func (m *Manager) Restart(id, userID string) (Info, error) {
 	if err := m.claimRestart(id); err != nil {
 		return Info{}, err
 	}
 	defer m.releaseRestart(id)
 
-	meta, err := m.restartable(id)
+	meta, err := m.restartable(id, userID)
 	if err != nil {
 		return Info{}, err
 	}
@@ -116,7 +164,27 @@ func (m *Manager) Restart(id string) (Info, error) {
 	// second restart can replace it, and Delete refuses while it is held.
 	prev := m.live(id)
 
-	s, err := m.spawn(meta.ID, meta.Name, meta.Directory, meta.Shell, meta.Created)
+	var s *Session
+	switch meta.TargetType {
+	case TargetSSH:
+		// SSH credentials are never persisted to sqlite (§8), so a restart
+		// re-resolves the *current* host config — including its current
+		// pinned host-key fingerprint — rather than reusing anything saved
+		// at create time. An edited host takes effect on the next restart
+		// (documented, intentional); a deleted one fails via ErrHostNotFound
+		// from the resolver; a changed remote host key surfaces the same
+		// *sshpty.ErrHostKeyChanged a fresh connect would.
+		if m.hostResolver == nil {
+			return Info{}, ErrHostNotFound
+		}
+		target, displayName, rerr := m.hostResolver.Resolve(meta.UserID, meta.HostID)
+		if rerr != nil {
+			return Info{}, rerr
+		}
+		s, err = m.spawnSSH(meta.ID, meta.UserID, meta.Name, meta.HostID, displayName, target, meta.Created)
+	default: // TargetLocal, and pre-M17 rows the migration defaulted to it
+		s, err = m.spawnLocal(meta.ID, meta.UserID, meta.Name, meta.Directory, meta.Shell, meta.Created)
+	}
 	if err != nil {
 		return Info{}, err
 	}
@@ -211,14 +279,19 @@ func (m *Manager) live(id string) *Session {
 }
 
 // restartable returns the metadata to restart id with, or an error explaining
-// why it cannot be restarted.
-func (m *Manager) restartable(id string) (Info, error) {
+// why it cannot be restarted. A session owned by someone else is reported
+// exactly like one that doesn't exist (§4.5, §10) — deliberately, so probing
+// an id you don't own learns nothing.
+func (m *Manager) restartable(id, userID string) (Info, error) {
 	m.mu.RLock()
 	s, ok := m.sessions[id]
 	m.mu.RUnlock()
 
 	if ok {
 		info := s.Info()
+		if info.UserID != userID {
+			return Info{}, ErrNotFound
+		}
 		if info.Status == StatusRunning {
 			return Info{}, ErrAlreadyRunning
 		}
@@ -231,7 +304,7 @@ func (m *Manager) restartable(id string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	if !found {
+	if !found || info.UserID != userID {
 		return Info{}, ErrNotFound
 	}
 	if info.Status == StatusRunning {
@@ -242,12 +315,13 @@ func (m *Manager) restartable(id string) (Info, error) {
 	return info, nil
 }
 
-// spawn validates the inputs, starts a PTY-backed shell and returns the
-// resulting Session without registering it. Shared by Create and Restart so a
-// restart runs through exactly the same allowlist and sandbox checks (§4.5) —
-// a directory that has since been deleted, or a shell dropped from the
-// allowlist, must fail here rather than at PTY start.
-func (m *Manager) spawn(id, name, dir, shell string, created time.Time) (*Session, error) {
+// spawnLocal validates the inputs, starts a local PTY-backed shell and
+// returns the resulting Session without registering it. Shared by
+// CreateLocal and Restart so a restart runs through exactly the same
+// allowlist and sandbox checks (§4.5) — a directory that has since been
+// deleted, or a shell dropped from the allowlist, must fail here rather
+// than at PTY start.
+func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.Time) (*Session, error) {
 	if l := len(name); l < 1 || l > 64 {
 		return nil, ErrInvalidName
 	}
@@ -277,6 +351,8 @@ func (m *Manager) spawn(id, name, dir, shell string, created time.Time) (*Sessio
 	return &Session{
 		ID:           id,
 		Name:         name,
+		UserID:       userID,
+		TargetType:   TargetLocal,
 		Directory:    dir,
 		Shell:        shell,
 		Status:       StatusRunning,
@@ -290,6 +366,46 @@ func (m *Manager) spawn(id, name, dir, shell string, created time.Time) (*Sessio
 		clients:      make(map[Client]clientGeom),
 		lastPersist:  now,
 		exited:       make(chan struct{}),
+	}, nil
+}
+
+// spawnSSH validates the inputs, connects to target and returns the
+// resulting Session without registering it. Shared by CreateSSH and Restart,
+// same reason as spawnLocal — a name that fails validation, or a host key
+// that no longer matches, must fail here rather than partway through.
+//
+// hostKeyErr (an *sshpty.ErrHostKeyUnknown or *ErrHostKeyChanged) is
+// returned unwrapped so the caller can map it to the API's distinct
+// host-key responses (§4.5.1, §6) instead of a generic connection failure.
+func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, target sshpty.Target, created time.Time) (*Session, error) {
+	if l := len(name); l < 1 || l > 64 {
+		return nil, ErrInvalidName
+	}
+
+	pty, err := sshpty.Start(target, defaultRows, defaultCols)
+	if err != nil {
+		return nil, err
+	}
+
+	now := timeNow()
+	return &Session{
+		ID:              id,
+		Name:            name,
+		UserID:          userID,
+		TargetType:      TargetSSH,
+		HostID:          hostID,
+		HostDisplayName: hostDisplayName,
+		Status:          StatusRunning,
+		PID:             pty.Pid(),
+		Created:         created,
+		LastActivity:    now,
+		Rows:            defaultRows,
+		Cols:            defaultCols,
+		backend:         pty,
+		buffer:          NewRingBuffer(m.bufferSize),
+		clients:         make(map[Client]clientGeom),
+		lastPersist:     now,
+		exited:          make(chan struct{}),
 	}, nil
 }
 
@@ -462,35 +578,46 @@ func (m *Manager) maybePersistActivity(s *Session) {
 }
 
 // Get returns a session snapshot from memory, falling back to the store for
-// sessions that only survive as stopped rows after a restart.
-func (m *Manager) Get(id string) (Info, error) {
+// sessions that only survive as stopped rows after a restart. A session
+// owned by someone else is reported exactly like one that doesn't exist
+// (§4.5, §10).
+func (m *Manager) Get(id, userID string) (Info, error) {
 	m.mu.RLock()
 	s, ok := m.sessions[id]
 	m.mu.RUnlock()
 	if ok {
-		return s.Info(), nil
+		info := s.Info()
+		if info.UserID != userID {
+			return Info{}, ErrNotFound
+		}
+		return info, nil
 	}
 	if m.store != nil {
 		info, found, err := m.store.Get(id)
 		if err != nil {
 			return Info{}, err
 		}
-		if found {
+		if found && info.UserID == userID {
 			return info, nil
 		}
 	}
 	return Info{}, ErrNotFound
 }
 
-// List returns all sessions: live ones from memory merged with stopped rows
-// from the store, newest first.
-func (m *Manager) List() ([]Info, error) {
+// List returns userID's sessions: live ones from memory merged with stopped
+// rows from the store, newest first. Strictly owner-scoped — an admin's
+// list is exactly as scoped as anyone else's (§10, decision recorded in
+// PROJECT_PLAN.md §12b M17).
+func (m *Manager) List(userID string) ([]Info, error) {
 	m.mu.RLock()
 	infos := make([]Info, 0, len(m.sessions))
 	seen := make(map[string]struct{}, len(m.sessions))
 	for _, s := range m.sessions {
-		infos = append(infos, s.Info())
-		seen[s.ID] = struct{}{}
+		info := s.Info()
+		seen[info.ID] = struct{}{}
+		if info.UserID == userID {
+			infos = append(infos, info)
+		}
 	}
 	m.mu.RUnlock()
 
@@ -500,7 +627,7 @@ func (m *Manager) List() ([]Info, error) {
 			return nil, err
 		}
 		for _, si := range stopped {
-			if _, ok := seen[si.ID]; !ok {
+			if _, ok := seen[si.ID]; !ok && si.UserID == userID {
 				infos = append(infos, si)
 			}
 		}
@@ -524,7 +651,7 @@ func (m *Manager) List() ([]Info, error) {
 //
 // The check shares the critical section that publishes and unpublishes
 // sessions, so a delete either sees the reservation or runs wholly outside it.
-func (m *Manager) Delete(id string) error {
+func (m *Manager) Delete(id, userID string) error {
 	m.mu.Lock()
 	if _, restarting := m.restarting[id]; restarting {
 		m.mu.Unlock()
@@ -532,6 +659,10 @@ func (m *Manager) Delete(id string) error {
 	}
 	s, ok := m.sessions[id]
 	if ok {
+		if s.Info().UserID != userID {
+			m.mu.Unlock()
+			return ErrNotFound
+		}
 		delete(m.sessions, id)
 	}
 	m.mu.Unlock()
@@ -539,7 +670,10 @@ func (m *Manager) Delete(id string) error {
 	if !ok {
 		// Might be a stopped session that only exists in the store.
 		if m.store != nil {
-			if _, found, err := m.store.Get(id); err == nil && found {
+			if info, found, err := m.store.Get(id); err == nil && found {
+				if info.UserID != userID {
+					return ErrNotFound
+				}
 				if err := m.store.Delete(id); err != nil {
 					return err
 				}
@@ -566,7 +700,7 @@ func (m *Manager) Delete(id string) error {
 	}
 	m.discardState(id)
 	m.log.Info("session deleted", "id", id)
-	m.publishGone(id)
+	m.publishGone(id, userID)
 	return nil
 }
 
@@ -617,7 +751,7 @@ func (m *Manager) discardState(id string) {
 }
 
 // Rename updates a session's name in memory and the store.
-func (m *Manager) Rename(id, name string) (Info, error) {
+func (m *Manager) Rename(id, userID, name string) (Info, error) {
 	if l := len(name); l < 1 || l > 64 {
 		return Info{}, ErrInvalidName
 	}
@@ -628,6 +762,10 @@ func (m *Manager) Rename(id, name string) (Info, error) {
 		return Info{}, ErrNotFound
 	}
 	s.mu.Lock()
+	if s.UserID != userID {
+		s.mu.Unlock()
+		return Info{}, ErrNotFound
+	}
 	s.Name = name
 	info := s.infoLocked()
 	s.mu.Unlock()
@@ -641,14 +779,21 @@ func (m *Manager) Rename(id, name string) (Info, error) {
 }
 
 // Attach registers a client on a running session (sends attached + replay).
-func (m *Manager) Attach(id string, c Client) (Info, error) {
+// A session owned by someone else closes exactly like one that doesn't
+// exist (ws.Handler's existing closeSessionUnavailable path, §5) —
+// deliberately indistinguishable, same as Get/Restart.
+func (m *Manager) Attach(id, userID string, c Client) (Info, error) {
 	m.mu.RLock()
 	s, ok := m.sessions[id]
 	m.mu.RUnlock()
 	if !ok {
 		return Info{}, ErrNotFound
 	}
-	if s.Info().Status != StatusRunning {
+	info := s.Info()
+	if info.UserID != userID {
+		return Info{}, ErrNotFound
+	}
+	if info.Status != StatusRunning {
 		return Info{}, ErrStopped
 	}
 	s.attach(c)
@@ -756,7 +901,7 @@ func (m *Manager) closeSubscribers() {
 	for sub := range m.subs {
 		subs = append(subs, sub)
 	}
-	m.subs = make(map[Subscriber]struct{})
+	m.subs = make(map[Subscriber]string)
 	m.subMu.Unlock()
 
 	for _, sub := range subs {

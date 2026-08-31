@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Andste82/sessile/backend/internal/sshpty"
 )
 
 // AuthMethod selects which of Host's credential fields is used to connect.
@@ -63,6 +65,25 @@ type Host struct {
 	TrustedHostKeyFingerprint string `yaml:"trustedHostKeyFingerprint,omitempty"`
 
 	Created time.Time `yaml:"created"`
+}
+
+// SSHTarget builds the connection target sshpty.Start (and
+// session.CreateSSH/Restart) need from a stored host — the one place a
+// Host's plaintext credentials turn into a live connection attempt.
+// Centralized here rather than duplicated in internal/api and cmd/server's
+// HostResolver, which both need it.
+func (h Host) SSHTarget() sshpty.Target {
+	return sshpty.Target{
+		Address:                   h.Address,
+		Username:                  h.Username,
+		AuthMethod:                string(h.AuthMethod),
+		Password:                  h.Password,
+		PrivateKeyPEM:             h.PrivateKey,
+		PrivateKeyPassphrase:      h.PrivateKeyPassphrase,
+		TerminalType:              h.TerminalType,
+		CustomCommand:             h.CustomCommand,
+		TrustedHostKeyFingerprint: h.TrustedHostKeyFingerprint,
+	}
 }
 
 // Store guards one user's hosts.yml: an in-memory cache kept in sync with an

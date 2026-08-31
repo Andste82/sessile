@@ -73,10 +73,10 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func TestSubscriberSeesTheSessionLifecycle(t *testing.T) {
 	mgr, _, _ := testManager(t)
 	sub := newFakeSubscriber()
-	unsub := mgr.Subscribe(sub)
+	unsub := mgr.Subscribe(sub, "test-user")
 	defer unsub()
 
-	info, err := mgr.Create("first", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "first", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestSubscriberSeesTheSessionLifecycle(t *testing.T) {
 		return false
 	})
 
-	if _, err := mgr.Rename(info.ID, "second"); err != nil {
+	if _, err := mgr.Rename(info.ID, "test-user", "second"); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	waitFor(t, "the rename message", func() bool {
@@ -101,7 +101,7 @@ func TestSubscriberSeesTheSessionLifecycle(t *testing.T) {
 		return false
 	})
 
-	if err := mgr.Delete(info.ID); err != nil {
+	if err := mgr.Delete(info.ID, "test-user"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	waitFor(t, "the delete message", func() bool {
@@ -120,11 +120,11 @@ func TestPublishDropsAndClosesASlowSubscriber(t *testing.T) {
 	mgr, _, _ := testManager(t)
 	slow := newFakeSubscriber()
 	healthy := newFakeSubscriber()
-	defer mgr.Subscribe(slow)()
-	defer mgr.Subscribe(healthy)()
+	defer mgr.Subscribe(slow, "test-user")()
+	defer mgr.Subscribe(healthy, "test-user")()
 
 	slow.setFull(true)
-	mgr.publishGone("some-id")
+	mgr.publishGone("some-id", "test-user")
 
 	select {
 	case <-slow.closedCh:
@@ -138,7 +138,7 @@ func TestPublishDropsAndClosesASlowSubscriber(t *testing.T) {
 	// It must also be gone from the set, not merely closed: a second publish
 	// would otherwise keep finding it.
 	slow.setFull(false)
-	mgr.publishGone("another-id")
+	mgr.publishGone("another-id", "test-user")
 	if got := len(slow.received()); got != 0 {
 		t.Errorf("dropped subscriber still received %d messages", got)
 	}
@@ -153,12 +153,12 @@ func TestPublishDropsAndClosesASlowSubscriber(t *testing.T) {
 func TestUnsubscribeStopsDeliveryAndIsIdempotent(t *testing.T) {
 	mgr, _, _ := testManager(t)
 	sub := newFakeSubscriber()
-	unsub := mgr.Subscribe(sub)
+	unsub := mgr.Subscribe(sub, "test-user")
 
-	mgr.publishGone("before")
+	mgr.publishGone("before", "test-user")
 	unsub()
 	unsub()
-	mgr.publishGone("after")
+	mgr.publishGone("after", "test-user")
 
 	msgs := sub.received()
 	if len(msgs) != 1 {
@@ -173,22 +173,22 @@ func TestUnsubscribeStopsDeliveryAndIsIdempotent(t *testing.T) {
 // session would produce a message every second whether or not anything moved.
 func TestSamplerPublishesOnlyOnChange(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _ = mgr.Delete(info.ID) })
+	t.Cleanup(func() { _ = mgr.Delete(info.ID, "test-user") })
 
 	// Let the session settle before subscribing, so the transitions of startup
 	// are not counted.
 	waitFor(t, "the session to settle", func() bool {
 		mgr.sampleForeground()
-		got, err := mgr.Get(info.ID)
+		got, err := mgr.Get(info.ID, "test-user")
 		return err == nil && got.Command == "sh"
 	})
 
 	sub := newFakeSubscriber()
-	defer mgr.Subscribe(sub)()
+	defer mgr.Subscribe(sub, "test-user")()
 
 	for range 5 {
 		mgr.sampleForeground()
@@ -211,7 +211,7 @@ func TestDeletedSessionIsNotRepublishedByItsLateReadLoop(t *testing.T) {
 	}
 	mgr, _, _ := testManager(t)
 
-	info, err := mgr.Create("wedged", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "wedged", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -219,9 +219,9 @@ func TestDeletedSessionIsNotRepublishedByItsLateReadLoop(t *testing.T) {
 	sess := mgr.live(info.ID) // captured before Delete removes it from the map
 
 	sub := newFakeSubscriber()
-	defer mgr.Subscribe(sub)()
+	defer mgr.Subscribe(sub, "test-user")()
 
-	if err := mgr.Delete(info.ID); err != nil {
+	if err := mgr.Delete(info.ID, "test-user"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	waitFor(t, "the sessionGone message", func() bool {

@@ -14,10 +14,10 @@ type Subscriber interface {
 	Close(code int, reason string)
 }
 
-// Subscribe registers sub for session state changes and returns the function
-// that unregisters it, which the caller must always call — a subscriber that
-// goes away without unsubscribing would be retried on every publish until its
-// queue filled up.
+// Subscribe registers sub for session state changes owned by userID and
+// returns the function that unregisters it, which the caller must always
+// call — a subscriber that goes away without unsubscribing would be retried
+// on every publish until its queue filled up.
 //
 // Subscribe deliberately does not take the snapshot. The caller registers
 // first and reads the list second (§5.1), which is what makes the sequence
@@ -30,12 +30,12 @@ type Subscriber interface {
 //
 // subMu is therefore never held while acquiring any other lock, which is why
 // publish is safe to call from anywhere, including from under m.mu.
-func (m *Manager) Subscribe(sub Subscriber) func() {
+func (m *Manager) Subscribe(sub Subscriber, userID string) func() {
 	m.subMu.Lock()
 	if m.subs == nil {
-		m.subs = make(map[Subscriber]struct{})
+		m.subs = make(map[Subscriber]string)
 	}
-	m.subs[sub] = struct{}{}
+	m.subs[sub] = userID
 	m.subMu.Unlock()
 
 	var once sync.Once
@@ -48,27 +48,33 @@ func (m *Manager) Subscribe(sub Subscriber) func() {
 	}
 }
 
-// publishSession tells every subscriber that one session changed.
+// publishSession tells every subscriber that owns i one session changed.
+// Strictly owner-scoped — no subscriber ever sees another user's session,
+// admins included (§10, §12b M17).
 func (m *Manager) publishSession(i Info) {
-	m.publish(SessionMsg{Type: "session", Session: ToJSON(i)})
+	m.publish(i.UserID, SessionMsg{Type: "session", Session: ToJSON(i)})
 }
 
-// publishGone tells every subscriber that a session no longer exists.
-func (m *Manager) publishGone(id string) {
-	m.publish(SessionGoneMsg{Type: "sessionGone", SessionID: id})
+// publishGone tells userID's subscribers that session id no longer exists.
+func (m *Manager) publishGone(id, userID string) {
+	m.publish(userID, SessionGoneMsg{Type: "sessionGone", SessionID: id})
 }
 
-// publish fans a message out. A subscriber whose queue is full is a slow
-// consumer and is dropped and closed, exactly as an attached terminal client
-// would be (§4.4) — a dashboard that cannot keep up must not be able to slow
-// down the sampler that feeds every other one.
+// publish fans a message out to subscribers owned by userID. A subscriber
+// whose queue is full is a slow consumer and is dropped and closed, exactly
+// as an attached terminal client would be (§4.4) — a dashboard that cannot
+// keep up must not be able to slow down the sampler that feeds every other
+// one.
 //
 // Close runs on its own goroutine because it can block on the write pump, and
 // this is called from the foreground sampler's single loop.
-func (m *Manager) publish(v any) {
+func (m *Manager) publish(userID string, v any) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()
-	for sub := range m.subs {
+	for sub, subUserID := range m.subs {
+		if subUserID != userID {
+			continue
+		}
 		if !sub.SendControl(v) {
 			delete(m.subs, sub)
 			go sub.Close(closeSlowConsumer, "slow consumer")

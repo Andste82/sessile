@@ -36,8 +36,8 @@ func eventsServer(t *testing.T) (*httptest.Server, string, *http.Cookie) {
 	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
+	users, webSessions, serverCfg, cookie, _ := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 
 	ts := httptest.NewServer(srv.Router(nil))
 	t.Cleanup(func() {

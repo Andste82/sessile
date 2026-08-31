@@ -14,6 +14,14 @@ const (
 	StatusStopped Status = "stopped"
 )
 
+// TargetType selects what a Session's Backend actually is.
+type TargetType string
+
+const (
+	TargetLocal TargetType = "local"
+	TargetSSH   TargetType = "ssh"
+)
+
 // Default terminal geometry until the first client resize arrives.
 const (
 	defaultRows uint16 = 24
@@ -29,10 +37,18 @@ type Session struct {
 	// buffer-replay / live-stream ordering is race-free (§3, §4.4).
 	mu sync.Mutex
 
-	ID           string
-	Name         string
-	Directory    string // relative to root, as supplied by the user
-	Shell        string
+	ID     string
+	Name   string
+	UserID string // owner — every lookup on Manager is scoped to this (§4.5, §10)
+
+	TargetType TargetType // "local" | "ssh"
+	Directory  string     // relative to root, as supplied by the user (local only)
+	Shell      string     // local only
+	HostID     string     // the owning user's host id (ssh only)
+	// HostDisplayName is the host's name, snapshotted at creation time (ssh
+	// only) — survives the host being renamed or deleted after the fact.
+	HostDisplayName string
+
 	Status       Status
 	PID          int
 	Created      time.Time
@@ -40,7 +56,8 @@ type Session struct {
 	Rows, Cols   uint16
 
 	// derived foreground, refreshed by the manager's sampler (§4.7). Both are
-	// empty for a session that is not running.
+	// empty for a session that is not running, and always empty for an SSH
+	// session — there is no way to introspect a remote process's /proc.
 	fgCommand string // foreground program name
 	fgCwd     string // its working directory, relative to root
 
@@ -64,16 +81,20 @@ type clientGeom struct {
 // Info is a snapshot of a session's public fields, safe to hand to the API and
 // storage layers without exposing internal pointers.
 type Info struct {
-	ID           string
-	Name         string
-	Directory    string
-	Shell        string
-	Status       Status
-	PID          int
-	Created      time.Time
-	LastActivity time.Time
-	Rows, Cols   uint16
-	ClientCount  int
+	ID              string
+	Name            string
+	UserID          string
+	TargetType      TargetType
+	Directory       string
+	Shell           string
+	HostID          string
+	HostDisplayName string
+	Status          Status
+	PID             int
+	Created         time.Time
+	LastActivity    time.Time
+	Rows, Cols      uint16
+	ClientCount     int
 
 	// Derived, never persisted (§4.7). Empty for a stopped session, and where
 	// they cannot be determined.
@@ -90,19 +111,23 @@ func (s *Session) Info() Info {
 
 func (s *Session) infoLocked() Info {
 	return Info{
-		ID:           s.ID,
-		Name:         s.Name,
-		Directory:    s.Directory,
-		Shell:        s.Shell,
-		Status:       s.Status,
-		PID:          s.PID,
-		Created:      s.Created,
-		LastActivity: s.LastActivity,
-		Rows:         s.Rows,
-		Cols:         s.Cols,
-		ClientCount:  len(s.clients),
-		Command:      s.fgCommand,
-		Cwd:          s.fgCwd,
+		ID:              s.ID,
+		Name:            s.Name,
+		UserID:          s.UserID,
+		TargetType:      s.TargetType,
+		Directory:       s.Directory,
+		Shell:           s.Shell,
+		HostID:          s.HostID,
+		HostDisplayName: s.HostDisplayName,
+		Status:          s.Status,
+		PID:             s.PID,
+		Created:         s.Created,
+		LastActivity:    s.LastActivity,
+		Rows:            s.Rows,
+		Cols:            s.Cols,
+		ClientCount:     len(s.clients),
+		Command:         s.fgCommand,
+		Cwd:             s.fgCwd,
 	}
 }
 

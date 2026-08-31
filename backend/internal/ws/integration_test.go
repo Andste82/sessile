@@ -20,6 +20,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/api"
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/ws"
 )
@@ -40,8 +41,8 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	wsHandler := ws.NewHandler(mgr, cfg, log)
-	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, wsHandler, log, root, nil, users, webSessions, nil)
+	users, webSessions, serverCfg, cookie, _ := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, wsHandler, log, root, serverCfg, users, webSessions, nil)
 
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
@@ -94,8 +95,8 @@ func TestMultiClientMirroring(t *testing.T) {
 	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 512 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
+	users, webSessions, serverCfg, cookie, _ := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -142,8 +143,8 @@ func TestAttachStoppedSessionRejected(t *testing.T) {
 	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
+	users, webSessions, serverCfg, cookie, userID := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -156,14 +157,14 @@ func TestAttachStoppedSessionRejected(t *testing.T) {
 	writeInput(t, c1, "exit\n")
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		info, err := mgr.Get(id)
+		info, err := mgr.Get(id, userID)
 		if err == nil && info.Status == session.StatusStopped {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	_ = c1.Close()
-	if info, _ := mgr.Get(id); info.Status != session.StatusStopped {
+	if info, _ := mgr.Get(id, userID); info.Status != session.StatusStopped {
 		t.Fatalf("session did not stop; status=%s", info.Status)
 	}
 
@@ -195,8 +196,8 @@ func TestExitFrameDeliveredAndConnectionKept(t *testing.T) {
 	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
+	users, webSessions, serverCfg, cookie, _ := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -238,8 +239,8 @@ func TestRestartReattachesEveryClient(t *testing.T) {
 	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
+	users, webSessions, serverCfg, cookie, userID := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -259,7 +260,7 @@ func TestRestartReattachesEveryClient(t *testing.T) {
 
 	// The restart one browser performs, over REST, while both still hold their
 	// sockets. Only c1 knows it happened; c2 has to be told.
-	info, err := mgr.Restart(id)
+	info, err := mgr.Restart(id, userID)
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
@@ -316,8 +317,8 @@ func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
 	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	users, webSessions, cookie := newTestAuth(t)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, nil, users, webSessions, nil)
+	users, webSessions, serverCfg, cookie, userID := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
@@ -333,13 +334,13 @@ func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
 	writeInput(t, c1, "exit\n")
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if info, err := mgr.Get(id); err == nil && info.Status == session.StatusStopped {
+		if info, err := mgr.Get(id, userID); err == nil && info.Status == session.StatusStopped {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	_ = c1.Close()
-	if info, _ := mgr.Get(id); info.Status != session.StatusStopped {
+	if info, _ := mgr.Get(id, userID); info.Status != session.StatusStopped {
 		t.Fatalf("session did not stop; status=%s", info.Status)
 	}
 
@@ -381,8 +382,12 @@ func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
 // test user, returning the cookie every request in these tests attaches:
 // every route but /api/health and /api/auth/* requires one now (§12b M10),
 // and these tests exercise the terminal/session machinery behind it, not
-// auth itself.
-func newTestAuth(t *testing.T) (*auth.UserStore, *auth.SessionStore, *http.Cookie) {
+// auth itself. The returned userID is what a direct (non-HTTP) call on the
+// Manager needs — sessions created through the cookie above are owned by
+// this same id (§4.5, §10). The returned *serverconfig.Store has
+// allowLocalHost on — these tests create local-shell sessions, which is
+// gated behind it as of §12b M17.
+func newTestAuth(t *testing.T) (*auth.UserStore, *auth.SessionStore, *serverconfig.Store, *http.Cookie, string) {
 	t.Helper()
 	users, err := auth.OpenUsers(filepath.Join(t.TempDir(), "users.yml"))
 	if err != nil {
@@ -394,7 +399,17 @@ func newTestAuth(t *testing.T) (*auth.UserStore, *auth.SessionStore, *http.Cooki
 	}
 	webSessions := auth.NewSessionStore(time.Hour)
 	t.Cleanup(webSessions.Stop)
-	return users, webSessions, &http.Cookie{Name: "sessile_session", Value: webSessions.Create(user.ID)}
+	cookie := &http.Cookie{Name: "sessile_session", Value: webSessions.Create(user.ID)}
+
+	serverCfg, err := serverconfig.Open(filepath.Join(t.TempDir(), "config.yml"))
+	if err != nil {
+		t.Fatalf("open config.yml: %v", err)
+	}
+	if err := serverCfg.Set(serverconfig.Config{AllowLocalHost: true}); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	return users, webSessions, serverCfg, cookie, user.ID
 }
 
 func restartStatus(t *testing.T, baseURL, id string, cookie *http.Cookie) int {

@@ -60,9 +60,11 @@ func (h *Handler) checkOrigin(r *http.Request) bool {
 	return false
 }
 
-// Handle upgrades the request and serves the WebSocket for session id. It is
-// registered by the router which supplies the path parameter.
-func (h *Handler) Handle(w http.ResponseWriter, r *http.Request, id string) {
+// Handle upgrades the request and serves the WebSocket for session id, owned
+// by userID. Both are supplied by the router, the latter from the session
+// cookie already verified by requireAuth (§10) — never from anything in the
+// request itself.
+func (h *Handler) Handle(w http.ResponseWriter, r *http.Request, id, userID string) {
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.log.Warn("ws upgrade failed", "err", err)
@@ -72,7 +74,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request, id string) {
 	client := newClient(conn)
 	go client.writePump()
 
-	if _, err := h.mgr.Attach(id, client); err != nil {
+	if _, err := h.mgr.Attach(id, userID, client); err != nil {
 		reason := "session unavailable"
 		if errors.Is(err, session.ErrNotFound) {
 			reason = "session not found"

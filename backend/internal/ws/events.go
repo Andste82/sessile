@@ -21,7 +21,7 @@ import (
 // Client is used unchanged, so this gets the single write-pump goroutine, the
 // bounded queue, the ping/pong keep-alive and the slow-consumer policy that a
 // terminal client has.
-func (h *Handler) HandleEvents(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleEvents(w http.ResponseWriter, r *http.Request, userID string) {
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.log.Warn("ws upgrade failed", "err", err)
@@ -35,18 +35,23 @@ func (h *Handler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	// is enqueued ahead of the snapshot, and the snapshot is taken afterwards
 	// and so already contains it: the client sees one redundant update rather
 	// than silently missing one. The other order loses it.
-	unsubscribe := h.mgr.Subscribe(client)
+	//
+	// Scoped to userID throughout: the snapshot below lists only this user's
+	// sessions, and Subscribe records the same id so every later publish is
+	// filtered the same way (§10) — no subscriber ever sees another user's
+	// session, admins included.
+	unsubscribe := h.mgr.Subscribe(client, userID)
 	defer unsubscribe()
 
-	h.sendSnapshot(client)
+	h.sendSnapshot(client, userID)
 
 	h.drainPump(client)
 	client.Close(websocket.CloseNormalClosure, "")
 }
 
-// sendSnapshot primes a freshly subscribed client with the full session list.
-func (h *Handler) sendSnapshot(client *Client) {
-	infos, err := h.mgr.List()
+// sendSnapshot primes a freshly subscribed client with userID's session list.
+func (h *Handler) sendSnapshot(client *Client, userID string) {
+	infos, err := h.mgr.List(userID)
 	if err != nil {
 		h.log.Warn("event snapshot failed", "err", err)
 		// The subscription stands: updates still arrive, and the client falls

@@ -12,16 +12,22 @@ import (
 // Insert upserts a session's metadata (used on create and rename).
 func (s *Store) Insert(i session.Info) error {
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, name, directory, shell, status, created, last_activity)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO sessions (id, name, directory, shell, status, created, last_activity,
+		                       user_id, target_type, host_id, host_display_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name=excluded.name,
 		   directory=excluded.directory,
 		   shell=excluded.shell,
 		   status=excluded.status,
-		   last_activity=excluded.last_activity`,
+		   last_activity=excluded.last_activity,
+		   user_id=excluded.user_id,
+		   target_type=excluded.target_type,
+		   host_id=excluded.host_id,
+		   host_display_name=excluded.host_display_name`,
 		i.ID, i.Name, i.Directory, i.Shell, string(i.Status),
 		i.Created.UTC().Format(time.RFC3339), i.LastActivity.UTC().Format(time.RFC3339),
+		i.UserID, string(i.TargetType), i.HostID, i.HostDisplayName,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
@@ -57,11 +63,14 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
+// selectColumns lists every column scan expects, in order — shared by Get
+// and LoadStopped so the two queries can never drift apart.
+const selectColumns = `id, name, directory, shell, status, created, last_activity,
+	                       user_id, target_type, host_id, host_display_name`
+
 // Get returns a single session's persisted metadata.
 func (s *Store) Get(id string) (session.Info, bool, error) {
-	row := s.db.QueryRow(
-		`SELECT id, name, directory, shell, status, created, last_activity
-		 FROM sessions WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT `+selectColumns+` FROM sessions WHERE id=?`, id)
 	info, err := scan(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return session.Info{}, false, nil
@@ -72,11 +81,11 @@ func (s *Store) Get(id string) (session.Info, bool, error) {
 	return info, true, nil
 }
 
-// LoadStopped returns all sessions persisted with stopped status.
+// LoadStopped returns all sessions persisted with stopped status, across
+// every user — Manager.List filters to the caller's own in Go, alongside
+// the in-memory sessions it merges these with (§4.3).
 func (s *Store) LoadStopped() ([]session.Info, error) {
-	rows, err := s.db.Query(
-		`SELECT id, name, directory, shell, status, created, last_activity
-		 FROM sessions WHERE status='stopped'`)
+	rows, err := s.db.Query(`SELECT ` + selectColumns + ` FROM sessions WHERE status='stopped'`)
 	if err != nil {
 		return nil, fmt.Errorf("query stopped: %w", err)
 	}
@@ -141,12 +150,15 @@ func scan(sc scanner) (session.Info, error) {
 	var (
 		info                     session.Info
 		status, created, lastAct string
+		targetType               string
 	)
 	if err := sc.Scan(&info.ID, &info.Name, &info.Directory, &info.Shell,
-		&status, &created, &lastAct); err != nil {
+		&status, &created, &lastAct,
+		&info.UserID, &targetType, &info.HostID, &info.HostDisplayName); err != nil {
 		return session.Info{}, err
 	}
 	info.Status = session.Status(status)
+	info.TargetType = session.TargetType(targetType)
 	if t, err := time.Parse(time.RFC3339, created); err == nil {
 		info.Created = t
 	}

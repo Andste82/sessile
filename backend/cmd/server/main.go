@@ -20,10 +20,33 @@ import (
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
+	"github.com/Andste82/sessile/backend/internal/sshpty"
 	"github.com/Andste82/sessile/backend/internal/storage"
 	"github.com/Andste82/sessile/backend/internal/ws"
 	"github.com/Andste82/sessile/backend/web"
 )
+
+// hostResolver implements session.HostResolver over the hosts registry, for
+// Restart's re-resolution of an SSH session's current host config (§12b
+// M17) — the only reason session.HostResolver exists as an interface rather
+// than a direct dependency on internal/hosts, which would otherwise be a
+// clean import for internal/session to take. Scoped to userID exactly like
+// every other host lookup (§4.5, §6) — never a client-supplied id.
+type hostResolver struct {
+	registry *hosts.Registry
+}
+
+func (r *hostResolver) Resolve(userID, hostID string) (sshpty.Target, string, error) {
+	store, err := r.registry.For(userID)
+	if err != nil {
+		return sshpty.Target{}, "", err
+	}
+	host, found := store.Get(hostID)
+	if !found {
+		return sshpty.Target{}, "", session.ErrHostNotFound
+	}
+	return host.SSHTarget(), host.Name, nil
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -85,6 +108,7 @@ func run(args []string) error {
 	log.Info("store ready", "db", cfg.DB)
 
 	manager := session.NewManager(cfg.WorkspaceDir, cfg.Shells, cfg.BufferSize, cfg.DataDir, store, log)
+	manager.SetHostResolver(&hostResolver{registry: hostsRegistry})
 	// Discard long-idle stopped sessions before anything can attach to them.
 	// Off unless --session-retention is set.
 	if _, err := manager.PruneStopped(cfg.SessionRetention); err != nil {

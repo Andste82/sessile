@@ -14,6 +14,11 @@ import (
 // (relative to root; empty or "." is the root). The path is validated by the
 // sandbox check, so traversal or symlink escapes are rejected.
 func (s *Server) listDirectories(c *gin.Context) {
+	if !s.serverConfig.Get().AllowLocalHost {
+		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
+		return
+	}
+
 	path := c.Query("path")
 
 	dirs, err := session.ListDirs(s.workspaceRoot, path)

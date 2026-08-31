@@ -95,6 +95,8 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.GET("/hosts/:id", s.getHost)
 		authGroup.PUT("/hosts/:id", s.updateHost)
 		authGroup.DELETE("/hosts/:id", s.deleteHost)
+		authGroup.POST("/hosts/:id/host-key/probe", s.probeHostKey)
+		authGroup.POST("/hosts/:id/host-key/trust", s.trustHostKey)
 		authGroup.GET("/sessions", s.listSessions)
 		authGroup.POST("/sessions", s.createSession)
 		authGroup.GET("/sessions/:id", s.getSession)
@@ -106,12 +108,12 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 
 	if s.ws != nil {
 		r.GET("/ws/sessions/:id", s.requireAuth(), func(c *gin.Context) {
-			s.ws.Handle(c.Writer, c.Request, c.Param("id"))
+			s.ws.Handle(c.Writer, c.Request, c.Param("id"), c.MustGet(userIDKey).(string))
 		})
 		// Session list state rather than terminal bytes (§5.1). Separate from
 		// the terminal socket because the dashboard mounts no terminal.
 		r.GET("/ws/events", s.requireAuth(), func(c *gin.Context) {
-			s.ws.HandleEvents(c.Writer, c.Request)
+			s.ws.HandleEvents(c.Writer, c.Request, c.MustGet(userIDKey).(string))
 		})
 	}
 

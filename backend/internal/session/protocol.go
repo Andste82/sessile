@@ -11,20 +11,27 @@ import "time"
 // that push it — the same import-cycle reason the control messages below are
 // defined in this package.
 type JSON struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Directory    string `json:"directory"`
-	Shell        string `json:"shell"`
-	Status       string `json:"status"`
-	PID          int    `json:"pid"`
-	Created      string `json:"created"`
-	LastActivity string `json:"lastActivity"`
-	Rows         uint16 `json:"rows"`
-	Cols         uint16 `json:"cols"`
-	ClientCount  int    `json:"clientCount"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	TargetType string `json:"targetType"`
+	Directory  string `json:"directory"`
+	Shell      string `json:"shell"`
+	HostID     string `json:"hostId"`
+	// HostDisplayName is the empty string for a local session (encoded as
+	// `null` by omitempty would be wrong here — see the frontend Session
+	// type, which models it as `string | null` only for hostId/hostDisplayName
+	// together via target discrimination, not per-field nullability).
+	HostDisplayName string `json:"hostDisplayName"`
+	Status          string `json:"status"`
+	PID             int    `json:"pid"`
+	Created         string `json:"created"`
+	LastActivity    string `json:"lastActivity"`
+	Rows            uint16 `json:"rows"`
+	Cols            uint16 `json:"cols"`
+	ClientCount     int    `json:"clientCount"`
 
-	// Derived state (§4.7). Both are "" for a stopped session, and where they
-	// could not be determined.
+	// Derived state (§4.7). Both are "" for a stopped session, where they
+	// could not be determined, and always for an SSH session.
 	Command string `json:"command"`
 	Cwd     string `json:"cwd"`
 }
@@ -32,19 +39,22 @@ type JSON struct {
 // ToJSON converts a session snapshot to its wire shape.
 func ToJSON(i Info) JSON {
 	return JSON{
-		ID:           i.ID,
-		Name:         i.Name,
-		Directory:    i.Directory,
-		Shell:        i.Shell,
-		Status:       string(i.Status),
-		PID:          i.PID,
-		Created:      rfc3339(i.Created),
-		LastActivity: rfc3339(i.LastActivity),
-		Rows:         i.Rows,
-		Cols:         i.Cols,
-		ClientCount:  i.ClientCount,
-		Command:      i.Command,
-		Cwd:          i.Cwd,
+		ID:              i.ID,
+		Name:            i.Name,
+		TargetType:      string(i.TargetType),
+		Directory:       i.Directory,
+		Shell:           i.Shell,
+		HostID:          i.HostID,
+		HostDisplayName: i.HostDisplayName,
+		Status:          string(i.Status),
+		PID:             i.PID,
+		Created:         rfc3339(i.Created),
+		LastActivity:    rfc3339(i.LastActivity),
+		Rows:            i.Rows,
+		Cols:            i.Cols,
+		ClientCount:     i.ClientCount,
+		Command:         i.Command,
+		Cwd:             i.Cwd,
 	}
 }
 

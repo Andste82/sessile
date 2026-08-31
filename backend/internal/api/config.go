@@ -9,22 +9,23 @@ import (
 	"github.com/Andste82/sessile/backend/internal/config"
 )
 
-// configResponse mirrors GET /api/config (PROJECT_PLAN.md §6). The shape
-// changes again in M17 (§12b) once allowLocalHost replaces root here — kept
-// as-is for now so this milestone's diff stays purely structural.
+// configResponse mirrors GET /api/config (PROJECT_PLAN.md §6). Root is gone
+// as of M17 — a local-host workspace path means nothing to a user who isn't
+// permitted to use it, and now that permission is exactly what
+// allowLocalHost reports.
 type configResponse struct {
-	Root    string   `json:"root"`
-	Shells  []string `json:"shells"`
-	Version string   `json:"version"`
+	Shells         []string `json:"shells"`
+	Version        string   `json:"version"`
+	AllowLocalHost bool     `json:"allowLocalHost"`
 }
 
-// getConfig returns the local-host workspace root, the installed shells from
-// the allowlist, and the application version.
+// getConfig returns the installed shells from the allowlist, the
+// application version, and whether local-host sessions are permitted.
 func (s *Server) getConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, configResponse{
-		Root:    s.workspaceRoot,
-		Shells:  installedShells(s.cfg.Shells),
-		Version: config.Version,
+		Shells:         installedShells(s.cfg.Shells),
+		Version:        config.Version,
+		AllowLocalHost: s.serverConfig.Get().AllowLocalHost,
 	})
 }
 

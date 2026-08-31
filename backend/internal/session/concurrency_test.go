@@ -26,7 +26,7 @@ func TestConcurrentSamplingBroadcastAndSubscribers(t *testing.T) {
 	const sessions = 3
 	ids := make([]string, 0, sessions)
 	for range sessions {
-		info, err := mgr.Create("load", ".", "sh")
+		info, err := mgr.CreateLocal("test-user", "load", ".", "sh")
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
@@ -46,7 +46,7 @@ func TestConcurrentSamplingBroadcastAndSubscribers(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, id := range ids {
-			_ = mgr.Delete(id)
+			_ = mgr.Delete(id, "test-user")
 		}
 	})
 
@@ -72,17 +72,17 @@ func TestConcurrentSamplingBroadcastAndSubscribers(t *testing.T) {
 	spin(func() { mgr.sampleForeground() })
 
 	// Readers of the same fields, through the paths the API uses.
-	spin(func() { _, _ = mgr.List() })
+	spin(func() { _, _ = mgr.List("test-user") })
 	spin(func() {
 		for _, id := range ids {
-			_, _ = mgr.Get(id)
+			_, _ = mgr.Get(id, "test-user")
 		}
 	})
 
 	// Subscribers arriving and leaving while the sampler publishes to them.
 	spin(func() {
 		sub := newFakeSubscriber()
-		unsub := mgr.Subscribe(sub)
+		unsub := mgr.Subscribe(sub, "test-user")
 		unsub()
 	})
 
@@ -91,7 +91,7 @@ func TestConcurrentSamplingBroadcastAndSubscribers(t *testing.T) {
 	spin(func() {
 		for _, id := range ids {
 			c := &recordingClient{id: "racer"}
-			if _, err := mgr.Attach(id, c); err == nil {
+			if _, err := mgr.Attach(id, "test-user", c); err == nil {
 				mgr.Detach(id, c)
 			}
 		}
@@ -116,7 +116,7 @@ func TestConcurrentSamplingBroadcastAndSubscribers(t *testing.T) {
 
 	// Everything must still be answering after the load.
 	for _, id := range ids {
-		if _, err := mgr.Get(id); err != nil {
+		if _, err := mgr.Get(id, "test-user"); err != nil {
 			t.Errorf("session %s unusable after concurrent load: %v", id, err)
 		}
 	}
@@ -132,7 +132,7 @@ func TestConcurrentShutdownDuringSampling(t *testing.T) {
 
 	mgr, _, _ := testManager(t)
 	for range 2 {
-		info, err := mgr.Create("load", ".", "sh")
+		info, err := mgr.CreateLocal("test-user", "load", ".", "sh")
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
@@ -144,7 +144,7 @@ func TestConcurrentShutdownDuringSampling(t *testing.T) {
 	subs := make([]*fakeSubscriber, 4)
 	for i := range subs {
 		subs[i] = newFakeSubscriber()
-		mgr.Subscribe(subs[i])
+		mgr.Subscribe(subs[i], "test-user")
 	}
 
 	var wg sync.WaitGroup
