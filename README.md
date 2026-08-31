@@ -351,10 +351,11 @@ real SSH session. The frontend suite covers the pure logic — the WS codec,
 the REST client, key and clipboard encoding, IME handling, gesture routing —
 and deliberately stops there; there is no E2E framework.
 
-`scripts/wstest.sh` and `scripts/smoke-docker.sh` predate the multi-user
-pivot (§12b) and still assume the old `--root`, no-auth, single-shell world
-— they need updating for the current auth/target model before they're
-trustworthy again.
+`scripts/wstest.sh` bootstraps an admin account, turns on `allowLocalHost`,
+and drives a local-host session over the WebSocket protocol by hand;
+`scripts/smoke-docker.sh [image]` does the same against a built container
+image, plus the healthcheck and embedded-SPA checks. Both authenticate
+every request with a real session cookie, matching the current auth model.
 
 What no suite here can answer is how a gesture behaves under a thumb, so
 [`docs/mobile-checklist.md`](docs/mobile-checklist.md) carries the manual
