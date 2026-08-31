@@ -8,7 +8,8 @@ import {
   TransitionChild,
 } from '@headlessui/vue'
 import { useHostsStore } from '@/stores/hosts'
-import type { AuthMethod, Host, HostBody, TargetOS } from '@/api/types'
+import ExchangeKeysDialog from './ExchangeKeysDialog.vue'
+import type { AuthMethod, ExchangeKeysResponse, Host, HostBody, TargetOS } from '@/api/types'
 
 const props = defineProps<{ open: boolean; host: Host | null }>()
 const emit = defineEmits<{
@@ -18,6 +19,7 @@ const emit = defineEmits<{
 
 const store = useHostsStore()
 const isEdit = computed(() => props.host !== null)
+const exchangeDialogOpen = ref(false)
 
 const name = ref('')
 const group = ref('')
@@ -104,6 +106,16 @@ async function submit() {
   }
 }
 
+// Reflects the server-side switch to privateKey locally, so the form
+// doesn't keep showing the retired password field while this dialog stays
+// open — the store's own host list already picked up the change.
+function onExchanged(_result: ExchangeKeysResponse) {
+  authMethod.value = 'privateKey'
+  password.value = ''
+  privateKey.value = ''
+  privateKeyPassphrase.value = ''
+}
+
 const labelCls = 'flex flex-col gap-1 text-sm'
 const inputCls =
   'rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500'
@@ -164,7 +176,17 @@ const inputCls =
               </label>
 
               <div class="flex flex-col gap-2">
-                <span class="text-sm text-slate-400">Authentication</span>
+                <div class="flex items-center justify-between">
+                  <span class="text-sm text-slate-400">Authentication</span>
+                  <button
+                    v-if="isEdit && address.trim() !== ''"
+                    type="button"
+                    class="text-xs text-emerald-400 hover:text-emerald-300"
+                    @click="exchangeDialogOpen = true"
+                  >
+                    Exchange SSH keys…
+                  </button>
+                </div>
                 <div class="flex gap-4 text-sm text-slate-200">
                   <label class="flex cursor-pointer items-center gap-2">
                     <input v-model="authMethod" type="radio" value="password" class="accent-emerald-400" />
@@ -248,4 +270,11 @@ const inputCls =
       </div>
     </Dialog>
   </TransitionRoot>
+
+  <ExchangeKeysDialog
+    :open="exchangeDialogOpen"
+    :host="props.host"
+    @close="exchangeDialogOpen = false"
+    @exchanged="onExchanged"
+  />
 </template>

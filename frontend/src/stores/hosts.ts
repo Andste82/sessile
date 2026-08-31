@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { api } from '@/api/client'
-import type { Host, HostBody, HostKeyProbeResponse } from '@/api/types'
+import type { ExchangeKeysResponse, Host, HostBody, HostKeyProbeResponse } from '@/api/types'
 
 // Per-user SSH host list (§12b M14's API surface). Grouped for the Hosts
 // page and, later, the new-session host picker (M18) — both want "hosts by
@@ -54,6 +54,19 @@ export const useHostsStore = defineStore('hosts', () => {
     return updated
   }
 
+  // Sets up passwordless login (§4.5.2): the response describes the newly
+  // generated key, not the host itself, so refresh the host afterward to
+  // pick up the authMethod:privateKey switch the server made.
+  async function exchangeKeys(
+    id: string,
+    body: { username: string; password: string },
+  ): Promise<ExchangeKeysResponse> {
+    const result = await api.exchangeHostKeys(id, body)
+    const updated = await api.getHost(id)
+    hosts.value = hosts.value.map((h) => (h.id === id ? updated : h))
+    return result
+  }
+
   // Grouped by Host.group, "Ungrouped" for an empty one, insertion order
   // otherwise preserved within each group.
   const grouped = computed(() => {
@@ -76,5 +89,6 @@ export const useHostsStore = defineStore('hosts', () => {
     deleteHost,
     probeHostKey,
     trustHostKey,
+    exchangeKeys,
   }
 })

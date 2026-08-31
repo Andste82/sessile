@@ -6,6 +6,7 @@ import type {
   Credentials,
   CreateSessionBody,
   DirectoriesResponse,
+  ExchangeKeysResponse,
   Host,
   HostBody,
   HostKeyErrorDetails,
@@ -126,6 +127,11 @@ export const api = {
     request<HostKeyProbeResponse>(`/api/hosts/${id}/host-key/probe`, { method: 'POST' }),
   trustHostKey: (id: string, body: { fingerprint: string; keyType: string }) =>
     request<void>(`/api/hosts/${id}/host-key/trust`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  exchangeHostKeys: (id: string, body: { username: string; password: string }) =>
+    request<ExchangeKeysResponse>(`/api/hosts/${id}/exchange-keys`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),

@@ -59,6 +59,14 @@ export interface HostKeyProbeResponse {
   previousFingerprint?: string
 }
 
+// Response from POST /api/hosts/:id/exchange-keys (§4.5.2) — describes the
+// newly generated key, not the host's own host key.
+export interface ExchangeKeysResponse {
+  success: boolean
+  keyType: string
+  fingerprint: string
+}
+
 export interface User {
   id: string
   username: string
