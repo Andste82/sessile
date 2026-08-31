@@ -6,6 +6,8 @@ import type {
   Credentials,
   CreateSessionBody,
   DirectoriesResponse,
+  Host,
+  HostBody,
   Session,
   User,
 } from './types'
@@ -94,6 +96,14 @@ export const api = {
   getAdminConfig: () => request<AdminConfig>('/api/admin/config'),
   updateAdminConfig: (cfg: AdminConfig) =>
     request<AdminConfig>('/api/admin/config', { method: 'PUT', body: JSON.stringify(cfg) }),
+
+  listHosts: () => request<Host[]>('/api/hosts'),
+  getHost: (id: string) => request<Host>(`/api/hosts/${id}`),
+  createHost: (body: HostBody) =>
+    request<Host>('/api/hosts', { method: 'POST', body: JSON.stringify(body) }),
+  updateHost: (id: string, body: HostBody) =>
+    request<Host>(`/api/hosts/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteHost: (id: string) => request<void>(`/api/hosts/${id}`, { method: 'DELETE' }),
 
   listUsers: () => request<User[]>('/api/admin/users'),
   deleteUser: (id: string) => request<void>(`/api/admin/users/${id}`, { method: 'DELETE' }),

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router'
-import { HomeIcon, Cog6ToothIcon, UsersIcon } from '@heroicons/vue/24/outline'
+import { HomeIcon, ServerIcon, Cog6ToothIcon, UsersIcon } from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
 import { useAuthStore } from '@/stores/auth'
 import StatusDot from './StatusDot.vue'
@@ -40,6 +40,15 @@ function isTerminal(id: string) {
       >
         <HomeIcon class="h-5 w-5 shrink-0" />
         <span class="hidden lg:inline">Dashboard</span>
+      </RouterLink>
+      <RouterLink
+        to="/hosts"
+        class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-800"
+        :class="{ 'bg-slate-800 text-slate-100': route.name === 'hosts' }"
+        title="Hosts"
+      >
+        <ServerIcon class="h-5 w-5 shrink-0" />
+        <span class="hidden lg:inline">Hosts</span>
       </RouterLink>
       <RouterLink
         to="/settings"

@@ -64,3 +64,40 @@ export interface AdminConfig {
   allowRegistration: boolean
   allowLocalHost: boolean
 }
+
+export type AuthMethod = 'password' | 'privateKey'
+export type TargetOS = 'linux' | 'darwin' | 'windows' | 'other'
+
+export interface Host {
+  id: string
+  name: string
+  group: string
+  address: string
+  username: string
+  authMethod: AuthMethod
+  hasPassword: boolean
+  hasPrivateKey: boolean
+  targetOS: TargetOS | ''
+  terminalType: string
+  customCommand: string
+  trustedHostKeyType: string
+  trustedHostKeyFingerprint: string // empty means "not yet trusted" (§4.5.1)
+  created: string // RFC 3339 UTC
+}
+
+// Used for both create and update — an omitted secret field on update means
+// "leave unchanged" (mirrors the backend's *string "was this key present"
+// distinction: JSON.stringify simply drops an undefined property).
+export interface HostBody {
+  name: string
+  group: string
+  address: string
+  username: string
+  authMethod: AuthMethod
+  password?: string
+  privateKey?: string
+  privateKeyPassphrase?: string
+  targetOS: TargetOS | ''
+  terminalType: string
+  customCommand: string
+}

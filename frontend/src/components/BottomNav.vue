@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   HomeIcon,
   CommandLineIcon,
+  ServerIcon,
   Cog6ToothIcon,
   Squares2X2Icon,
   UsersIcon,
@@ -61,6 +62,14 @@ function goTerminal() {
       <Squares2X2Icon class="h-6 w-6" />
       Keys
     </button>
+    <RouterLink
+      to="/hosts"
+      class="flex flex-1 flex-col items-center justify-center gap-0.5 text-xs"
+      :class="route.name === 'hosts' ? 'text-emerald-400' : 'text-slate-400'"
+    >
+      <ServerIcon class="h-6 w-6" />
+      Hosts
+    </RouterLink>
     <RouterLink
       to="/settings"
       class="flex flex-1 flex-col items-center justify-center gap-0.5 text-xs"

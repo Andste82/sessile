@@ -26,6 +26,12 @@ const routes = [
     meta: { title: 'Terminal' },
   },
   {
+    path: '/hosts',
+    name: 'hosts',
+    component: () => import('@/pages/HostsPage.vue'),
+    meta: { title: 'Hosts' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/pages/SettingsPage.vue'),
