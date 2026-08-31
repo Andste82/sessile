@@ -94,4 +94,12 @@ export const api = {
   getAdminConfig: () => request<AdminConfig>('/api/admin/config'),
   updateAdminConfig: (cfg: AdminConfig) =>
     request<AdminConfig>('/api/admin/config', { method: 'PUT', body: JSON.stringify(cfg) }),
+
+  listUsers: () => request<User[]>('/api/admin/users'),
+  deleteUser: (id: string) => request<void>(`/api/admin/users/${id}`, { method: 'DELETE' }),
+  setUserAdmin: (id: string, isAdmin: boolean) =>
+    request<User>(`/api/admin/users/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isAdmin }),
+    }),
 }

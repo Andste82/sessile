@@ -31,6 +31,12 @@ const routes = [
     component: () => import('@/pages/SettingsPage.vue'),
     meta: { title: 'Settings' },
   },
+  {
+    path: '/admin/users',
+    name: 'admin-users',
+    component: () => import('@/pages/UsersPage.vue'),
+    meta: { title: 'Users', adminOnly: true },
+  },
 ]
 
 export const router = createRouter({
