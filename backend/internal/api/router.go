@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -18,6 +19,15 @@ import (
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/ws"
 )
+
+// .webmanifest isn't in Go's built-in MIME table (unlike .json), and the
+// wrong Content-Type is enough to make some browsers refuse to treat the
+// page as installable — the frontend's PWA manifest (frontend/public/
+// manifest.webmanifest) needs this to serve correctly from the embedded
+// static file server below.
+func init() {
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
 
 // maxBodyBytes bounds JSON request bodies (PROJECT_PLAN.md §11).
 const maxBodyBytes = 4 << 10 // 4 KiB

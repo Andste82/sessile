@@ -69,6 +69,10 @@ specification.
   blocklisted driver, or a context a mobile browser reclaims from a backgrounded
   tab — it falls back to xterm's DOM renderer, which is slower but no less
   correct.
+- **Installable as an app.** Ships a web manifest, so Chrome/Edge (desktop
+  and Android) can pin it as a standalone window with no address bar — from
+  the page, either the browser's install icon or "Cast, save, and
+  share → Create shortcut…" with "Open as window" checked.
 - **Single binary or container.** The frontend is embedded into a static,
   CGO-free Go binary; a small multi-stage container image is also provided.
 
