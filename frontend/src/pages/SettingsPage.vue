@@ -13,6 +13,17 @@ const auth = useAuthStore()
 const ui = useUiStore()
 const installPrompt = useInstallPrompt()
 
+// beforeinstallprompt never fires at all over plain HTTP to anything but
+// localhost — that's a browser platform rule (the Secure Context spec), not
+// something the app can route around. Without this, the "App" section just
+// silently never appears here and there is nothing else on the page to
+// explain why — Chrome gives web pages no error/event for "installability
+// criteria not met". localhostSecure mirrors exactly what the browser
+// itself special-cases as secure without HTTPS.
+const localhostSecure = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
+const insecureNonLocalhost = !window.isSecureContext && !localhostSecure
+const currentOrigin = window.location.origin
+
 const adminConfig = ref<AdminConfig | null>(null)
 const adminLoadError = ref<string | null>(null)
 const adminSaving = ref(false)
@@ -102,18 +113,19 @@ const stepBtn =
     </header>
 
     <main class="mx-auto w-full max-w-2xl flex-1 overflow-y-auto p-4 sm:p-6">
-      <!-- Only rendered where the browser actually supports a programmatic
-           install prompt (Chrome/Edge) and it isn't already installed —
-           Safari/Firefox users still have the manual "Create shortcut" path
-           documented in the README, just not this button. -->
+      <!-- Hidden only once actually installed (display-mode: standalone) —
+           otherwise this always has something to say: either the Install
+           button itself, or (Chrome/Edge give no error/event for "criteria
+           not met") the reason it can't appear yet. -->
       <section
-        v-if="installPrompt.canInstall.value"
+        v-if="!installPrompt.installed.value"
         class="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-6"
       >
         <h2 class="mb-4 text-sm font-medium uppercase tracking-wide text-slate-400">
           App
         </h2>
-        <div class="flex items-center justify-between gap-4">
+
+        <div v-if="installPrompt.canInstall.value" class="flex items-center justify-between gap-4">
           <p class="text-sm text-slate-300">
             Install sessile as a standalone app — no address bar, opens in
             its own window.
@@ -127,6 +139,23 @@ const stepBtn =
             {{ installPrompt.installing.value ? 'Installing…' : 'Install' }}
           </button>
         </div>
+        <p v-else-if="insecureNonLocalhost" class="text-sm text-slate-300">
+          Installing needs a secure connection — this page is loaded over
+          plain HTTP at <code class="rounded bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200">{{ currentOrigin }}</code>,
+          which browsers never treat as secure outside <code class="rounded bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200">localhost</code>.
+          For local testing, Chrome has a flag for exactly this: open
+          <code class="rounded bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200">chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>,
+          add this address, enable the flag, then relaunch Chrome. For real
+          day-to-day use, put sessile behind HTTPS instead (a reverse proxy,
+          or a tool like Tailscale).
+        </p>
+        <p v-else class="text-sm text-slate-500">
+          Not installable in this browser yet. Chrome and Edge support
+          installing sessile as an app; give the page a moment after
+          loading, or use the browser's own "Create shortcut… → Open as
+          window" option, which works everywhere.
+        </p>
+
         <p v-if="installPrompt.error.value" class="mt-3 text-xs text-rose-400">
           {{ installPrompt.error.value }}
         </p>
