@@ -4,12 +4,14 @@ import { useSessionsStore } from '@/stores/sessions'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore, minFontSize, maxFontSize, defaultFontSize } from '@/stores/ui'
 import { isApplePlatform } from '@/utils/clipboard'
+import { useInstallPrompt } from '@/composables/useInstallPrompt'
 import { api } from '@/api/client'
 import type { AdminConfig } from '@/api/types'
 
 const store = useSessionsStore()
 const auth = useAuthStore()
 const ui = useUiStore()
+const installPrompt = useInstallPrompt()
 
 const adminConfig = ref<AdminConfig | null>(null)
 const adminLoadError = ref<string | null>(null)
@@ -100,6 +102,36 @@ const stepBtn =
     </header>
 
     <main class="mx-auto w-full max-w-2xl flex-1 overflow-y-auto p-4 sm:p-6">
+      <!-- Only rendered where the browser actually supports a programmatic
+           install prompt (Chrome/Edge) and it isn't already installed —
+           Safari/Firefox users still have the manual "Create shortcut" path
+           documented in the README, just not this button. -->
+      <section
+        v-if="installPrompt.canInstall.value"
+        class="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-6"
+      >
+        <h2 class="mb-4 text-sm font-medium uppercase tracking-wide text-slate-400">
+          App
+        </h2>
+        <div class="flex items-center justify-between gap-4">
+          <p class="text-sm text-slate-300">
+            Install sessile as a standalone app — no address bar, opens in
+            its own window.
+          </p>
+          <button
+            type="button"
+            class="shrink-0 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="installPrompt.installing.value"
+            @click="installPrompt.install()"
+          >
+            {{ installPrompt.installing.value ? 'Installing…' : 'Install' }}
+          </button>
+        </div>
+        <p v-if="installPrompt.error.value" class="mt-3 text-xs text-rose-400">
+          {{ installPrompt.error.value }}
+        </p>
+      </section>
+
       <section class="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-6">
         <h2 class="mb-4 text-sm font-medium uppercase tracking-wide text-slate-400">
           Terminal
