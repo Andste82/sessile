@@ -344,11 +344,14 @@ func (m *Manager) resolveShell(shell string) (string, error) {
 // until the shell exits (read error). One goroutine per session (§4.4).
 func (m *Manager) readLoop(s *Session) {
 	buf := make([]byte, 32<<10)
-	// One scanner per read loop, which is one per session: it carries the
-	// escape-sequence state across chunk boundaries (§4.8). A restart builds a
-	// new Session and a new loop, so a title never outlives the shell that set
-	// it.
-	var titles titleScanner
+	// One scanner of each per read loop, which is one per session: both carry
+	// escape-sequence state across chunk boundaries (§4.8, §4.9). A restart
+	// builds a new Session and a new loop, so neither a title nor a mode
+	// outlives the shell that set it.
+	var (
+		titles titleScanner
+		modes  modeScanner
+	)
 	for {
 		n, err := s.pty.File.Read(buf)
 		if n > 0 {
@@ -359,6 +362,12 @@ func (m *Manager) readLoop(s *Session) {
 			s.broadcast(data)
 			if title, ok := titles.scan(data); ok {
 				s.setTitle(title)
+			}
+			// After the broadcast for the same reason, and safe there: a client
+			// that attaches between the two gets these bytes in its replay, so
+			// it reaches the same state a fresh preamble would have given it.
+			if state, changed := modes.scan(data); changed {
+				s.setModes(state)
 			}
 			m.maybePersistActivity(s)
 		}
