@@ -24,6 +24,19 @@ const localhostSecure = ['localhost', '127.0.0.1', '[::1]'].includes(window.loca
 const insecureNonLocalhost = !window.isSecureContext && !localhostSecure
 const currentOrigin = window.location.origin
 
+// Firefox has explicitly declined to implement beforeinstallprompt at all,
+// on any platform (Mozilla's stated position: a page shouldn't be able to
+// trigger its own install prompt) — there is no flag or setting that changes
+// this, unlike Chrome's chrome://flags workaround below. Simple UA sniffing
+// is normal here: this only ever steers which explanatory text renders, not
+// any actual behavior.
+const browserFamily = (() => {
+  const ua = navigator.userAgent
+  if (/Firefox\//.test(ua)) return 'firefox'
+  if (/Chrome\//.test(ua) || /Edg\//.test(ua)) return 'chromium'
+  return 'other'
+})()
+
 const adminConfig = ref<AdminConfig | null>(null)
 const adminLoadError = ref<string | null>(null)
 const adminSaving = ref(false)
@@ -139,7 +152,7 @@ const stepBtn =
             {{ installPrompt.installing.value ? 'Installing…' : 'Install' }}
           </button>
         </div>
-        <p v-else-if="insecureNonLocalhost" class="text-sm text-slate-300">
+        <p v-else-if="insecureNonLocalhost && browserFamily === 'chromium'" class="text-sm text-slate-300">
           Installing needs a secure connection — this page is loaded over
           plain HTTP at <code class="rounded bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200">{{ currentOrigin }}</code>,
           which browsers never treat as secure outside <code class="rounded bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200">localhost</code>.
@@ -148,6 +161,28 @@ const stepBtn =
           add this address, enable the flag, then relaunch Chrome. For real
           day-to-day use, put sessile behind HTTPS instead (a reverse proxy,
           or a tool like Tailscale).
+        </p>
+        <p v-else-if="browserFamily === 'firefox'" class="text-sm text-slate-300">
+          Firefox doesn't support a page-triggered install prompt at all —
+          Mozilla decided against it on principle, for every platform, and
+          there's no flag or setting that changes that (unlike Chrome).
+          <span v-if="insecureNonLocalhost">
+            It also needs a secure connection, which
+            <code class="rounded bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200">{{ currentOrigin }}</code>
+            isn't — put sessile behind HTTPS for the fullest support.
+          </span>
+          On Firefox for Android, use the browser's own menu → "Install" or
+          "Add app to Home Screen" — that works without any of this. Desktop
+          Firefox has no app-install feature at all.
+        </p>
+        <p v-else-if="insecureNonLocalhost" class="text-sm text-slate-300">
+          Installing needs a secure connection — this page is loaded over
+          plain HTTP at <code class="rounded bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200">{{ currentOrigin }}</code>,
+          which browsers never treat as secure outside
+          <code class="rounded bg-slate-900 px-1 py-0.5 font-mono text-xs text-slate-200">localhost</code>.
+          Put sessile behind HTTPS for the fullest support; your browser's
+          own menu may still offer a manual "Add to Home Screen" or
+          shortcut option regardless.
         </p>
         <p v-else class="text-sm text-slate-500">
           Not installable in this browser yet. Chrome and Edge support
