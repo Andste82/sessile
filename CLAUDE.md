@@ -36,6 +36,11 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
 - **Stack:** Do not add GORM, sqlc, zap, viper, socket.io, or an E2E test
   framework. `golang.org/x/crypto` (bcrypt, ssh) and `gopkg.in/yaml.v3` are
   direct, permitted deps. No CGO (`CGO_ENABLED=0` must build).
+  `golang.org/x/crypto/ssh` has a known, unconfigurable per-channel
+  throughput ceiling on high-latency links (fixed 2 MiB window) —
+  investigated, benchmarked against alternatives (real OpenSSH, a Rust
+  `russh`-based helper), and deliberately kept as-is for now; not a bug to
+  silently "fix" by swapping the SSH client. See PROJECT_PLAN.md §11.1.
 - **Protocol:** Binary WS frames = terminal bytes; text frames = JSON control
   messages exactly as specified in PROJECT_PLAN.md §5. Never change the wire
   format without updating the plan.

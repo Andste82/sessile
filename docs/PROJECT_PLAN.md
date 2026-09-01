@@ -66,7 +66,7 @@ verify each milestone's acceptance criteria before moving on.
 | SQLite driver | `modernc.org/sqlite` | Pure Go — **no CGO**, keeps the static binary trivial |
 | DB access | stdlib `database/sql` with hand-written queries | Session metadata only; an ORM is overkill |
 | Auth hashing | `golang.org/x/crypto/bcrypt` | Already an indirect dep (via gin/validator); no new framework |
-| SSH client | `golang.org/x/crypto/ssh` | Same package as bcrypt; pure Go, no CGO |
+| SSH client | `golang.org/x/crypto/ssh` | Same package as bcrypt; pure Go, no CGO. Known per-channel throughput ceiling — see §11.1 |
 | YAML config | `gopkg.in/yaml.v3` | Already an indirect dep; used for `config.yml`/`users.yml`/`hosts.yml` — hand-editable by design, not a config framework |
 | Web sessions | Server-side random tokens in an in-memory store, `HttpOnly` cookie | Not JWT — no persistence needed, a restart logging everyone out is acceptable (§11) |
 | Logging | stdlib `log/slog` (JSON handler) | No dependency needed |
@@ -1176,6 +1176,69 @@ layout and §11 for what they do and don't encrypt.
 - Rate limiting: still deferred — not added in this pass either. Login
   brute-forcing is the main gap this leaves open; worth revisiting before a
   wider deployment than "an admin who trusts their own users."
+
+### 11.1 Known limitation: SSH throughput on high-latency links
+
+`golang.org/x/crypto/ssh` has a **hardcoded, unconfigurable 2 MiB
+per-channel flow-control window** (`channelWindowSize = 64 *
+channelMaxPacket`, unchanged even in the newest release as of this
+writing). On a link with real round-trip latency, a single channel's max
+throughput is roughly `window size ÷ RTT`, which caps well below the
+link's actual capacity on a slow or long-haul connection — noticed when a
+bandwidth-heavy command run over an SSH session measured ~30 Mbit/s
+through sessile against the same host Termius reached ~150 Mbit/s on.
+Confirmed this isn't sessile's own PTY/broadcast pipeline (a real
+WebSocket-attached client relaying a print-heavy local session added
+~4ms of overhead over a 24ms baseline — noise) and isn't a coding
+inefficiency in how the SSH client is used (measured Go throughput at two
+RTT tiers landed within 93-94% of the pure `window_size ÷ RTT` theoretical
+ceiling, i.e. it's the SSH channel window itself, not something else).
+
+**Investigated and consciously not fixed for now:**
+- A CGO libssh2/libssh Go binding — the only one that exists
+  (`karfield/ssh2go`) is unmaintained; too risky to wire security-critical
+  connection code through.
+- Shelling out to the system's real `ssh` binary — a real fix (no
+  hardcoded window), no CGO, but a controlled benchmark against the same
+  isolated test harness (a network namespace with `tc netem`-emulated
+  latency, not real internet — see below) found real OpenSSH performing
+  about the same as `golang.org/x/crypto/ssh`'s default for a plain
+  `exec`-and-discard workload — not the clear win expected from the
+  Termius comparison, which undercut the case for taking on this rewrite.
+- A Rust helper binary using [`russh`](https://github.com/Eugeny/russh)
+  (actively maintained, and — unlike `x/crypto/ssh` — exposes
+  `window_size` as a real, public, tunable `Config` field). Benchmarked
+  head-to-head against Go's client and real OpenSSH in an isolated network
+  namespace with emulated latency (150ms and 300ms RTT, no packet loss,
+  300 MiB payload via `dd`, three runs per condition):
+
+  | Client | ~150ms RTT | ~300ms RTT |
+  |---|---|---|
+  | Go `x/crypto/ssh` (2 MiB, current) | 104.37 Mbit/s | 52.62 Mbit/s |
+  | Real OpenSSH | 96.93 Mbit/s | 48.90 Mbit/s |
+  | Russh @ 2 MiB (control) | 56.20 Mbit/s | 28.17 Mbit/s |
+  | Russh @ 32 MiB | 131.95 Mbit/s | 68.64 Mbit/s |
+
+  This confirms the window-size mechanism cleanly (same Russh binary,
+  only the window changed: 2.35-2.44x) and shows Russh-with-a-large-window
+  as the one clear, reproducible win of the three alternatives — but the
+  measured improvement (~1.3x over Go at both RTT tiers) doesn't fully
+  explain the original ~5x Termius gap (real links have packet loss,
+  which compounds far worse with a small window than pure latency does,
+  and Termius has its own SSH implementation, not vanilla OpenSSH — this
+  synthetic test doesn't capture either factor).
+
+**Decision: keep `golang.org/x/crypto/ssh` for now.** The fix path
+(a Rust/`russh` helper subprocess, communicating with the Go backend over
+pipes with a small framed protocol — full design was worked out and
+benchmarked) is real and would help, but it means adding Rust as a second
+build toolchain, a new Dockerfile stage, new CI cross-compilation for all
+4 release platforms, and reimplementing the TOFU host-key/auth flows
+around a new IPC boundary — a substantial, multi-milestone undertaking
+for a gap that isn't actually surfacing as a problem in normal use. Worth
+revisiting if a concrete workflow (large file transfers, bulk data piped
+through a session) makes this bite in practice — the benchmark harness
+and design are preserved in case that happens.
 
 ---
 
