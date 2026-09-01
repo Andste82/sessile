@@ -37,6 +37,11 @@ const browserFamily = (() => {
   return 'other'
 })()
 
+// "Create shortcut… → Open as window" is a desktop Chrome/Edge menu path —
+// Android Chrome's equivalent is its own "Install app"/"Add to Home screen"
+// entry, not that one. Wrong instructions here are worse than none.
+const isAndroid = /Android/.test(navigator.userAgent)
+
 const adminConfig = ref<AdminConfig | null>(null)
 const adminLoadError = ref<string | null>(null)
 const adminSaving = ref(false)
@@ -184,11 +189,16 @@ const stepBtn =
           own menu may still offer a manual "Add to Home Screen" or
           shortcut option regardless.
         </p>
+        <p v-else-if="isAndroid" class="text-sm text-slate-500">
+          Not installable yet — give the page a moment after loading, or
+          use the browser's own menu → "Install app" / "Add to Home
+          screen".
+        </p>
         <p v-else class="text-sm text-slate-500">
           Not installable in this browser yet. Chrome and Edge support
           installing sessile as an app; give the page a moment after
           loading, or use the browser's own "Create shortcut… → Open as
-          window" option, which works everywhere.
+          window" option, which works everywhere on desktop.
         </p>
 
         <p v-if="installPrompt.error.value" class="mt-3 text-xs text-rose-400">

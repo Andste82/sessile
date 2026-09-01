@@ -31,3 +31,13 @@ app.use(router);
 router.isReady().then(() => {
   app.mount("#app");
 });
+
+// A no-op passthrough service worker (public/sw.js) — Chrome still requires
+// one registered with a fetch handler for beforeinstallprompt to fire at
+// all, even though its own install-from-menu path dropped that requirement.
+// Registered unconditionally: a no-op has no observable effect for anyone
+// who never installs, and this is what unlocks the in-app Install button
+// (SettingsPage.vue) for everyone else.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
