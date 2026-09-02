@@ -6,7 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"path"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/pkg/sftp"
@@ -204,4 +208,84 @@ func (t *sshFileTransport) Copy(ctx context.Context, src, dst string) error {
 		return err
 	}
 	return t.Write(ctx, dst, data)
+}
+
+// sessionRootPID finds the PID of the sshd process handling exactly this
+// connection, by matching this *ssh.Client's own local TCP address/port —
+// which, from the target's point of view, is the peer of the established
+// connection it's holding — against `ss`'s socket table on the far end.
+// That process is the one sshd forked for this login, so its descendant
+// subtree (walked by the existing buildProcessTree, using this PID as
+// root, exactly like any other) is this session's own processes and
+// nothing else's.
+//
+// This is deterministic, not a guess: either the matching socket is found
+// with a pid attached, or it isn't — never a plausible-looking wrong
+// answer, unlike inferring from process names or timing (the class of
+// technique §4.7's removed activity classifier already showed doesn't
+// hold up). It needs `ss` (iproute2) on the target, *and* it needs the pid
+// behind that socket to be visible to the login user running it — which,
+// tested against a real sshd, it usually is not: OpenSSH's per-connection
+// process is commonly non-dumpable (PR_SET_DUMPABLE cleared, standard
+// hardening for a process that started privileged), which blocks
+// /proc/<pid>/fd — and so `ss -p` — for everyone but root, even the
+// connection's own login user who technically owns that process. So on a
+// stock OpenSSH target this resolves to "not found" far more often than
+// "found" — expected, not a bug; see PROJECT_PLAN.md §4.10 for the real
+// test that surfaced this. It still resolves cleanly on SSH servers that
+// don't set that flag, and either way the fallback (§6's `scope=all`) is
+// exactly as good as what existed before this existed. ok is false for
+// anything else too (ss missing, a non-Linux target, no line matching this
+// port at all) — the caller decides what "unknown" means for it; this
+// never falls back to a different rootPID on its own.
+func (t *sshTransport) sessionRootPID(ctx context.Context) (int, bool) {
+	local := t.client.LocalAddr()
+	if local == nil {
+		return 0, false
+	}
+	_, myPort, err := net.SplitHostPort(local.String())
+	if err != nil {
+		return 0, false
+	}
+
+	res, err := t.Exec(ctx, "ss -Htnp state established")
+	if err != nil || res.ExitCode != 0 {
+		return 0, false
+	}
+	return parseSSPeerPID(string(res.Stdout), myPort)
+}
+
+var ssPIDPattern = regexp.MustCompile(`pid=(\d+)`)
+
+// parseSSPeerPID scans `ss -Htnp state established` output (Recv-Q, Send-Q,
+// Local Address:Port, Peer Address:Port, Process — one line per
+// connection, no header since -H) for the one line whose peer port is
+// myPort, and returns the pid from its Process column. myPort alone is
+// enough to match: the kernel will not hand the same local ephemeral port
+// to a second outbound connection while this one is still open, so it is
+// unique system-wide for the connection's whole lifetime — no need to
+// compare the peer IP too.
+func parseSSPeerPID(output, myPort string) (int, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		peer := fields[3]
+		i := strings.LastIndex(peer, ":")
+		if i < 0 || peer[i+1:] != myPort {
+			continue
+		}
+		process := strings.Join(fields[4:], " ")
+		m := ssPIDPattern.FindStringSubmatch(process)
+		if m == nil {
+			continue
+		}
+		pid, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		return pid, true
+	}
+	return 0, false
 }

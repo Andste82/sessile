@@ -663,6 +663,42 @@ sits at the same trust depth `internal/sshpty` already has: the operator's
 own already-authenticated connection to their own host, one more channel on
 it rather than a new one.
 
+**Scoping an SSH session's process tree.** A local session's root is exact
+by construction — `info.PID` comes straight from the kernel (§4.7's same
+source). An SSH session has no equivalent: `Backend.Pid()` is always 0
+(§4.2), and there is no SSH-protocol-level way to ask "which remote
+process is my shell". `HostSession.SessionRootPID` answers it a different
+way — not by inference from behavior (the class of technique §4.7's
+removed activity classifier already showed doesn't hold up), but from
+identity: this connection's own local TCP address, matched against `ss`'s
+socket table on the far end, names the exact `sshd` worker process handling
+this specific connection, and everything under it in the process tree is
+this session's and nothing else's. It either finds that match or it
+doesn't — never a plausible-looking wrong answer. `GET
+.../hostops/process-tree`'s `scope=session` (default, §6) uses this when
+available and falls back to `scope=all` (root at PID 1, the whole target)
+when it can't, reporting `scoped:false` so the UI can say so rather than
+presenting a wrong-looking narrow view as if it were correct.
+
+**Measured against a real sshd, "when it can't" is the common case, not
+the edge case.** Reading the pid behind a socket needs `/proc/<pid>/fd` —
+readable by that pid's own uid on an ordinary process, but OpenSSH's
+per-connection process is routinely non-dumpable (`PR_SET_DUMPABLE`
+cleared, standard hardening for something that started as root), which
+blocks `/proc/<pid>/fd` — and so `ss -p`'s pid resolution — for everyone
+but root, including the connection's own login user. Verified directly: a
+real throwaway SSH session's own `ss -Htnp` (run as that session's own
+login user) listed every socket on the box but resolved **no** pid for any
+of them, not even the one it owned itself, while root could read all of
+them; `/proc/<that-same-pid>/fd` was `Permission denied` for that user, and
+`/proc/<a-pid-it-spawned-directly>/fd` was not — confirming it's the
+non-dumpable process, not a broken permission model, doing the blocking.
+So on a stock OpenSSH target, `scope=session` resolving to
+`scoped:false` (whole host, honestly labeled) is the expected, common
+outcome, not a bug — it still resolves cleanly against SSH servers that
+don't set that flag, and either way `scoped:false` is exactly the
+information the pre-this-feature behavior never had at all.
+
 **Long-running operations report progress; fast ones don't.** `ListDir`,
 `ProcessTree`, and `Rename`/Move are single round-trips and stay synchronous
 REST calls. `Delete` (a recursive walk with no natural client-visible byte
@@ -867,7 +903,7 @@ never trusts a client-supplied user id.
 | `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (local), 404 `host_not_found` or 409 host-key responses (SSH) |
 | `GET /api/directories` | Browse dirs under the local-host workspace; optional `?path=` (relative, validated by §4.5) navigates into subdirs | 403 if `allowLocalHost` is off. `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
 | `GET /api/config` | Display name, available shells, `allowLocalHost`, version | Shells = allowlist ∩ installed |
-| `GET /api/sessions/:id/hostops/process-tree` | Process tree (§4.10) | `{"rootPid":123,"processes":[…Process…]}`. 501 `unsupported_platform` if the target's `Platform` has no `ProcessTree` |
+| `GET /api/sessions/:id/hostops/process-tree?scope=` | Process tree (§4.10) | `scope` is `session` (default, narrowed to this session's own processes) or `all` (the whole target). `{"rootPid":123,"scoped":true,"processes":[…Process…]}` — `scoped` is false when `session` was asked for but couldn't be resolved (falls back to `all` rather than erroring). 501 `unsupported_platform` if the target's `Platform` has no `ProcessTree` |
 | `GET /api/sessions/:id/hostops/files?path=` | List a directory on the target | `{"path":"…","entries":[…DirEntry…]}` |
 | `POST /api/sessions/:id/hostops/move` | Move/rename on the target | `{"src":"…","dst":"…"}` → 200, synchronous |
 | `POST /api/sessions/:id/hostops/copy` | Copy on the target | `{"src":"…","dst":"…"}` → 202 `{"opId":"…"}`, progress on §5.2 |

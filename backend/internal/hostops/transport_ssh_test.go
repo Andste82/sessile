@@ -262,3 +262,47 @@ func TestSSHRemoveDeletesNestedDirectory(t *testing.T) {
 		t.Errorf("sub still exists on disk after Remove")
 	}
 }
+
+func TestParseSSPeerPID(t *testing.T) {
+	// Real `ss -Htnp state established` output shape, header already
+	// stripped by -H.
+	output := "0      0             10.10.10.1:59808   160.79.104.10:443 users:((\"claude\",pid=1170773,fd=22))\n" +
+		"0      0              127.0.0.1:44724       127.0.0.1:8080 users:((\"node\",pid=1249429,fd=66))\n" +
+		"0      5548           10.10.10.1:22            10.0.0.3:53910 users:((\"sshd\",pid=1578530,fd=4))\n"
+
+	pid, ok := parseSSPeerPID(output, "53910")
+	if !ok || pid != 1578530 {
+		t.Fatalf("parseSSPeerPID(_, 53910) = (%d, %v), want (1578530, true)", pid, ok)
+	}
+
+	if _, ok := parseSSPeerPID(output, "99999"); ok {
+		t.Fatalf("parseSSPeerPID(_, 99999) matched, want no match")
+	}
+}
+
+// TestSSHSessionRootPIDAgainstRealSS runs sessionRootPID for real, with no
+// mocking of `ss` at all: newHostopsTestServer's runExec (above) really
+// shells out, so when sessionRootPID sends "ss -Htnp state established",
+// the real `ss` on this machine really queries the real kernel socket
+// table — and finds the real loopback TCP connection this test's own
+// *ssh.Client just opened to hs. The socket's owning process, as far as
+// the kernel is concerned, is this very test binary (it holds the
+// accepted net.Conn in newHostopsTestServer.acceptOne), so the correct,
+// fully real answer is this process's own pid.
+func TestSSHSessionRootPIDAgainstRealSS(t *testing.T) {
+	if _, err := exec.LookPath("ss"); err != nil {
+		t.Skip("ss (iproute2) not available")
+	}
+
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	tr := &sshTransport{client: client}
+
+	pid, ok := tr.sessionRootPID(context.Background())
+	if !ok {
+		t.Fatal("sessionRootPID: not found, want a match against this process's own socket")
+	}
+	if pid != os.Getpid() {
+		t.Fatalf("sessionRootPID = %d, want this test binary's own pid %d", pid, os.Getpid())
+	}
+}

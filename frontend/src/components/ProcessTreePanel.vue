@@ -11,15 +11,22 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const unsupported = ref(false)
 const rootPid = ref<number | null>(null)
+const scoped = ref(true)
 const processes = ref<Process[]>([])
+// "session" asks the backend to narrow to this session's own processes —
+// for SSH it may not be able to (§4.10) and falls back to "all" itself,
+// reported via `scoped`. This toggle is the user's own choice of which to
+// ask for, independent of whether the last request actually got scoped.
+const requestedScope = ref<'session' | 'all'>('session')
 
 async function load() {
   loading.value = true
   error.value = null
   unsupported.value = false
   try {
-    const res = await api.processTree(props.sessionId)
+    const res = await api.processTree(props.sessionId, requestedScope.value)
     rootPid.value = res.rootPid
+    scoped.value = res.scoped
     processes.value = res.processes
   } catch (e) {
     if (isUnsupportedPlatform(e)) {
@@ -44,16 +51,43 @@ watch(() => props.sessionId, load)
       <span class="text-xs font-medium uppercase tracking-wide text-slate-400">
         Process tree<template v-if="rootPid !== null"> — root {{ rootPid }}</template>
       </span>
-      <button
-        type="button"
-        class="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
-        :disabled="loading"
-        title="Refresh"
-        @click="load"
-      >
-        <ArrowPathIcon class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
-      </button>
+      <div class="flex items-center gap-2">
+        <div class="flex rounded-md border border-slate-700 text-xs">
+          <button
+            type="button"
+            class="rounded-l-md px-2 py-0.5"
+            :class="requestedScope === 'session' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-800'"
+            @click="requestedScope = 'session'; load()"
+          >
+            This session
+          </button>
+          <button
+            type="button"
+            class="rounded-r-md px-2 py-0.5"
+            :class="requestedScope === 'all' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-800'"
+            @click="requestedScope = 'all'; load()"
+          >
+            All processes
+          </button>
+        </div>
+        <button
+          type="button"
+          class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+          :disabled="loading"
+          title="Refresh"
+          @click="load"
+        >
+          <ArrowPathIcon class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
+        </button>
+      </div>
     </div>
+
+    <p
+      v-if="!loading && !error && !unsupported && requestedScope === 'session' && !scoped"
+      class="border-b border-slate-800 bg-slate-800/50 px-3 py-1.5 text-xs text-slate-400"
+    >
+      Couldn't narrow this to just the session — showing every process on the target instead.
+    </p>
 
     <div class="min-h-0 flex-1 overflow-y-auto p-2">
       <p v-if="unsupported" class="p-3 text-xs text-slate-500">

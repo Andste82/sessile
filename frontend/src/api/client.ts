@@ -113,8 +113,10 @@ export const api = {
     }),
   restartSession: (id: string) =>
     request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),
-  processTree: (id: string) =>
-    request<ProcessTreeResponse>(`/api/sessions/${id}/hostops/process-tree`),
+  processTree: (id: string, scope?: 'session' | 'all') =>
+    request<ProcessTreeResponse>(
+      `/api/sessions/${id}/hostops/process-tree${scope ? `?scope=${scope}` : ''}`,
+    ),
   listHostFiles: (id: string, path?: string) =>
     request<HostFilesResponse>(
       `/api/sessions/${id}/hostops/files${path ? `?path=${encodeURIComponent(path)}` : ''}`,

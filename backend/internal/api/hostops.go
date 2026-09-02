@@ -34,22 +34,34 @@ func toProcessJSON(p hostops.Process) processJSON {
 	return processJSON{PID: p.PID, PPID: p.PPID, Command: p.Command, Children: children}
 }
 
-// processTreeRootPID picks what to root the tree at. Local sessions have a
-// real, known shell PID (info.PID, from the kernel — §4.7's same source).
-// SSH sessions do not: Backend.Pid() is always 0 for SSH (§4.2, "no local
-// meaning"), and there is no reliable, non-heuristic way to learn a remote
-// shell's own PID over the SSH protocol without either running an
-// intrusive probe on the interactive channel itself (risking interleaving
-// with real user input/output) or a tty-matching heuristic — exactly the
-// class of unreliable inference PROJECT_PLAN.md already rejected once for
-// a different feature (§4.7's removed activity classifier). So an SSH
-// session's tree is rooted at PID 1: the whole target's process tree,
-// honestly scoped rather than pretending to be session-scoped.
-func processTreeRootPID(info session.Info) int {
-	if info.TargetType == session.TargetSSH {
-		return 1
+// resolveProcessTreeRoot picks what ProcessTree roots at, per the optional
+// `?scope=` query param — "session" (the default) narrows to just this
+// session's own processes; "all" always shows the whole target.
+//
+// Local sessions have a real, known shell PID (info.PID, from the kernel —
+// §4.7's same source), so "session" is always exact there. SSH sessions
+// don't: Backend.Pid() is always 0 for SSH (§4.2, "no local meaning"), so
+// "session" there depends on HostSession.SessionRootPID's socket-matching
+// (§4.10) — deterministic when it works, but on a stock OpenSSH target it
+// usually can't (verified against a real one, §4.10's design note): the
+// per-connection process is commonly non-dumpable, which hides its pid
+// from everyone but root, login user included. scoped reports which one
+// the caller actually got: a "session" request that couldn't be resolved
+// falls back to the whole host (rootPID 1) with scoped=false, never a
+// silently wrong narrower-looking answer.
+func (s *Server) resolveProcessTreeRoot(c *gin.Context, ops *hostops.HostSession, info session.Info) (rootPID int, scoped bool) {
+	if c.Query("scope") == "all" {
+		return 1, false
 	}
-	return info.PID
+	if info.TargetType != session.TargetSSH {
+		return info.PID, true
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
+	defer cancel()
+	if pid, ok := ops.SessionRootPID(ctx); ok {
+		return pid, true
+	}
+	return 1, false
 }
 
 func (s *Server) getProcessTree(c *gin.Context) {
@@ -60,10 +72,11 @@ func (s *Server) getProcessTree(c *gin.Context) {
 		return
 	}
 
+	rootPID, scoped := s.resolveProcessTreeRoot(c, ops, info)
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
 	defer cancel()
 
-	rootPID := processTreeRootPID(info)
 	procs, err := ops.ProcessTree(ctx, rootPID)
 	if err != nil {
 		if errors.Is(err, hostops.ErrUnsupportedPlatform) {
@@ -79,7 +92,7 @@ func (s *Server) getProcessTree(c *gin.Context) {
 	for _, p := range procs {
 		out = append(out, toProcessJSON(p))
 	}
-	c.JSON(http.StatusOK, gin.H{"rootPid": rootPID, "processes": out})
+	c.JSON(http.StatusOK, gin.H{"rootPid": rootPID, "scoped": scoped, "processes": out})
 }
 
 // dirEntryJSON mirrors hostops.DirEntry for the wire (§6, §4.10).

@@ -141,8 +141,16 @@ export interface Process {
   children: Process[]
 }
 
+// scoped is true when processes is actually narrowed to this session's own
+// processes — always true for a local session's default view, but for SSH
+// it depends on HostSession.SessionRootPID finding a match (§4.10), which
+// on a stock OpenSSH target usually can't (its per-connection process is
+// commonly non-dumpable, hiding its pid from everyone but root). false
+// means processes is the whole target instead, honestly labeled rather
+// than presented as if it were narrowed.
 export interface ProcessTreeResponse {
   rootPid: number
+  scoped: boolean
   processes: Process[]
 }
 
