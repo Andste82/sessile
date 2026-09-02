@@ -2,6 +2,7 @@ package hosts
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 )
@@ -37,4 +38,21 @@ func (r *Registry) For(userID string) (*Store, error) {
 	}
 	r.stores[userID] = s
 	return s, nil
+}
+
+// Remove deletes userID's entire per-user directory (hosts.yml — plaintext
+// SSH passwords and private keys, by design, §11 — and anything else ever
+// added under it) and evicts any cached Store, so a deleted account's
+// credentials don't linger on disk indefinitely. Called by admin user
+// deletion (§12b M11); a no-op if the directory never existed.
+func (r *Registry) Remove(userID string) error {
+	r.mu.Lock()
+	delete(r.stores, userID)
+	r.mu.Unlock()
+
+	dir := filepath.Join(r.dataDir, "users", userID)
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove %s: %w", dir, err)
+	}
+	return nil
 }

@@ -20,9 +20,15 @@ func (s *Server) listUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// deleteUser removes an account and revokes any web sessions it still has
-// open — otherwise a browser that was already logged in would keep working
-// against an account that no longer exists.
+// deleteUser removes an account, revokes any web sessions it still has open
+// — otherwise a browser that was already logged in would keep working
+// against an account that no longer exists — and cascades to what an
+// orphaned account would otherwise leave behind: its plaintext hosts.yml
+// (SSH passwords and private keys, §11) sitting on disk indefinitely, and
+// its live terminal sessions running on as orphans nobody can list, attach
+// to, or delete (Manager.Delete requires a matching userID, and the account
+// that matched is gone). Cascade failures are logged, not fatal — the
+// account is already gone either way, and there is no request left to fail.
 func (s *Server) deleteUser(c *gin.Context) {
 	id := c.Param("id")
 	if err := s.users.Delete(id); err != nil {
@@ -30,6 +36,22 @@ func (s *Server) deleteUser(c *gin.Context) {
 		return
 	}
 	s.webSessions.RevokeByUser(id)
+
+	if infos, err := s.manager.List(id); err != nil {
+		s.log.Error("list sessions for deleted user failed", "id", id, "err", err)
+	} else {
+		for _, info := range infos {
+			if err := s.manager.Delete(info.ID, id); err != nil {
+				s.log.Error("delete session for deleted user failed", "sessionId", info.ID, "userId", id, "err", err)
+			}
+		}
+	}
+	if s.hosts != nil {
+		if err := s.hosts.Remove(id); err != nil {
+			s.log.Error("remove hosts.yml for deleted user failed", "id", id, "err", err)
+		}
+	}
+
 	c.Status(http.StatusNoContent)
 }
 
