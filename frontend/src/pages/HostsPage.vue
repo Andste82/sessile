@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { PlusIcon, PencilIcon } from '@heroicons/vue/24/outline'
+import { PlusIcon, PencilIcon, ShieldCheckIcon } from '@heroicons/vue/24/outline'
 import { useHostsStore } from '@/stores/hosts'
 import HostDialog from '@/components/HostDialog.vue'
-import type { Host } from '@/api/types'
+import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
+import type { Host, HostKeyErrorDetails } from '@/api/types'
 
 const store = useHostsStore()
 
@@ -11,6 +12,16 @@ const dialogOpen = ref(false)
 const editingHost = ref<Host | null>(null)
 const armedDeleteId = ref<string | null>(null)
 const deleteError = ref<Record<string, string>>({})
+
+// "Verify host key" — hostkeys.go's probe/trust endpoints existed since
+// M17, but nothing in the UI ever called probeHostKey; this was the only
+// place a user could confirm or re-trust a host's key outside of stumbling
+// into it while creating a session.
+const verifyingId = ref<string | null>(null)
+const verifyMessage = ref<Record<string, string>>({})
+const pendingHostKey = ref<{ hostId: string; hostName: string; details: HostKeyErrorDetails } | null>(
+  null,
+)
 
 onMounted(() => {
   void store.fetchHosts()
@@ -46,6 +57,35 @@ async function confirmDelete(id: string) {
 
 function keyLabel(host: Host) {
   return host.trustedHostKeyFingerprint || 'Not yet trusted'
+}
+
+async function verifyHostKey(host: Host) {
+  verifyingId.value = host.id
+  const nextMessages = { ...verifyMessage.value }
+  delete nextMessages[host.id]
+  verifyMessage.value = nextMessages
+  try {
+    const probe = await store.probeHostKey(host.id)
+    if (probe.status === 'unchanged') {
+      verifyMessage.value = { ...verifyMessage.value, [host.id]: 'Host key unchanged — still trusted.' }
+      return
+    }
+    // "new" (never trusted yet) or "changed" — either way, only an explicit
+    // trust from here pins it. No status here silently updates the fingerprint.
+    pendingHostKey.value = {
+      hostId: host.id,
+      hostName: host.name,
+      details: {
+        keyType: probe.keyType,
+        fingerprint: probe.fingerprint,
+        previousFingerprint: probe.previousFingerprint,
+      },
+    }
+  } catch (e) {
+    verifyMessage.value = { ...verifyMessage.value, [host.id]: e instanceof Error ? e.message : String(e) }
+  } finally {
+    verifyingId.value = null
+  }
 }
 </script>
 
@@ -93,9 +133,21 @@ function keyLabel(host: Host) {
                 <p v-if="deleteError[host.id]" class="mt-1 text-xs text-rose-400">
                   {{ deleteError[host.id] }}
                 </p>
+                <p v-if="verifyMessage[host.id]" class="mt-1 text-xs text-slate-400">
+                  {{ verifyMessage[host.id] }}
+                </p>
               </div>
 
               <div class="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  class="flex items-center gap-1 rounded-md border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="verifyingId === host.id"
+                  @click="verifyHostKey(host)"
+                >
+                  <ShieldCheckIcon class="h-3.5 w-3.5" />
+                  {{ verifyingId === host.id ? 'Verifying…' : 'Verify host key' }}
+                </button>
                 <button
                   type="button"
                   class="flex items-center gap-1 rounded-md border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-700"
@@ -152,5 +204,14 @@ function keyLabel(host: Host) {
     </main>
 
     <HostDialog :open="dialogOpen" :host="editingHost" @close="dialogOpen = false" @saved="onSaved" />
+
+    <HostKeyTrustDialog
+      :open="pendingHostKey !== null"
+      :host-id="pendingHostKey?.hostId ?? ''"
+      :host-name="pendingHostKey?.hostName ?? ''"
+      :details="pendingHostKey?.details ?? null"
+      @close="pendingHostKey = null"
+      @trusted="pendingHostKey = null"
+    />
   </div>
 </template>
