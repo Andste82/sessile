@@ -510,6 +510,57 @@ what it calls itself. An empty payload is a program clearing its title and is
 passed on as such, and a stopped session's title is cleared with the rest of its
 derived state — no shell is left to reach another prompt and overwrite it.
 
+### 4.9 Terminal modes on attach
+
+A terminal carries state that is not on its screen: whether the alternate
+screen is up, whether a program asked for mouse reports and in which encoding,
+whether the line editor is given bracketed paste, what the arrow keys send. A
+program switches these on for itself when it starts and off again when it
+exits, with a DEC private mode set or reset.
+
+**The ring buffer cannot carry them, and that is a bug rather than a detail.**
+The buffer is content, and it is bounded. A program that repaints — htop, vim,
+a build with a progress bar — pushes its own opening `ESC [ ? 1049 h ESC [ ?
+1002 h` off the front of it long before anyone switches sessions, so what a
+later attach replays is a stream of repaints that switches nothing on. The
+frontend builds a fresh xterm for every session switch (§7 keys `TerminalView`
+on the session id), and that terminal then sits on the normal screen with mouse
+reporting off while the program on the other end believes both are on.
+Symptom, as reported in #92: scrolling a TUI does nothing, reopening the tab
+replays the same truncated snapshot and does not help, and only resizing the
+window brings it back — SIGWINCH makes the program redraw and re-issue its own
+setup.
+
+**The fix is a preamble, not an emulator.** `modeScanner`
+(`internal/session/modes.go`) walks the live stream from the read loop, over
+the same bytes it broadcasts and beside `titleScanner`, and keeps a handful of
+values: the alternate screen (47/1047/1049, the spelling the program used), the
+mouse tracking mode (1000/1002/1003) and its encoding (1005/1006/1015/1016),
+bracketed paste (2004), focus reporting (1004), application cursor keys
+(DECCKM) and keypad (DECKPAM/DECKPNM), and the two that are on in a reset
+terminal — the cursor (25) and autowrap (7). `attach` renders them as the
+sequences that put a fresh terminal into that state and writes them **ahead of**
+the replay, so anything the replay still carries is applied afterwards and wins:
+a snapshot that survived intact is unaffected. `replayBytes` counts both, which
+is what §5 asks of it. A session in a reset terminal — an ordinary shell —
+produces no preamble and no bytes.
+
+**tmux does not have this problem** because its state does not live in the
+stream: it parses output into a screen model with a mode bitset beside it, and
+writes those modes out to whichever client attaches. This is that half of tmux's
+design and only that half. The character grid stays out, per §14.2 — nothing
+here holds a cell, a cursor position or an attribute.
+
+**Where it stops.** The mouse modes are kept as one tracking value and one
+encoding rather than a bit each, because that is how xterm.js models them: it
+keeps one active protocol and one active encoding, so a reset of any of the
+three tracking modes turns tracking off. The scroll region (DECSTBM) is
+deliberately not tracked: it is two numbers rather than a flag, and re-issuing
+it homes the cursor — the same trap `restoreSeparator` documents. Modes the
+browser terminal owns itself or does not implement are ignored rather than
+guessed at. A restart builds a new session and a new read loop, so no mode
+outlives the shell that set it.
+
 ---
 
 ## 5. WebSocket Protocol (exact spec)
@@ -559,8 +610,9 @@ Server → Client:
   (gorilla ping/pong handlers). No JSON-level heartbeat needed.
 - Attach sequence, in order: upgrade → send `attached` control frame →
   send ring buffer replay (binary) → begin live streaming. The replay is the
-  buffer with the terminal queries filtered out, and `replayBytes` counts what
-  is actually sent — see §8, "Replayed output must not ask questions".
+  mode preamble (§4.9) followed by the buffer with the terminal queries filtered
+  out, and `replayBytes` counts what is actually sent — see §8, "Replayed output
+  must not ask questions".
 - `exit` does **not** close the connection: the session can be restarted
   under the same id, and this is the channel that carries that news to every
   client — including the ones that did not ask for it. Restarting a session
@@ -1448,10 +1500,11 @@ auth — shipped in M8-M21 above.
 2. Raw byte replay via ring buffer — no server-side terminal emulation. The
    server holds no character grid, no cursor and no cell attributes; there is
    exactly one terminal emulator in the system and it is the xterm.js the user
-   is looking at. The two places that do walk the byte stream — `sanitizeReplay`
-   (§8) and `endsInAltScreen` — do not weaken this: they step over escape
-   sequences to drop a query or to read one mode switch, and never look at a
-   printable character. Neither builds a grid, and neither can answer "what is
+   is looking at. The places that do walk the byte stream — `sanitizeReplay`
+   (§8), `endsInAltScreen`, `titleScanner` (§4.8) and `modeScanner` (§4.9) — do
+   not weaken this: they step over escape sequences to drop a query, to read a
+   title out of one, or to keep a dozen mode flags, and never look at a
+   printable character. None of them builds a grid, and none can answer "what is
    on the screen".
 
    This is the line that keeps the dashboard from showing a preview of each

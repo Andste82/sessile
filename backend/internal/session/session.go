@@ -68,6 +68,12 @@ type Session struct {
 	title      string
 	titleDirty bool
 
+	// modes is the terminal state the program in the session has switched on
+	// for itself — alternate screen, mouse tracking, bracketed paste (§4.9).
+	// Scanned out of the output stream by the read loop like the title above,
+	// and read by attach, which writes it ahead of the replay.
+	modes termModes
+
 	// runtime-only
 	backend     Backend
 	buffer      *RingBuffer
@@ -150,10 +156,23 @@ func (s *Session) infoLocked() Info {
 // hand at once — on the write side a query can be split across two PTY reads.
 // It is a byte loop over a buffer Snapshot has just copied anyway, and it runs
 // once per attach, not per chunk of output.
+//
+// The mode preamble goes in front of it (§4.9). The ring buffer is bounded, so
+// a program that repaints eventually pushes its own `ESC [ ? 1049 h` off the
+// front and the replay alone would leave a fresh terminal on the normal screen
+// with mouse reporting off. Whatever the replay still carries is applied after
+// the preamble and wins, so a snapshot that survived intact is unaffected.
+// `replayBytes` counts both, which is what §5 asks of it: what is actually sent.
 func (s *Session) attach(c Client) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	replay := sanitizeReplay(s.buffer.Snapshot())
+	if pre := s.modes.preamble(); len(pre) > 0 {
+		// Prepended rather than sent as a frame of its own: §5 describes the
+		// replay as one binary send, and the guard keeps a session with nothing
+		// to restore on the copy-free path sanitizeReplay already gives it.
+		replay = append(pre, replay...)
+	}
 	c.SendControl(newAttached(s.ID, len(replay)))
 	if len(replay) > 0 {
 		c.Send(replay)
