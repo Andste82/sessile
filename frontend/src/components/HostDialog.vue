@@ -18,8 +18,16 @@ const emit = defineEmits<{
 }>()
 
 const store = useHostsStore()
-const isEdit = computed(() => props.host !== null)
 const exchangeDialogOpen = ref(false)
+
+// The host "Exchange SSH keys…" targets. Starts as props.host (edit mode)
+// but is reassigned once saveHost() succeeds — including from a brand new,
+// never-saved host, so exchange works during creation too, without ever
+// needing a password typed into this form. isEdit and the submit button's
+// label/action follow this, not props.host directly, so both flows stay in
+// sync with whichever host actually exists right now.
+const workingHost = ref<Host | null>(props.host)
+const isEdit = computed(() => workingHost.value !== null)
 
 const name = ref('')
 const group = ref('')
@@ -56,6 +64,7 @@ watch(
     password.value = ''
     privateKey.value = ''
     privateKeyPassphrase.value = ''
+    workingHost.value = props.host
     const h = props.host
     name.value = h?.name ?? ''
     group.value = h?.group ?? ''
@@ -69,36 +78,75 @@ watch(
 )
 
 const canSubmit = computed(
-  () => name.value.trim().length > 0 && address.value.trim().length > 0 && username.value.trim().length > 0,
+  () =>
+    name.value.trim().length > 0 &&
+    address.value.trim().length > 0 &&
+    username.value.trim().length > 0 &&
+    (terminalType.value !== 'custom' || customCommand.value.trim().length > 0),
 )
+
+// Shared by the main Save/Create button and "Exchange SSH keys…": both need
+// the *current* form fields persisted before they act, not whatever
+// workingHost already held — that staleness was exactly finding #5's bug
+// (exchange silently ran against an unsaved address/username edit). Saving
+// first, always, means there is only ever one host record to be stale about.
+async function saveHost(): Promise<Host> {
+  const body: HostBody = {
+    name: name.value.trim(),
+    group: group.value.trim(),
+    address: address.value.trim(),
+    username: username.value.trim(),
+    authMethod: authMethod.value,
+    targetOS: targetOS.value,
+    terminalType: terminalType.value,
+    customCommand: terminalType.value === 'custom' ? customCommand.value.trim() : '',
+  }
+  // Omit a blank secret field entirely so an edit that isn't changing the
+  // credential doesn't overwrite it with empty — HostBody's fields are
+  // optional exactly so this works. Leaving both secret fields unset (the
+  // "Exchange SSH keys…" flow can do this from a fresh New host form) is
+  // fine too: the backend doesn't require one until something needs it.
+  if (authMethod.value === 'password' && password.value) body.password = password.value
+  if (authMethod.value === 'privateKey' && privateKey.value) body.privateKey = privateKey.value
+  if (authMethod.value === 'privateKey' && privateKeyPassphrase.value)
+    body.privateKeyPassphrase = privateKeyPassphrase.value
+
+  const saved = workingHost.value
+    ? await store.updateHost(workingHost.value.id, body)
+    : await store.createHost(body)
+  workingHost.value = saved
+  emit('saved', saved)
+  return saved
+}
 
 async function submit() {
   if (!canSubmit.value || submitting.value) return
   submitting.value = true
   error.value = null
   try {
-    const body: HostBody = {
-      name: name.value.trim(),
-      group: group.value.trim(),
-      address: address.value.trim(),
-      username: username.value.trim(),
-      authMethod: authMethod.value,
-      targetOS: targetOS.value,
-      terminalType: terminalType.value,
-      customCommand: terminalType.value === 'custom' ? customCommand.value.trim() : '',
-    }
-    // Omit a blank secret field entirely so an edit that isn't changing the
-    // credential doesn't overwrite it with empty — HostBody's fields are
-    // optional exactly so this works.
-    if (authMethod.value === 'password' && password.value) body.password = password.value
-    if (authMethod.value === 'privateKey' && privateKey.value) body.privateKey = privateKey.value
-    if (authMethod.value === 'privateKey' && privateKeyPassphrase.value)
-      body.privateKeyPassphrase = privateKeyPassphrase.value
+    await saveHost()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    submitting.value = false
+  }
+}
 
-    const saved = props.host
-      ? await store.updateHost(props.host.id, body)
-      : await store.createHost(body)
-    emit('saved', saved)
+// Saves first (creating the host if this is still a fresh New host form),
+// then opens the exchange dialog against that just-saved record — never a
+// stale one. This is what lets "Exchange SSH keys…" work straight from
+// creation: name/address/username get persisted (with whatever auth method
+// happens to be selected, password left blank if the user never typed one —
+// the backend doesn't require it), and the exchange itself supplies its own
+// one-time credentials, so a password never has to be saved at all if the
+// plan was always to use key exchange.
+async function openExchange() {
+  if (!canSubmit.value || submitting.value) return
+  submitting.value = true
+  error.value = null
+  try {
+    await saveHost()
+    exchangeDialogOpen.value = true
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -108,12 +156,18 @@ async function submit() {
 
 // Reflects the server-side switch to privateKey locally, so the form
 // doesn't keep showing the retired password field while this dialog stays
-// open — the store's own host list already picked up the change.
+// open. store.exchangeKeys already refreshed the store's own host list;
+// pick the updated record up into workingHost too, so a second "Exchange
+// SSH keys…" click in the same dialog session sees the new authMethod/
+// hasPrivateKey rather than a stale snapshot from before the exchange.
 function onExchanged(_result: ExchangeKeysResponse) {
   authMethod.value = 'privateKey'
   password.value = ''
   privateKey.value = ''
   privateKeyPassphrase.value = ''
+  if (workingHost.value) {
+    workingHost.value = store.hosts.find((h) => h.id === workingHost.value?.id) ?? workingHost.value
+  }
 }
 
 const labelCls = 'flex flex-col gap-1 text-sm'
@@ -179,10 +233,11 @@ const inputCls =
                 <div class="flex items-center justify-between">
                   <span class="text-sm text-slate-400">Authentication</span>
                   <button
-                    v-if="isEdit && address.trim() !== ''"
+                    v-if="canSubmit"
                     type="button"
-                    class="text-xs text-emerald-400 hover:text-emerald-300"
-                    @click="exchangeDialogOpen = true"
+                    class="text-xs text-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    :disabled="submitting"
+                    @click="openExchange"
                   >
                     Exchange SSH keys…
                   </button>
@@ -205,7 +260,7 @@ const inputCls =
                   v-model="password"
                   type="password"
                   autocomplete="new-password"
-                  :placeholder="isEdit && host?.hasPassword ? 'Leave blank to keep the current password' : ''"
+                  :placeholder="isEdit && workingHost?.hasPassword ? 'Leave blank to keep the current password' : ''"
                   :class="inputCls"
                 />
               </label>
@@ -216,7 +271,7 @@ const inputCls =
                   <textarea
                     v-model="privateKey"
                     rows="4"
-                    :placeholder="isEdit && host?.hasPrivateKey ? 'Leave blank to keep the current key' : '-----BEGIN OPENSSH PRIVATE KEY-----'"
+                    :placeholder="isEdit && workingHost?.hasPrivateKey ? 'Leave blank to keep the current key' : '-----BEGIN OPENSSH PRIVATE KEY-----'"
                     class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-100 outline-none focus:border-emerald-500"
                   />
                 </label>
@@ -273,7 +328,7 @@ const inputCls =
 
   <ExchangeKeysDialog
     :open="exchangeDialogOpen"
-    :host="props.host"
+    :host="workingHost"
     @close="exchangeDialogOpen = false"
     @exchanged="onExchanged"
   />
