@@ -6,9 +6,12 @@
 package sshpty
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -68,6 +71,13 @@ type PTY struct {
 	writeMu          sync.Mutex
 
 	done chan struct{} // closed once the background Wait()/cleanup goroutine finishes
+
+	// pidFilePath is where the started command's PID was asked to record
+	// itself (§4.10) — "" for a target Start didn't wrap (see
+	// wrapWithPIDRecording). internal/hostops reads it lazily, only when a
+	// caller actually asks to scope a process tree to this session; Start
+	// itself never reads it back.
+	pidFilePath string
 }
 
 // Start dials target, requests a PTY, and starts its configured command.
@@ -143,7 +153,10 @@ func Start(t Target, rows, cols uint16) (*PTY, error) {
 	if cmd == "custom" {
 		cmd = t.CustomCommand
 	}
-	if err := session.Start(cmd); err != nil {
+
+	pidFilePath, startCmd := wrapWithPIDRecording(t.TerminalType, cmd)
+
+	if err := session.Start(startCmd); err != nil {
 		_ = stdinR.Close()
 		_ = stdinW.Close()
 		_ = stdoutR.Close()
@@ -157,7 +170,8 @@ func Start(t Target, rows, cols uint16) (*PTY, error) {
 		client: client, session: session,
 		stdinR: stdinR, stdinW: stdinW,
 		stdoutR: stdoutR, stdoutW: stdoutW,
-		done: make(chan struct{}),
+		done:        make(chan struct{}),
+		pidFilePath: pidFilePath,
 	}
 	// session.Wait() already blocks until the stdin-copying goroutine ssh
 	// starts internally has finished (it reaps every copyFunc before
@@ -194,6 +208,55 @@ func authMethods(t Target) ([]ssh.AuthMethod, error) {
 }
 
 // Read reads combined remote stdout/stderr.
+// wrapWithPIDRecording rewrites cmd so that whatever process ends up
+// running it also, silently, records its own PID first — needed because
+// there is no SSH-protocol-level way to ask "which remote process is my
+// shell", and the alternative internal/hostops otherwise falls back to
+// (matching this connection's socket against `ss` on the far end) usually
+// can't resolve on a stock OpenSSH target at all (§4.10's design note).
+//
+// The trick is `exec`: "echo $$ > path; exec sh -c '<cmd>'" records the
+// wrapper's own PID (echo is a shell builtin — no fork), then exec
+// *replaces* that same process with cmd, keeping the PID identical. So
+// the recorded PID is exactly the PID of the process running cmd — not a
+// guess, not a different process, and nothing is written to the PTY the
+// user sees (the write goes to a file, never to stdout/stderr). Quoting
+// cmd for the inner `sh -c` rather than appending "exec cmd" directly
+// preserves it correctly even when cmd itself contains shell operators
+// (a CustomCommand with a `;` or `&&` in it) — exec only ever binds to
+// the one simple command immediately after it, so unquoted concatenation
+// would silently change what runs.
+//
+// Skipped for a Windows target (TerminalType "cmd"/"powershell") — this
+// is POSIX shell syntax, and Windows's OpenSSH doesn't run exec requests
+// through a POSIX shell in the first place. Those targets get no PID
+// recording; internal/hostops's ss-based fallback is what little there
+// is for them today.
+func wrapWithPIDRecording(terminalType, cmd string) (pidFilePath, wrapped string) {
+	if terminalType == "cmd" || terminalType == "powershell" {
+		return "", cmd
+	}
+	token := make([]byte, 8)
+	if _, err := rand.Read(token); err != nil {
+		return "", cmd // can't generate a safe path — run cmd exactly as before
+	}
+	path := "/tmp/.sessile-pid-" + hex.EncodeToString(token)
+	return path, fmt.Sprintf("echo $$ > %s 2>/dev/null; exec sh -c %s", path, shellSingleQuote(cmd))
+}
+
+// shellSingleQuote wraps s for safe use as one single-quoted POSIX shell
+// word: close the quote, escape a literal quote, reopen it.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// PIDFilePath returns where wrapWithPIDRecording asked the started
+// command to record its own PID, or "" if Start skipped that (a Windows
+// target). internal/hostops reads it lazily and on demand (§4.10) — never
+// read here, so a session that never uses the process-tree feature pays
+// nothing beyond the one-line shell preamble already in its exec request.
+func (p *PTY) PIDFilePath() string { return p.pidFilePath }
+
 func (p *PTY) Read(b []byte) (int, error) {
 	return p.stdoutR.Read(b)
 }

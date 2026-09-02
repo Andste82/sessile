@@ -5,10 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pkg/sftp"
@@ -167,7 +170,7 @@ func newTestSSHClient(t *testing.T, hs *hostopsTestServer) *ssh.Client {
 
 func TestSSHExecCapturesStdoutStderrAndExitCode(t *testing.T) {
 	hs := newHostopsTestServer(t)
-	tr := NewSSH(newTestSSHClient(t, hs))
+	tr := NewSSH(newTestSSHClient(t, hs), "")
 
 	res, err := tr.Exec(context.Background(), "echo out; echo err >&2")
 	if err != nil {
@@ -195,7 +198,7 @@ func TestSSHExecCapturesStdoutStderrAndExitCode(t *testing.T) {
 func TestSSHFilesRoundTrip(t *testing.T) {
 	hs := newHostopsTestServer(t)
 	ctx := context.Background()
-	files := NewSSH(newTestSSHClient(t, hs)).Files()
+	files := NewSSH(newTestSSHClient(t, hs), "").Files()
 
 	if err := files.Write(ctx, "a.txt", []byte("hello")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -246,7 +249,7 @@ func TestSSHFilesRoundTrip(t *testing.T) {
 func TestSSHRemoveDeletesNestedDirectory(t *testing.T) {
 	hs := newHostopsTestServer(t)
 	ctx := context.Background()
-	files := NewSSH(newTestSSHClient(t, hs)).Files()
+	files := NewSSH(newTestSSHClient(t, hs), "").Files()
 
 	if err := os.MkdirAll(filepath.Join(hs.root, "sub", "deeper"), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -280,16 +283,18 @@ func TestParseSSPeerPID(t *testing.T) {
 	}
 }
 
-// TestSSHSessionRootPIDAgainstRealSS runs sessionRootPID for real, with no
-// mocking of `ss` at all: newHostopsTestServer's runExec (above) really
-// shells out, so when sessionRootPID sends "ss -Htnp state established",
-// the real `ss` on this machine really queries the real kernel socket
-// table — and finds the real loopback TCP connection this test's own
-// *ssh.Client just opened to hs. The socket's owning process, as far as
-// the kernel is concerned, is this very test binary (it holds the
-// accepted net.Conn in newHostopsTestServer.acceptOne), so the correct,
-// fully real answer is this process's own pid.
-func TestSSHSessionRootPIDAgainstRealSS(t *testing.T) {
+// TestSSHSessionRootPIDViaSocketAgainstRealSS runs the ss-based fallback
+// for real, with no mocking of `ss` at all: newHostopsTestServer's runExec
+// (above) really shells out, so when it sends "ss -Htnp state
+// established", the real `ss` on this machine really queries the real
+// kernel socket table — and finds the real loopback TCP connection this
+// test's own *ssh.Client just opened to hs. The socket's owning process,
+// as far as the kernel is concerned, is this very test binary (it holds
+// the accepted net.Conn in newHostopsTestServer.acceptOne), so the
+// correct, fully real answer is this process's own pid — root running the
+// test process is what makes this succeed; see the PID-file test below
+// for the mechanism that works without that.
+func TestSSHSessionRootPIDViaSocketAgainstRealSS(t *testing.T) {
 	if _, err := exec.LookPath("ss"); err != nil {
 		t.Skip("ss (iproute2) not available")
 	}
@@ -298,11 +303,62 @@ func TestSSHSessionRootPIDAgainstRealSS(t *testing.T) {
 	client := newTestSSHClient(t, hs)
 	tr := &sshTransport{client: client}
 
-	pid, ok := tr.sessionRootPID(context.Background())
+	pid, ok := tr.sessionRootPIDViaSocket(context.Background())
 	if !ok {
-		t.Fatal("sessionRootPID: not found, want a match against this process's own socket")
+		t.Fatal("sessionRootPIDViaSocket: not found, want a match against this process's own socket")
 	}
 	if pid != os.Getpid() {
-		t.Fatalf("sessionRootPID = %d, want this test binary's own pid %d", pid, os.Getpid())
+		t.Fatalf("sessionRootPIDViaSocket = %d, want this test binary's own pid %d", pid, os.Getpid())
+	}
+}
+
+// TestSSHSessionRootPIDReadsPIDFile exercises the primary mechanism
+// (§4.10) end to end: the exact preamble sshpty.wrapWithPIDRecording
+// produces — "echo $$ > path" — really runs (via hostopsTestServer's real
+// shell-out) and readPIDFile reads back exactly what that real process
+// wrote, with no `ss`, no root, and no dependence on any socket-to-pid
+// permission at all — the whole reason this mechanism exists.
+func TestSSHSessionRootPIDReadsPIDFile(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	pidFile := filepath.Join(t.TempDir(), "pidfile")
+	tr := &sshTransport{client: client, pidFilePath: pidFile}
+
+	// Same shape wrapWithPIDRecording produces, minus the final `exec` —
+	// this test only needs the file written, not a real long-lived
+	// process kept running afterward.
+	ctx := context.Background()
+	res, err := tr.Exec(ctx, fmt.Sprintf("echo $$ > %s 2>/dev/null; echo $$", pidFile))
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	wantPID := strings.TrimSpace(string(res.Stdout))
+	if wantPID == "" {
+		t.Fatal("Exec produced no pid on stdout")
+	}
+
+	pid, ok := tr.sessionRootPID(ctx)
+	if !ok {
+		t.Fatal("sessionRootPID: not found, want the pid file just written")
+	}
+	if strconv.Itoa(pid) != wantPID {
+		t.Fatalf("sessionRootPID = %d, want %s (from the same command's own stdout)", pid, wantPID)
+	}
+}
+
+// TestSSHSessionRootPIDFallsBackWhenNoPIDFile confirms an empty
+// pidFilePath (a Windows target, where wrapWithPIDRecording never wrote
+// one) falls through to the socket-based fallback rather than failing.
+func TestSSHSessionRootPIDFallsBackWhenNoPIDFile(t *testing.T) {
+	if _, err := exec.LookPath("ss"); err != nil {
+		t.Skip("ss (iproute2) not available")
+	}
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	tr := &sshTransport{client: client, pidFilePath: ""}
+
+	pid, ok := tr.sessionRootPID(context.Background())
+	if !ok || pid != os.Getpid() {
+		t.Fatalf("sessionRootPID = (%d, %v), want (%d, true) via the socket fallback", pid, ok, os.Getpid())
 	}
 }

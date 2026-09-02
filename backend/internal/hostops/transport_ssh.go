@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -25,15 +26,22 @@ import (
 type sshTransport struct {
 	client *ssh.Client
 
+	// pidFilePath is where sshpty.Start's exec preamble recorded the
+	// session's own PID (§4.10) — "" for a target that didn't get one (a
+	// Windows target; wrapWithPIDRecording's job, not this package's).
+	pidFilePath string
+
 	sftpMu   sync.Mutex
 	sftpErr  error
 	sftpOnce *sftp.Client
 }
 
 // NewSSH returns a Transport backed by client. The caller owns client's
-// lifecycle — hostops never closes it.
-func NewSSH(client *ssh.Client) Transport {
-	return &sshTransport{client: client}
+// lifecycle — hostops never closes it. pidFilePath is sshpty.PTY's
+// PIDFilePath() — "" is fine, it just means sessionRootPID has one fewer
+// way to resolve.
+func NewSSH(client *ssh.Client, pidFilePath string) Transport {
+	return &sshTransport{client: client, pidFilePath: pidFilePath}
 }
 
 func (t *sshTransport) Exec(ctx context.Context, line string) (Result, error) {
@@ -210,14 +218,68 @@ func (t *sshFileTransport) Copy(ctx context.Context, src, dst string) error {
 	return t.Write(ctx, dst, data)
 }
 
-// sessionRootPID finds the PID of the sshd process handling exactly this
-// connection, by matching this *ssh.Client's own local TCP address/port —
-// which, from the target's point of view, is the peer of the established
-// connection it's holding — against `ss`'s socket table on the far end.
-// That process is the one sshd forked for this login, so its descendant
-// subtree (walked by the existing buildProcessTree, using this PID as
-// root, exactly like any other) is this session's own processes and
-// nothing else's.
+// pidFileRetries/pidFileRetryDelay bound how long sessionRootPID waits for
+// sshpty.Start's exec preamble to have actually run "echo $$ > path" by
+// the time something asks — Start returning only means the exec request
+// was accepted, not that its first shell statement has executed yet. This
+// is normally near-instant; the budget here is generous, not expected.
+const (
+	pidFileRetries    = 10
+	pidFileRetryDelay = 100 * time.Millisecond
+)
+
+// sessionRootPID finds this SSH session's own PID on the target, trying
+// two independent mechanisms in order:
+//
+//  1. Reading back sshpty.Start's exec preamble (§4.10's "wrap with PID
+//     recording") — the process running the session's command wrote its
+//     own PID to t.pidFilePath before exec-ing into that command, so this
+//     is exact whenever a preamble was written (every POSIX SSH target;
+//     see wrapWithPIDRecording). Retried briefly for the startup race
+//     noted above.
+//  2. Falling back to matching this connection's own local TCP address
+//     against `ss`'s socket table on the far end (below) — kept as a
+//     second attempt for a target with no pidFilePath (a Windows target,
+//     where the preamble doesn't apply) or where reading it somehow
+//     failed; on a stock OpenSSH target this mechanism alone usually
+//     can't resolve anything (see its own doc comment), which is exactly
+//     why (1) exists.
+func (t *sshTransport) sessionRootPID(ctx context.Context) (int, bool) {
+	if t.pidFilePath != "" {
+		if pid, ok := t.readPIDFile(ctx); ok {
+			return pid, true
+		}
+	}
+	return t.sessionRootPIDViaSocket(ctx)
+}
+
+func (t *sshTransport) readPIDFile(ctx context.Context) (int, bool) {
+	line := fmt.Sprintf("cat %s 2>/dev/null", t.pidFilePath)
+	for attempt := 0; attempt < pidFileRetries; attempt++ {
+		res, err := t.Exec(ctx, line)
+		if err == nil && res.ExitCode == 0 {
+			if pid, atoiErr := strconv.Atoi(strings.TrimSpace(string(res.Stdout))); atoiErr == nil && pid > 0 {
+				return pid, true
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return 0, false
+		case <-time.After(pidFileRetryDelay):
+		}
+	}
+	return 0, false
+}
+
+// sessionRootPIDViaSocket is the ss-based fallback — reached only when
+// there's no pidFilePath to read (a Windows target) or reading it failed
+// (see sessionRootPID's doc comment). It matches this *ssh.Client's own
+// local TCP address/port — which, from the target's point of view, is the
+// peer of the established connection it's holding — against `ss`'s socket
+// table on the far end. That process is the one sshd forked for this
+// login, so its descendant subtree (walked by the existing
+// buildProcessTree, using this PID as root, exactly like any other) is
+// this session's own processes and nothing else's.
 //
 // This is deterministic, not a guess: either the matching socket is found
 // with a pid attached, or it isn't — never a plausible-looking wrong
@@ -231,14 +293,12 @@ func (t *sshFileTransport) Copy(ctx context.Context, src, dst string) error {
 // /proc/<pid>/fd — and so `ss -p` — for everyone but root, even the
 // connection's own login user who technically owns that process. So on a
 // stock OpenSSH target this resolves to "not found" far more often than
-// "found" — expected, not a bug; see PROJECT_PLAN.md §4.10 for the real
-// test that surfaced this. It still resolves cleanly on SSH servers that
-// don't set that flag, and either way the fallback (§6's `scope=all`) is
-// exactly as good as what existed before this existed. ok is false for
-// anything else too (ss missing, a non-Linux target, no line matching this
-// port at all) — the caller decides what "unknown" means for it; this
-// never falls back to a different rootPID on its own.
-func (t *sshTransport) sessionRootPID(ctx context.Context) (int, bool) {
+// "found" — which is exactly why sessionRootPID tries the pidFilePath
+// first: that mechanism doesn't depend on any of this. This one stays as
+// the fallback for a Windows target and for defense in depth. ok is false
+// for anything else too (ss missing, a non-Linux target, no line matching
+// this port at all).
+func (t *sshTransport) sessionRootPIDViaSocket(ctx context.Context) (int, bool) {
 	local := t.client.LocalAddr()
 	if local == nil {
 		return 0, false

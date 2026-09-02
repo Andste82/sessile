@@ -41,14 +41,14 @@ func toProcessJSON(p hostops.Process) processJSON {
 // Local sessions have a real, known shell PID (info.PID, from the kernel —
 // §4.7's same source), so "session" is always exact there. SSH sessions
 // don't: Backend.Pid() is always 0 for SSH (§4.2, "no local meaning"), so
-// "session" there depends on HostSession.SessionRootPID's socket-matching
-// (§4.10) — deterministic when it works, but on a stock OpenSSH target it
-// usually can't (verified against a real one, §4.10's design note): the
-// per-connection process is commonly non-dumpable, which hides its pid
-// from everyone but root, login user included. scoped reports which one
-// the caller actually got: a "session" request that couldn't be resolved
-// falls back to the whole host (rootPID 1) with scoped=false, never a
-// silently wrong narrower-looking answer.
+// "session" there depends on HostSession.SessionRootPID (§4.10) — the
+// session's own started command records its own PID via an exec preamble
+// sshpty.Start writes for it, read back here; a socket-matching fallback
+// covers the rest (a Windows target, or the rare case the preamble read
+// fails). scoped reports which one the caller actually got: a "session"
+// request that couldn't be resolved by either falls back to the whole
+// host (rootPID 1) with scoped=false, never a silently wrong
+// narrower-looking answer.
 func (s *Server) resolveProcessTreeRoot(c *gin.Context, ops *hostops.HostSession, info session.Info) (rootPID int, scoped bool) {
 	if c.Query("scope") == "all" {
 		return 1, false

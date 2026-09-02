@@ -419,7 +419,7 @@ func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, tar
 		Rows:            defaultRows,
 		Cols:            defaultCols,
 		backend:         pty,
-		hostOps:         hostops.NewHostSession(hostops.NewSSH(pty.Client()), platformFor(target.TargetOS)),
+		hostOps:         hostops.NewHostSession(hostops.NewSSH(pty.Client(), pty.PIDFilePath()), platformFor(target.TargetOS)),
 		buffer:          NewRingBuffer(m.bufferSize),
 		clients:         make(map[Client]clientGeom),
 		lastPersist:     now,

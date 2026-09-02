@@ -126,15 +126,15 @@ func (h *HostSession) ProcessTree(ctx context.Context, rootPID int) ([]Process, 
 func (h *HostSession) Files() FileTransport { return h.transport.Files() }
 
 // SessionRootPID attempts to find the exact PID of this SSH session's own
-// process on the target — see transport_ssh.go's sessionRootPID for how.
-// Local sessions don't need this: the caller already has the exact shell
-// PID from the kernel (§4.7), so this only ever does anything for an
-// SSH-backed HostSession, and even then only when it can be determined
-// with certainty — it never guesses. ok is false when it can't be (no `ss`
-// on the target, or — the common case on a stock OpenSSH target, per
-// sessionRootPID's own doc comment — a permission gap that hides even the
-// login user's own process). Either way that's "unknown", never "here's a
-// plausible answer".
+// process on the target — see transport_ssh.go's sessionRootPID for how
+// (primarily: reading back a PID the session's own started command
+// recorded for itself; a socket-matching fallback for what that can't
+// cover). Local sessions don't need this: the caller already has the
+// exact shell PID from the kernel (§4.7), so this only ever does anything
+// for an SSH-backed HostSession, and even then only when it can be
+// determined with certainty — it never guesses. ok is false when neither
+// mechanism can (a Windows target with no `ss` either, or anything else
+// that means "unknown" rather than "here's a plausible answer").
 func (h *HostSession) SessionRootPID(ctx context.Context) (pid int, ok bool) {
 	sshT, isSSH := h.transport.(*sshTransport)
 	if !isSSH {

@@ -667,37 +667,60 @@ it rather than a new one.
 by construction — `info.PID` comes straight from the kernel (§4.7's same
 source). An SSH session has no equivalent: `Backend.Pid()` is always 0
 (§4.2), and there is no SSH-protocol-level way to ask "which remote
-process is my shell". `HostSession.SessionRootPID` answers it a different
-way — not by inference from behavior (the class of technique §4.7's
-removed activity classifier already showed doesn't hold up), but from
-identity: this connection's own local TCP address, matched against `ss`'s
-socket table on the far end, names the exact `sshd` worker process handling
-this specific connection, and everything under it in the process tree is
-this session's and nothing else's. It either finds that match or it
-doesn't — never a plausible-looking wrong answer. `GET
-.../hostops/process-tree`'s `scope=session` (default, §6) uses this when
-available and falls back to `scope=all` (root at PID 1, the whole target)
-when it can't, reporting `scoped:false` so the UI can say so rather than
-presenting a wrong-looking narrow view as if it were correct.
+process is my shell". `HostSession.SessionRootPID` answers it with two
+mechanisms, tried in order:
 
-**Measured against a real sshd, "when it can't" is the common case, not
-the edge case.** Reading the pid behind a socket needs `/proc/<pid>/fd` —
-readable by that pid's own uid on an ordinary process, but OpenSSH's
-per-connection process is routinely non-dumpable (`PR_SET_DUMPABLE`
-cleared, standard hardening for something that started as root), which
-blocks `/proc/<pid>/fd` — and so `ss -p`'s pid resolution — for everyone
-but root, including the connection's own login user. Verified directly: a
-real throwaway SSH session's own `ss -Htnp` (run as that session's own
-login user) listed every socket on the box but resolved **no** pid for any
-of them, not even the one it owned itself, while root could read all of
-them; `/proc/<that-same-pid>/fd` was `Permission denied` for that user, and
+1. **The session tells us, directly.** `sshpty.Start` (for any POSIX
+   `TerminalType`) doesn't send the configured shell/command as-is — it
+   wraps it: `echo $$ > <private path>; exec sh -c '<original command>'`.
+   `echo $$` is a shell builtin (no fork), so it records *its own* PID;
+   `exec` then replaces that exact process with the real command, keeping
+   the PID identical. Nothing is written to the PTY the user sees — the
+   write goes to a file, not stdout/stderr — and semantics are unchanged,
+   since `exec`ing the original command in place of itself is exactly
+   what would have run anyway. `SessionRootPID` reads that file back
+   (briefly retried — `Start` returning only means the exec request was
+   accepted, not that its first statement has run yet). This is exact
+   whenever it applies, and self-contained: no external tool, no
+   permission dependency on the target at all.
+2. **Falling back to socket matching.** For a target the preamble doesn't
+   apply to (a Windows target, `TerminalType` `cmd`/`powershell` — Windows
+   OpenSSH doesn't run exec requests through a POSIX shell, so `exec sh -c`
+   makes no sense there) or where reading the file somehow failed, this
+   connection's own local TCP address is matched against `ss`'s socket
+   table on the target, naming the exact `sshd` worker process handling
+   this connection. Kept for defense in depth, but — measured against a
+   real sshd (see below) — it rarely resolves anything on its own, which
+   is exactly why (1) exists and is tried first.
+
+Either mechanism, when it works, is exact — everything under the resolved
+PID in the process tree is this session's and nothing else's, never a
+plausible-looking wrong answer (not inference from process names or
+timing, the class of technique §4.7's removed activity classifier already
+showed doesn't hold up). `GET .../hostops/process-tree`'s `scope=session`
+(default, §6) uses whichever resolves and falls back to `scope=all` (root
+at PID 1, the whole target) when neither does, reporting `scoped:false` so
+the UI can say so rather than presenting a wrong-looking narrow view as if
+it were correct.
+
+**Why the fallback alone isn't enough, measured against a real sshd.**
+Reading the pid behind a socket needs `/proc/<pid>/fd` — readable by that
+pid's own uid on an ordinary process, but OpenSSH's per-connection process
+is routinely non-dumpable (`PR_SET_DUMPABLE` cleared, standard hardening
+for something that started as root), which blocks `/proc/<pid>/fd` — and
+so `ss -p`'s pid resolution — for everyone but root, including the
+connection's own login user. Verified directly: a real throwaway SSH
+session's own `ss -Htnp` (run as that session's own login user) listed
+every socket on the box but resolved **no** pid for any of them, not even
+the one it owned itself, while root could read all of them;
+`/proc/<that-same-pid>/fd` was `Permission denied` for that user, and
 `/proc/<a-pid-it-spawned-directly>/fd` was not — confirming it's the
 non-dumpable process, not a broken permission model, doing the blocking.
-So on a stock OpenSSH target, `scope=session` resolving to
-`scoped:false` (whole host, honestly labeled) is the expected, common
-outcome, not a bug — it still resolves cleanly against SSH servers that
-don't set that flag, and either way `scoped:false` is exactly the
-information the pre-this-feature behavior never had at all.
+Mechanism (1) exists specifically because of this finding, and re-running
+the exact same scenario (a real throwaway SSH session, real sleep children
+spawned in it) after adding it resolved correctly: `scoped:true`, the tree
+showing exactly the shell and its own children, nothing else from the
+host.
 
 **Long-running operations report progress; fast ones don't.** `ListDir`,
 `ProcessTree`, and `Rename`/Move are single round-trips and stay synchronous
