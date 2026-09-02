@@ -145,3 +145,19 @@ export interface ProcessTreeResponse {
   rootPid: number
   processes: Process[]
 }
+
+// One entry from a session's file browser (§4.10, §6). For a local session,
+// name/path are relative to the shared local-host workspace root, same
+// convention as DirectoriesResponse. For an SSH session there is no
+// sandbox root — path is whatever the target's own filesystem uses.
+export interface HostDirEntry {
+  name: string
+  isDir: boolean
+  size: number
+  modTime: string // RFC 3339 UTC
+}
+
+export interface HostFilesResponse {
+  path: string
+  entries: HostDirEntry[]
+}

@@ -60,6 +60,57 @@ func resolveDir(root, userPath string) (string, error) {
 	return resolved, nil
 }
 
+// ResolvePath validates a user-supplied file or directory path against the
+// sandbox root (§4.5) and returns its absolute, symlink-resolved form.
+// Unlike resolveDir, the target need not exist yet — internal/hostops
+// (§4.10) uses this for local-session file operations, including ones that
+// create a new path (a write, or a rename's destination) — but its parent
+// directory must exist and must itself resolve inside root; writing into a
+// directory that doesn't exist is rejected, not silently created.
+func ResolvePath(root, userPath string) (string, error) {
+	if userPath == "" {
+		userPath = "."
+	}
+	if filepath.IsAbs(userPath) {
+		return "", fmt.Errorf("path must be relative")
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(userPath), "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("path must not contain '..'")
+		}
+	}
+
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve root: %w", err)
+	}
+
+	full := filepath.Join(rootResolved, filepath.Clean(userPath))
+	if full == rootResolved {
+		return full, nil
+	}
+
+	dirResolved, err := filepath.EvalSymlinks(filepath.Dir(full))
+	if err != nil {
+		return "", fmt.Errorf("resolve parent directory: %w", err)
+	}
+	if dirResolved != rootResolved && !strings.HasPrefix(dirResolved, rootResolved+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes sandbox root")
+	}
+
+	resolved := filepath.Join(dirResolved, filepath.Base(full))
+	// The leaf itself may exist and be a symlink pointing outside root — the
+	// parent-only check above would miss that, so re-resolve and re-check it
+	// when it's there to resolve.
+	if target, err := filepath.EvalSymlinks(resolved); err == nil {
+		resolved = target
+		if resolved != rootResolved && !strings.HasPrefix(resolved, rootResolved+string(os.PathSeparator)) {
+			return "", fmt.Errorf("path escapes sandbox root")
+		}
+	}
+	return resolved, nil
+}
+
 // relativeToRoot expresses an absolute path as one relative to the sandbox
 // root, or returns "" when it lies outside. The root itself is ".", matching
 // how the directory listing names it (§6).

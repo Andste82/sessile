@@ -2,13 +2,13 @@
 import { ref } from 'vue'
 import { XMarkIcon } from '@heroicons/vue/20/solid'
 import ProcessTreePanel from './ProcessTreePanel.vue'
+import FileExplorerPanel from './FileExplorerPanel.vue'
 
 defineProps<{ sessionId: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-// "Files" (list/move/copy/delete, download/upload — §4.10 M24-M26) is not
-// built yet; this tab exists now so the panel's shape doesn't change out
-// from under users once it lands. Process tree is the only working tab.
+// Copy/delete/download/upload (§4.10 M25-M26) aren't built yet — Files is
+// browse + move only for now.
 const tab = ref<'processes' | 'files'>('processes')
 const tabCls = (active: boolean) =>
   active
@@ -48,6 +48,6 @@ const tabCls = (active: boolean) =>
     </div>
 
     <ProcessTreePanel v-if="tab === 'processes'" :session-id="sessionId" class="min-h-0 flex-1" />
-    <p v-else class="p-3 text-xs text-slate-500">File browser coming soon.</p>
+    <FileExplorerPanel v-else :session-id="sessionId" class="min-h-0 flex-1" />
   </div>
 </template>

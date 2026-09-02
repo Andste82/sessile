@@ -12,10 +12,11 @@ import (
 	"github.com/Andste82/sessile/backend/internal/session"
 )
 
-// processTreeTimeout bounds one process-tree fetch — a remote `ps`/
-// PowerShell round-trip over SSH, not something that should ever hang the
-// request indefinitely.
-const processTreeTimeout = 15 * time.Second
+// hostopsTimeout bounds one hostops round-trip — a remote ps/PowerShell
+// call, an SFTP list/rename — not something that should hang a request
+// indefinitely. Generous because a directory listing or a remote command
+// over a slow link (§11.1) is still meant to succeed, just not hang forever.
+const hostopsTimeout = 15 * time.Second
 
 // processJSON mirrors hostops.Process for the wire (§6, §4.10).
 type processJSON struct {
@@ -59,7 +60,7 @@ func (s *Server) getProcessTree(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), processTreeTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
 	defer cancel()
 
 	rootPID := processTreeRootPID(info)
@@ -79,4 +80,114 @@ func (s *Server) getProcessTree(c *gin.Context) {
 		out = append(out, toProcessJSON(p))
 	}
 	c.JSON(http.StatusOK, gin.H{"rootPid": rootPID, "processes": out})
+}
+
+// dirEntryJSON mirrors hostops.DirEntry for the wire (§6, §4.10).
+type dirEntryJSON struct {
+	Name    string `json:"name"`
+	IsDir   bool   `json:"isDir"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"modTime"`
+}
+
+func toDirEntryJSON(e hostops.DirEntry) dirEntryJSON {
+	return dirEntryJSON{Name: e.Name, IsDir: e.IsDir, Size: e.Size, ModTime: e.ModTime.UTC().Format(time.RFC3339)}
+}
+
+// resolveHostopsPath turns a caller-supplied path into what FileTransport
+// should actually use, plus the display form the response echoes back.
+//
+// Local sessions are sandboxed exactly like /api/directories (§4.5): the
+// path is relative to the workspace root, "" and "." both mean the root,
+// and anything escaping it is rejected before it ever reaches hostops.
+//
+// SSH sessions are not sandboxed beyond the session ownership check that
+// already gated reaching this handler (§4.10's design note, §11) — the
+// user already has a full interactive shell on that host through this same
+// session, so there is no narrower boundary to enforce. "" means the
+// sftp-server's own default (typically the login user's home directory).
+func (s *Server) resolveHostopsPath(info session.Info, userPath string) (resolved, display string, err error) {
+	if info.TargetType == session.TargetSSH {
+		if userPath == "" {
+			userPath = "."
+		}
+		return userPath, userPath, nil
+	}
+	resolved, err = session.ResolvePath(s.workspaceRoot, userPath)
+	if err != nil {
+		return "", "", err
+	}
+	return resolved, normalizeRel(userPath), nil
+}
+
+func (s *Server) listHostFiles(c *gin.Context) {
+	userID := c.MustGet(userIDKey).(string)
+	ops, info, err := s.manager.HostOps(c.Param("id"), userID)
+	if err != nil {
+		s.respondSessionError(c, err)
+		return
+	}
+
+	resolvedPath, displayPath, err := s.resolveHostopsPath(info, c.Query("path"))
+	if err != nil {
+		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
+	defer cancel()
+
+	entries, err := ops.Files().List(ctx, resolvedPath)
+	if err != nil {
+		s.log.Warn("list files failed", "id", c.Param("id"), "err", err)
+		respondError(c, http.StatusInternalServerError, CodeInternal, "list files failed")
+		return
+	}
+
+	out := make([]dirEntryJSON, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, toDirEntryJSON(e))
+	}
+	c.JSON(http.StatusOK, gin.H{"path": displayPath, "entries": out})
+}
+
+type moveFileBody struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+}
+
+func (s *Server) moveHostFile(c *gin.Context) {
+	userID := c.MustGet(userIDKey).(string)
+	ops, info, err := s.manager.HostOps(c.Param("id"), userID)
+	if err != nil {
+		s.respondSessionError(c, err)
+		return
+	}
+
+	var body moveFileBody
+	if err := c.ShouldBindJSON(&body); err != nil || body.Src == "" || body.Dst == "" {
+		respondError(c, http.StatusBadRequest, CodeValidation, "src and dst are required")
+		return
+	}
+
+	resolvedSrc, _, err := s.resolveHostopsPath(info, body.Src)
+	if err != nil {
+		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
+		return
+	}
+	resolvedDst, _, err := s.resolveHostopsPath(info, body.Dst)
+	if err != nil {
+		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
+	defer cancel()
+
+	if err := ops.Files().Rename(ctx, resolvedSrc, resolvedDst); err != nil {
+		s.log.Warn("move file failed", "id", c.Param("id"), "err", err)
+		respondError(c, http.StatusInternalServerError, CodeInternal, "move failed")
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

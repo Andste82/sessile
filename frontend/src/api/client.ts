@@ -10,6 +10,7 @@ import type {
   Host,
   HostBody,
   HostKeyErrorDetails,
+  HostFilesResponse,
   HostKeyProbeResponse,
   ProcessTreeResponse,
   Session,
@@ -113,6 +114,15 @@ export const api = {
     request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),
   processTree: (id: string) =>
     request<ProcessTreeResponse>(`/api/sessions/${id}/hostops/process-tree`),
+  listHostFiles: (id: string, path?: string) =>
+    request<HostFilesResponse>(
+      `/api/sessions/${id}/hostops/files${path ? `?path=${encodeURIComponent(path)}` : ''}`,
+    ),
+  moveHostFile: (id: string, src: string, dst: string) =>
+    request<void>(`/api/sessions/${id}/hostops/move`, {
+      method: 'POST',
+      body: JSON.stringify({ src, dst }),
+    }),
 
   authStatus: () => request<AuthStatus>('/api/auth/status'),
   bootstrap: (creds: Credentials) =>
