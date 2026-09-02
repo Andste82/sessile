@@ -7,9 +7,12 @@ import {
   PencilIcon,
   DocumentDuplicateIcon,
   TrashIcon,
+  ArrowDownTrayIcon,
+  ArrowUpTrayIcon,
 } from '@heroicons/vue/20/solid'
 import { api } from '@/api/client'
 import { onHostopEvent } from '@/composables/useHostopEvents'
+import { uploadHostFile, hostFileDownloadURL } from '@/api/upload'
 import type { HostDirEntry } from '@/api/types'
 
 const props = defineProps<{ sessionId: string }>()
@@ -23,6 +26,8 @@ const moveTarget = ref('')
 const copyingName = ref<string | null>(null)
 const copyTarget = ref('')
 const confirmingDeleteName = ref<string | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
+const upload = ref<{ name: string; loaded: number; total: number; status: 'running' | 'error' } | null>(null)
 
 // One Delete/Copy at a time, tracked from its opId — Delete/Copy are the two
 // hostops that take long enough to need progress (§4.10, §5.2); everything
@@ -175,6 +180,36 @@ async function confirmDelete(entry: HostDirEntry) {
   }
 }
 
+function downloadURL(entry: HostDirEntry): string {
+  return hostFileDownloadURL(props.sessionId, joinPath(currentPath.value, entry.name))
+}
+
+function pickUploadFile() {
+  fileInput.value?.click()
+}
+
+async function onFileSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // allow re-selecting the same file next time
+  if (!file) return
+
+  upload.value = { name: file.name, loaded: 0, total: file.size, status: 'running' }
+  try {
+    await uploadHostFile(props.sessionId, joinPath(currentPath.value, file.name), file, (loaded, total) => {
+      if (upload.value) {
+        upload.value.loaded = loaded
+        upload.value.total = total
+      }
+    })
+    await load(currentPath.value)
+    upload.value = null
+  } catch (err) {
+    if (upload.value) upload.value.status = 'error'
+    error.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   const units = ['KB', 'MB', 'GB', 'TB']
@@ -211,15 +246,43 @@ watch(
           </button>
         </template>
       </div>
-      <button
-        type="button"
-        class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
-        :disabled="loading"
-        title="Refresh"
-        @click="load(currentPath)"
-      >
-        <ArrowPathIcon class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
-      </button>
+      <div class="flex shrink-0 items-center gap-1">
+        <input ref="fileInput" type="file" class="hidden" @change="onFileSelected" />
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+          :disabled="!!upload"
+          title="Upload a file here"
+          @click="pickUploadFile"
+        >
+          <ArrowUpTrayIcon class="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+          :disabled="loading"
+          title="Refresh"
+          @click="load(currentPath)"
+        >
+          <ArrowPathIcon class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
+        </button>
+      </div>
+    </div>
+
+    <div v-if="upload" class="border-b border-slate-800 px-3 py-2 text-xs">
+      <div class="flex items-center justify-between text-slate-400">
+        <span class="truncate">
+          Uploading {{ upload.name }}<template v-if="upload.status === 'error'"> — failed</template>
+        </span>
+        <span v-if="upload.total > 0" class="shrink-0 tabular-nums">{{ formatSize(upload.loaded) }}/{{ formatSize(upload.total) }}</span>
+      </div>
+      <div class="mt-1 h-1 overflow-hidden rounded-full bg-slate-800">
+        <div
+          class="h-full rounded-full transition-all"
+          :class="upload.status === 'error' ? 'bg-rose-500' : 'bg-emerald-500'"
+          :style="{ width: upload.total > 0 ? `${Math.min(100, (upload.loaded / upload.total) * 100)}%` : '0%' }"
+        />
+      </div>
     </div>
 
     <div v-if="activeOp" class="border-b border-slate-800 px-3 py-2 text-xs">
@@ -267,6 +330,15 @@ watch(
               </button>
             </template>
             <template v-else>
+              <a
+                v-if="!entry.isDir"
+                :href="downloadURL(entry)"
+                download
+                class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
+                title="Download"
+              >
+                <ArrowDownTrayIcon class="h-3 w-3" />
+              </a>
               <button
                 type="button"
                 class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"

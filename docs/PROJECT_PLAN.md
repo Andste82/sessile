@@ -670,11 +670,12 @@ stream to hang a progress bar on) and same-target `Copy` (potentially a
 large single file, same reason) are started, return an operation id
 immediately, and report progress on `/ws/events` (§5.2) the same way
 foreground/title changes already do — an *event*, not a poll. `Download` and
-`Upload` need **no** custom progress channel at all: they are plain streamed
-HTTP request/response bodies, and the browser's own `fetch`
-download/upload-progress events already give the UI what it needs from the
-transfer itself — building a second, server-pushed progress channel for
-those would just be tracking a number the browser already has.
+`Upload` need **no** custom server-pushed progress channel at all: `Download`
+is a plain `<a download>` to the endpoint, so the browser's own download
+manager shows the transfer; `Upload` is one `XMLHttpRequest` (not `fetch` —
+`fetch` has no upload-progress event, only `XMLHttpRequest.upload.onprogress`
+does) reading real byte counts as the body streams out. Either way, nothing
+server-side needs to compute or push a number the browser already has.
 
 **Trust boundary.** Local paths still go through §4.5's sandbox — nothing
 here loosens that. Remote (SSH) paths do not: the user already has a full
