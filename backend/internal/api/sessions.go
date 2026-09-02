@@ -131,7 +131,22 @@ func (s *Server) renameSession(c *gin.Context) {
 // its scrollback and command history restored (§8).
 func (s *Server) restartSession(c *gin.Context) {
 	userID := c.MustGet(userIDKey).(string)
-	info, err := s.manager.Restart(c.Param("id"), userID)
+	id := c.Param("id")
+
+	// Mirrors createLocalSession's gate: a local session created while
+	// allowLocalHost was on must not become restartable again once an admin
+	// turns it off. Restart branches on the session's own stored target type
+	// (session/manager.go), never the request, so the gate has to be checked
+	// here rather than inferred from the body. A lookup failure (unknown
+	// session, wrong owner) falls through to Restart below, which reports the
+	// same error it always would.
+	if info, err := s.manager.Get(id, userID); err == nil &&
+		info.TargetType == session.TargetLocal && !s.serverConfig.Get().AllowLocalHost {
+		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
+		return
+	}
+
+	info, err := s.manager.Restart(id, userID)
 	if err != nil {
 		if s.respondHostKeyError(c, err) {
 			return
