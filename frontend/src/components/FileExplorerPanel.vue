@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   FolderIcon,
   DocumentIcon,
   ArrowPathIcon,
+  ArrowUpIcon,
   PencilIcon,
   DocumentDuplicateIcon,
   TrashIcon,
@@ -67,14 +68,30 @@ function trackOp(opId: string, kind: 'delete' | 'copy', entryName: string) {
 
 onUnmounted(() => unsubscribeOp?.())
 
-// Client-side breadcrumb — simpler than asking the server for a parent on
-// every response, and the server already told us the canonical form of
-// whatever path we asked for last.
-const crumbs = ref<string[]>([])
+// Breadcrumbs are derived from currentPath itself — the server's own
+// canonical form of wherever was last listed (§4.10, §6) — rather than a
+// separately-tracked client-side stack. For an SSH target that's a real
+// absolute path (the target has no sandbox, so it's resolved via SFTP's
+// own REALPATH, not a synthetic starting point), which is what makes
+// navigating to any ancestor segment — and from there into any sibling,
+// not just back into where the panel first opened — actually work. A
+// local target stays relative to the sandbox root (§4.5) — "." at the
+// top, never absolute — since there's nothing above that root to show.
+const isAbsolute = computed(() => currentPath.value.startsWith('/'))
+const segments = computed(() => currentPath.value.split('/').filter(Boolean))
+const rootLabel = computed(() => (isAbsolute.value ? '/' : 'root'))
+const atRoot = computed(() => segments.value.length === 0)
 
 function joinPath(base: string, name: string): string {
   if (base === '' || base === '.') return name
+  if (base === '/') return `/${name}`
   return `${base}/${name}`
+}
+
+function pathForSegments(count: number): string {
+  const parts = segments.value.slice(0, count)
+  if (isAbsolute.value) return parts.length === 0 ? '/' : `/${parts.join('/')}`
+  return parts.join('/') // '' at the root, which the backend treats as "."
 }
 
 async function load(path: string) {
@@ -96,15 +113,17 @@ async function load(path: string) {
 
 function open(entry: HostDirEntry) {
   if (!entry.isDir) return
-  crumbs.value = [...crumbs.value, entry.name]
   void load(joinPath(currentPath.value, entry.name))
 }
 
+// index -1 is the root.
 function goToCrumb(index: number) {
-  // index -1 is the root.
-  const target = crumbs.value.slice(0, index + 1)
-  crumbs.value = target
-  void load(target.length === 0 ? '' : target.join('/'))
+  void load(pathForSegments(index + 1))
+}
+
+function goUp() {
+  if (atRoot.value) return
+  void load(pathForSegments(segments.value.length - 1))
 }
 
 function startMove(entry: HostDirEntry) {
@@ -225,26 +244,34 @@ function formatSize(bytes: number): string {
 onMounted(() => load(''))
 watch(
   () => props.sessionId,
-  () => {
-    crumbs.value = []
-    void load('')
-  },
+  () => load(''),
 )
 </script>
 
 <template>
   <div class="flex h-full flex-col">
     <div class="flex items-center justify-between border-b border-slate-800 px-3 py-2">
-      <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-xs text-slate-400">
-        <button type="button" class="rounded px-1 hover:bg-slate-800 hover:text-slate-200" @click="goToCrumb(-1)">
-          root
+      <div class="flex min-w-0 items-center gap-0.5">
+        <button
+          type="button"
+          class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-30"
+          :disabled="atRoot"
+          title="Up one level"
+          @click="goUp"
+        >
+          <ArrowUpIcon class="h-3.5 w-3.5" />
         </button>
-        <template v-for="(c, i) in crumbs" :key="i">
-          <span class="text-slate-600">/</span>
-          <button type="button" class="rounded px-1 hover:bg-slate-800 hover:text-slate-200" @click="goToCrumb(i)">
-            {{ c }}
+        <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-xs text-slate-400">
+          <button type="button" class="rounded px-1 hover:bg-slate-800 hover:text-slate-200" @click="goToCrumb(-1)">
+            {{ rootLabel }}
           </button>
-        </template>
+          <template v-for="(seg, i) in segments" :key="i">
+            <span class="text-slate-600">/</span>
+            <button type="button" class="rounded px-1 hover:bg-slate-800 hover:text-slate-200" @click="goToCrumb(i)">
+              {{ seg }}
+            </button>
+          </template>
+        </div>
       </div>
       <div class="flex shrink-0 items-center gap-1">
         <input ref="fileInput" type="file" class="hidden" @change="onFileSelected" />

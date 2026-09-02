@@ -1479,7 +1479,14 @@ layout and §11 for what they do and don't encrypt.
   sandbox, and a remote (SSH) path is not sandboxed beyond that ownership
   check — the user already has an interactive shell on that host through
   the session the operation belongs to, so there is no narrower boundary to
-  enforce than "this is your own session."
+  enforce than "this is your own session." Since there's no sandbox to stay
+  inside, `listHostFiles` canonicalizes an SSH path to the target's own real
+  absolute form (`FileTransport.Resolve`, via SFTP's `REALPATH`) rather than
+  a synthetic relative starting point with nowhere "above" it — the file
+  browser can navigate anywhere the login already can, siblings and parents
+  included, same as a real shell on that host would let them. A local
+  session's path stays relative to the sandbox root (§4.5) — there being
+  nothing above that root to show is the point of the sandbox, not a gap.
 - Rate limiting: still deferred — not added in this pass either. Login
   brute-forcing is the main gap this leaves open; worth revisiting before a
   wider deployment than "an admin who trusts their own users."

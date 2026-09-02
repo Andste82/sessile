@@ -195,6 +195,20 @@ func TestSSHExecCapturesStdoutStderrAndExitCode(t *testing.T) {
 	}
 }
 
+func TestSSHFilesResolveReturnsAbsolutePath(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	ctx := context.Background()
+	files := NewSSH(newTestSSHClient(t, hs), "").Files()
+
+	resolved, err := files.Resolve(ctx, ".")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved != hs.root {
+		t.Fatalf("Resolve(.) = %q, want the server's real root %q", resolved, hs.root)
+	}
+}
+
 func TestSSHFilesRoundTrip(t *testing.T) {
 	hs := newHostopsTestServer(t)
 	ctx := context.Background()

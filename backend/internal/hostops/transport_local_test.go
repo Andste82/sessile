@@ -33,6 +33,14 @@ func TestLocalExecCapturesStdoutStderrAndExitCode(t *testing.T) {
 	}
 }
 
+func TestLocalFilesResolveIsANoop(t *testing.T) {
+	files := NewLocal().Files()
+	got, err := files.Resolve(context.Background(), "/already/absolute")
+	if err != nil || got != "/already/absolute" {
+		t.Fatalf("Resolve = (%q, %v), want unchanged", got, err)
+	}
+}
+
 func TestLocalFilesRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()

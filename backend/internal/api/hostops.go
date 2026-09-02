@@ -150,6 +150,19 @@ func (s *Server) listHostFiles(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
 	defer cancel()
 
+	// SSH isn't sandboxed (§4.5 only applies to local), so unlike the local
+	// branch's normalizeRel, "path" here is worth canonicalizing to the
+	// target's own real absolute form (via the SFTP protocol's own
+	// REALPATH) — a synthetic relative starting point with no way "above"
+	// it would defeat the point of having no sandbox to begin with: the
+	// user can navigate anywhere their login already can, siblings and
+	// parents included, exactly like a real shell would let them.
+	if info.TargetType == session.TargetSSH {
+		if real, err := ops.Files().Resolve(ctx, resolvedPath); err == nil {
+			resolvedPath, displayPath = real, real
+		}
+	}
+
 	entries, err := ops.Files().List(ctx, resolvedPath)
 	if err != nil {
 		s.log.Warn("list files failed", "id", c.Param("id"), "err", err)

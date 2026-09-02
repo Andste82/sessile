@@ -108,6 +108,22 @@ type sshFileTransport struct {
 	transport *sshTransport
 }
 
+// Resolve canonicalizes p via the SFTP protocol's own REALPATH request —
+// the target's own answer for what "." (or any relative path) actually
+// is, absolute, so the file browser can show and navigate the target's
+// real filesystem (§4.10) instead of a synthetic starting point.
+func (t *sshFileTransport) Resolve(_ context.Context, p string) (string, error) {
+	c, err := t.transport.sftpClient()
+	if err != nil {
+		return "", err
+	}
+	resolved, err := c.RealPath(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", p, err)
+	}
+	return resolved, nil
+}
+
 func (t *sshFileTransport) Stat(_ context.Context, p string) (DirEntry, error) {
 	c, err := t.transport.sftpClient()
 	if err != nil {
