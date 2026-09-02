@@ -101,16 +101,37 @@ func (s *UserStore) List() []User {
 	return out
 }
 
+// maxPasswordLength matches bcrypt's own hard limit: GenerateFromPassword
+// rejects anything over 72 bytes. Without checking it first, a long
+// passphrase from a password manager fails bootstrap/registration with a
+// raw "bcrypt: password length exceeds 72 bytes" instead of a validation
+// message the login form can show.
+const maxPasswordLength = 72
+
 // Create adds a new account with a bcrypt hash of password. Username
 // uniqueness is case-insensitive: "Admin" and "admin" would otherwise be two
 // accounts that look identical everywhere they're displayed.
 func (s *UserStore) Create(username, password string, isAdmin bool) (User, error) {
+	return s.create(username, password, isAdmin, false)
+}
+
+// CreateFirstAdmin creates the first account as admin, atomically with the
+// "the store is still empty" check (§10's "unlocked" first-run state).
+// Count() followed by a separate Create() left a window in which two
+// concurrent POST /api/auth/bootstrap requests could both observe an empty
+// store and both create an admin — holding s.mu across both the check and
+// the write is what closes it.
+func (s *UserStore) CreateFirstAdmin(username, password string) (User, error) {
+	return s.create(username, password, true, true)
+}
+
+func (s *UserStore) create(username, password string, isAdmin, requireEmpty bool) (User, error) {
 	username = strings.TrimSpace(username)
 	if l := len(username); l < 1 || l > 64 {
 		return User{}, fmt.Errorf("username must be 1-64 characters")
 	}
-	if len(password) < 8 {
-		return User{}, fmt.Errorf("password must be at least 8 characters")
+	if l := len(password); l < 8 || l > maxPasswordLength {
+		return User{}, fmt.Errorf("password must be 8-%d characters", maxPasswordLength)
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -121,6 +142,9 @@ func (s *UserStore) Create(username, password string, isAdmin bool) (User, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if requireEmpty && len(s.users) != 0 {
+		return User{}, ErrAlreadyBootstrapped
+	}
 	for _, u := range s.users {
 		if strings.EqualFold(u.Username, username) {
 			return User{}, ErrUserExists

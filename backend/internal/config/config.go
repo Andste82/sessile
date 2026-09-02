@@ -50,6 +50,15 @@ type Config struct {
 	LogLevel         string // slog level: debug|info|warn|error
 	Dev              bool   // dev mode: relaxes WS origin check for the Vite proxy
 	AllowOrigin      string // extra allowed WS origin (e.g. http://localhost:5173)
+	// InsecureCookies drops the session cookie's Secure attribute outside
+	// --dev too. Browsers refuse to store a Secure cookie from a plain
+	// http:// origin that isn't localhost, so following the README's own
+	// `docker run -p 8080:8080 ...` example on a LAN box logs in (200) and
+	// then silently never actually logs in — the cookie never lands, and the
+	// router guard bounces straight back to /login. Off by default: the
+	// right fix is HTTPS, and this exists for operators who have deliberately
+	// decided a trusted LAN without TLS is good enough for them.
+	InsecureCookies bool
 }
 
 // errRemovedDB explains where --db went. The database is no longer separately
@@ -102,6 +111,8 @@ func Parse(args []string) (*Config, error) {
 	logLevel := fs.String("log-level", env("TSM_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	dev := fs.Bool("dev", envBool("TSM_DEV", false), "dev mode (relaxes WS origin check)")
 	allowOrigin := fs.String("allow-origin", env("TSM_ALLOW_ORIGIN", ""), "additional allowed WebSocket origin")
+	insecureCookies := fs.Bool("insecure-cookies", envBool("TSM_INSECURE_COOKIES", false),
+		"drop the session cookie's Secure attribute so login works over plain HTTP on a non-localhost address (only for a trusted network without TLS)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 
 	// --db named a file and then silently claimed the directory around it for
@@ -207,6 +218,8 @@ func Parse(args []string) (*Config, error) {
 		LogLevel:    *logLevel,
 		Dev:         *dev,
 		AllowOrigin: *allowOrigin,
+
+		InsecureCookies: *insecureCookies,
 	}, nil
 }
 

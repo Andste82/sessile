@@ -3,6 +3,8 @@ package auth
 import (
 	"errors"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -72,6 +74,64 @@ func TestCreateValidatesInput(t *testing.T) {
 	}
 	if _, err := s.Create("short-pw", "short", false); err == nil {
 		t.Error("Create with a short password succeeded, want an error")
+	}
+	// bcrypt.GenerateFromPassword hard-rejects anything over 72 bytes; this
+	// must be caught here with a validation error, not surface bcrypt's own
+	// internal error to a user typing a password-manager-generated passphrase.
+	if _, err := s.Create("long-pw", strings.Repeat("a", 73), false); err == nil {
+		t.Error("Create with a 73-byte password succeeded, want an error")
+	}
+	if _, err := s.Create("max-pw", strings.Repeat("a", 72), false); err != nil {
+		t.Errorf("Create with an exactly-72-byte password failed: %v", err)
+	}
+}
+
+// The atomic guard CreateFirstAdmin exists for: Count() then Create() as two
+// separate calls left a window where concurrent bootstrap requests could
+// both see an empty store.
+func TestCreateFirstAdminIsAtomicUnderConcurrency(t *testing.T) {
+	s := newTestStore(t)
+
+	const attempts = 20
+	var wg sync.WaitGroup
+	successes := make(chan User, attempts)
+	failures := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			u, err := s.CreateFirstAdmin("admin", "correct horse battery")
+			if err != nil {
+				failures <- err
+				return
+			}
+			successes <- u
+		}(i)
+	}
+	wg.Wait()
+	close(successes)
+	close(failures)
+
+	if got := len(successes); got != 1 {
+		t.Errorf("%d concurrent CreateFirstAdmin calls succeeded, want exactly 1", got)
+	}
+	for err := range failures {
+		if !errors.Is(err, ErrAlreadyBootstrapped) {
+			t.Errorf("losing call error = %v, want ErrAlreadyBootstrapped", err)
+		}
+	}
+	if n := s.Count(); n != 1 {
+		t.Errorf("Count() after the race = %d, want 1", n)
+	}
+}
+
+func TestCreateFirstAdminRefusesOnceNotEmpty(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Create("existing", "correct horse battery", false); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := s.CreateFirstAdmin("admin", "correct horse battery"); !errors.Is(err, ErrAlreadyBootstrapped) {
+		t.Errorf("CreateFirstAdmin on a non-empty store: err = %v, want ErrAlreadyBootstrapped", err)
 	}
 }
 

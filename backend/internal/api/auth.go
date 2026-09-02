@@ -52,6 +52,9 @@ func (s *Server) authStatus(c *gin.Context) {
 // authBootstrap creates the first (admin) account. Only reachable while no
 // user exists yet — the server's "unlocked" state (§10, §11).
 func (s *Server) authBootstrap(c *gin.Context) {
+	// A quick, non-atomic pre-check for a nicer error before even parsing the
+	// body. The real race-safe guard is CreateFirstAdmin's atomic check
+	// below — two concurrent requests can both pass this one.
 	if s.users.Count() != 0 {
 		respondError(c, http.StatusConflict, CodeConflict, auth.ErrAlreadyBootstrapped.Error())
 		return
@@ -63,8 +66,12 @@ func (s *Server) authBootstrap(c *gin.Context) {
 		return
 	}
 
-	user, err := s.users.Create(body.Username, body.Password, true)
+	user, err := s.users.CreateFirstAdmin(body.Username, body.Password)
 	if err != nil {
+		if errors.Is(err, auth.ErrAlreadyBootstrapped) {
+			respondError(c, http.StatusConflict, CodeConflict, err.Error())
+			return
+		}
 		s.respondAuthError(c, err)
 		return
 	}
@@ -178,16 +185,23 @@ func (s *Server) respondAuthError(c *gin.Context, err error) {
 }
 
 // setSessionCookie issues the web-session cookie: HttpOnly always, Secure
-// unless --dev (matching --dev's existing role of relaxing security for the
-// Vite proxy, which runs over plain HTTP), SameSite=Lax — same-origin
-// fetch/WS plus SameSite is what keeps CSRF risk low without a token (§11).
+// unless --dev or --insecure-cookies (matching --dev's existing role of
+// relaxing security for the Vite proxy, which runs over plain HTTP; a
+// Secure cookie is silently refused by the browser on any other plain-HTTP
+// origin, which is what --insecure-cookies is for), SameSite=Lax —
+// same-origin fetch/WS plus SameSite is what keeps CSRF risk low without a
+// token (§11).
 func (s *Server) setSessionCookie(c *gin.Context, token string) {
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(sessionCookieName, token, int(auth.DefaultSessionTTL.Seconds()), "/", "", !s.cfg.Dev, true)
+	c.SetCookie(sessionCookieName, token, int(auth.DefaultSessionTTL.Seconds()), "/", "", s.secureCookies(), true)
 }
 
 // clearSessionCookie expires the cookie immediately (logout).
 func (s *Server) clearSessionCookie(c *gin.Context) {
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(sessionCookieName, "", -1, "/", "", !s.cfg.Dev, true)
+	c.SetCookie(sessionCookieName, "", -1, "/", "", s.secureCookies(), true)
+}
+
+func (s *Server) secureCookies() bool {
+	return !s.cfg.Dev && !s.cfg.InsecureCookies
 }
