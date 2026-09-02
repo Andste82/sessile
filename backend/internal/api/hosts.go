@@ -84,6 +84,12 @@ func validateHostBody(b hostBody) error {
 	default:
 		return errors.New(`authMethod must be "password" or "privateKey"`)
 	}
+	// A blank command here means Start resolves cmd to "" and the remote
+	// exec exits immediately — the session "creates" successfully and then
+	// flips straight to stopped with nothing explaining why.
+	if b.TerminalType == "custom" && strings.TrimSpace(b.CustomCommand) == "" {
+		return errors.New("customCommand is required when terminalType is \"custom\"")
+	}
 	return nil
 }
 
