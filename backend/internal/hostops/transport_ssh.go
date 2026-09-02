@@ -96,6 +96,18 @@ type sshFileTransport struct {
 	transport *sshTransport
 }
 
+func (t *sshFileTransport) Stat(_ context.Context, p string) (DirEntry, error) {
+	c, err := t.transport.sftpClient()
+	if err != nil {
+		return DirEntry{}, err
+	}
+	info, err := c.Stat(p)
+	if err != nil {
+		return DirEntry{}, fmt.Errorf("stat %s: %w", p, err)
+	}
+	return DirEntry{Name: info.Name(), IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime()}, nil
+}
+
 func (t *sshFileTransport) List(_ context.Context, p string) ([]DirEntry, error) {
 	c, err := t.transport.sftpClient()
 	if err != nil {

@@ -58,6 +58,14 @@ func TestLocalFilesRoundTrip(t *testing.T) {
 		t.Errorf("Read = %q, want %q", data, "hello")
 	}
 
+	stat, err := files.Stat(ctx, filepath.Join(dir, "a.txt"))
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if stat.Name != "a.txt" || stat.IsDir || stat.Size != 5 {
+		t.Errorf("Stat = %+v, want name=a.txt isDir=false size=5", stat)
+	}
+
 	if err := files.Copy(ctx, filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt")); err != nil {
 		t.Fatalf("Copy: %v", err)
 	}

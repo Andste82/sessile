@@ -19,7 +19,37 @@ export interface SessionGoneEvent {
   sessionId: string
 }
 
-export type ServerEvent = SessionsEvent | SessionEvent | SessionGoneEvent
+// Hostop progress events (§4.10, §5.2) — Delete/Copy started/progress/done,
+// keyed by opId so a listener can filter to the one it started.
+export interface HostopStartedEvent {
+  type: 'hostopStarted'
+  sessionId: string
+  opId: string
+  kind: 'delete' | 'copy'
+  path: string
+}
+export interface HostopProgressEvent {
+  type: 'hostopProgress'
+  sessionId: string
+  opId: string
+  done: number
+  total: number
+}
+export interface HostopDoneEvent {
+  type: 'hostopDone'
+  sessionId: string
+  opId: string
+  status: 'ok' | 'error'
+  message: string
+}
+
+export type ServerEvent =
+  | SessionsEvent
+  | SessionEvent
+  | SessionGoneEvent
+  | HostopStartedEvent
+  | HostopProgressEvent
+  | HostopDoneEvent
 
 const statuses: Status[] = ['running', 'stopped']
 const targetTypes: TargetType[] = ['local', 'ssh']
@@ -92,6 +122,27 @@ export function parseEvent(data: string): ServerEvent | null {
       return typeof m.sessionId === 'string' && m.sessionId !== ''
         ? { type: 'sessionGone', sessionId: m.sessionId }
         : null
+    case 'hostopStarted':
+      if (typeof m.opId !== 'string' || typeof m.sessionId !== 'string') return null
+      return {
+        type: 'hostopStarted',
+        sessionId: m.sessionId,
+        opId: m.opId,
+        kind: m.kind === 'copy' ? 'copy' : 'delete',
+        path: str(m.path),
+      }
+    case 'hostopProgress':
+      if (typeof m.opId !== 'string' || typeof m.sessionId !== 'string') return null
+      return { type: 'hostopProgress', sessionId: m.sessionId, opId: m.opId, done: num(m.done), total: num(m.total) }
+    case 'hostopDone':
+      if (typeof m.opId !== 'string' || typeof m.sessionId !== 'string') return null
+      return {
+        type: 'hostopDone',
+        sessionId: m.sessionId,
+        opId: m.opId,
+        status: m.status === 'error' ? 'error' : 'ok',
+        message: str(m.message),
+      }
     default:
       // Includes the `error` frame the server sends when it cannot build a
       // snapshot (§5.1). There is nothing to apply, and the subscription

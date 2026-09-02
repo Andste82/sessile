@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -58,6 +59,12 @@ type Server struct {
 	users       *auth.UserStore
 	webSessions *auth.SessionStore
 	hosts       *hosts.Registry
+
+	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
+	// opId. Entries are removed once a client has had a chance to observe
+	// the terminal state — see hostops_ops.go.
+	opsMu sync.Mutex
+	ops   map[string]*hostopStatus
 }
 
 // NewServer constructs a Server.
@@ -66,6 +73,7 @@ func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handl
 		cfg: cfg, manager: manager, ws: wsHandler, log: log,
 		workspaceRoot: workspaceRoot, serverConfig: serverCfg,
 		users: users, webSessions: webSessions, hosts: hostsRegistry,
+		ops: make(map[string]*hostopStatus),
 	}
 }
 
@@ -124,6 +132,9 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.GET("/sessions/:id/hostops/process-tree", s.getProcessTree)
 		authGroup.GET("/sessions/:id/hostops/files", s.listHostFiles)
 		authGroup.POST("/sessions/:id/hostops/move", s.moveHostFile)
+		authGroup.POST("/sessions/:id/hostops/copy", s.copyHostFile)
+		authGroup.DELETE("/sessions/:id/hostops/files", s.deleteHostFile)
+		authGroup.GET("/sessions/:id/hostops/ops/:opId", s.getHostopStatus)
 		authGroup.GET("/directories", s.listDirectories)
 	}
 

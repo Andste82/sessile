@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
-import { FolderIcon, DocumentIcon, ArrowPathIcon, PencilIcon } from '@heroicons/vue/20/solid'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  FolderIcon,
+  DocumentIcon,
+  ArrowPathIcon,
+  PencilIcon,
+  DocumentDuplicateIcon,
+  TrashIcon,
+} from '@heroicons/vue/20/solid'
 import { api } from '@/api/client'
+import { onHostopEvent } from '@/composables/useHostopEvents'
 import type { HostDirEntry } from '@/api/types'
 
 const props = defineProps<{ sessionId: string }>()
@@ -12,6 +20,47 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const movingName = ref<string | null>(null)
 const moveTarget = ref('')
+const copyingName = ref<string | null>(null)
+const copyTarget = ref('')
+const confirmingDeleteName = ref<string | null>(null)
+
+// One Delete/Copy at a time, tracked from its opId — Delete/Copy are the two
+// hostops that take long enough to need progress (§4.10, §5.2); everything
+// else here is synchronous.
+interface ActiveOp {
+  opId: string
+  kind: 'delete' | 'copy'
+  entryName: string
+  done: number
+  total: number
+  status: 'running' | 'ok' | 'error'
+  message: string
+}
+const activeOp = ref<ActiveOp | null>(null)
+let unsubscribeOp: (() => void) | null = null
+
+function trackOp(opId: string, kind: 'delete' | 'copy', entryName: string) {
+  unsubscribeOp?.()
+  activeOp.value = { opId, kind, entryName, done: 0, total: 0, status: 'running', message: '' }
+  unsubscribeOp = onHostopEvent((e) => {
+    if (e.opId !== opId || !activeOp.value) return
+    if (e.type === 'hostopProgress') {
+      activeOp.value.done = e.done
+      activeOp.value.total = e.total
+    } else if (e.type === 'hostopDone') {
+      activeOp.value.status = e.status
+      activeOp.value.message = e.message
+      unsubscribeOp?.()
+      unsubscribeOp = null
+      void load(currentPath.value)
+      setTimeout(() => {
+        if (activeOp.value?.opId === opId) activeOp.value = null
+      }, 1200)
+    }
+  })
+}
+
+onUnmounted(() => unsubscribeOp?.())
 
 // Client-side breadcrumb — simpler than asking the server for a parent on
 // every response, and the server already told us the canonical form of
@@ -80,6 +129,52 @@ async function confirmMove() {
   }
 }
 
+function startCopy(entry: HostDirEntry) {
+  copyingName.value = entry.name
+  copyTarget.value = joinPath(currentPath.value, `${entry.name}-copy`)
+}
+
+function cancelCopy() {
+  copyingName.value = null
+  copyTarget.value = ''
+}
+
+async function confirmCopy() {
+  if (copyingName.value === null) return
+  const src = joinPath(currentPath.value, copyingName.value)
+  const dst = copyTarget.value.trim()
+  const name = copyingName.value
+  if (!dst || dst === src) {
+    cancelCopy()
+    return
+  }
+  try {
+    const { opId } = await api.copyHostFile(props.sessionId, src, dst)
+    cancelCopy()
+    trackOp(opId, 'copy', name)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function armDelete(entry: HostDirEntry) {
+  confirmingDeleteName.value = entry.name
+}
+
+function cancelDelete() {
+  confirmingDeleteName.value = null
+}
+
+async function confirmDelete(entry: HostDirEntry) {
+  confirmingDeleteName.value = null
+  try {
+    const { opId } = await api.deleteHostFile(props.sessionId, joinPath(currentPath.value, entry.name))
+    trackOp(opId, 'delete', entry.name)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   const units = ['KB', 'MB', 'GB', 'TB']
@@ -127,6 +222,23 @@ watch(
       </button>
     </div>
 
+    <div v-if="activeOp" class="border-b border-slate-800 px-3 py-2 text-xs">
+      <div class="flex items-center justify-between text-slate-400">
+        <span class="truncate">
+          {{ activeOp.kind === 'delete' ? 'Deleting' : 'Copying' }} {{ activeOp.entryName }}<template v-if="activeOp.status === 'error'"> — failed</template>
+        </span>
+        <span v-if="activeOp.total > 0" class="shrink-0 tabular-nums">{{ activeOp.done }}/{{ activeOp.total }}</span>
+      </div>
+      <div class="mt-1 h-1 overflow-hidden rounded-full bg-slate-800">
+        <div
+          class="h-full rounded-full transition-all"
+          :class="activeOp.status === 'error' ? 'bg-rose-500' : 'bg-emerald-500'"
+          :style="{ width: activeOp.total > 0 ? `${Math.min(100, (activeOp.done / activeOp.total) * 100)}%` : '100%' }"
+        />
+      </div>
+      <p v-if="activeOp.status === 'error'" class="mt-1 text-rose-400">{{ activeOp.message }}</p>
+    </div>
+
     <div class="min-h-0 flex-1 overflow-y-auto">
       <p v-if="error" class="p-3 text-xs text-rose-400">{{ error }}</p>
       <p v-else-if="!loading && entries.length === 0" class="p-3 text-xs text-slate-500">Empty directory.</p>
@@ -145,14 +257,41 @@ watch(
               {{ entry.name }}
             </button>
             <span v-if="!entry.isDir" class="shrink-0 text-slate-500">{{ formatSize(entry.size) }}</span>
-            <button
-              type="button"
-              class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
-              title="Move / rename"
-              @click="startMove(entry)"
-            >
-              <PencilIcon class="h-3 w-3" />
-            </button>
+
+            <template v-if="confirmingDeleteName === entry.name">
+              <button type="button" class="rounded bg-rose-600 px-1.5 py-0.5 text-xs text-white hover:bg-rose-500" @click="confirmDelete(entry)">
+                Confirm?
+              </button>
+              <button type="button" class="rounded px-1.5 py-0.5 text-xs text-slate-400 hover:bg-slate-800" @click="cancelDelete">
+                Cancel
+              </button>
+            </template>
+            <template v-else>
+              <button
+                type="button"
+                class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
+                title="Move / rename"
+                @click="startMove(entry)"
+              >
+                <PencilIcon class="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
+                title="Copy"
+                @click="startCopy(entry)"
+              >
+                <DocumentDuplicateIcon class="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-rose-400 group-hover:opacity-100"
+                title="Delete"
+                @click="armDelete(entry)"
+              >
+                <TrashIcon class="h-3 w-3" />
+              </button>
+            </template>
           </div>
           <div v-if="movingName === entry.name" class="mt-1 flex items-center gap-1.5 pl-6">
             <input
@@ -171,6 +310,26 @@ watch(
               Move
             </button>
             <button type="button" class="rounded px-1.5 py-0.5 text-xs text-slate-400 hover:bg-slate-800" @click="cancelMove">
+              Cancel
+            </button>
+          </div>
+          <div v-if="copyingName === entry.name" class="mt-1 flex items-center gap-1.5 pl-6">
+            <input
+              v-model="copyTarget"
+              type="text"
+              class="min-w-0 flex-1 rounded border border-slate-600 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-100 outline-none focus:border-emerald-500"
+              placeholder="path/for/the/copy"
+              @keyup.enter="confirmCopy"
+              @keyup.escape="cancelCopy"
+            />
+            <button
+              type="button"
+              class="rounded bg-emerald-600 px-1.5 py-0.5 text-xs text-white hover:bg-emerald-500"
+              @click="confirmCopy"
+            >
+              Copy
+            </button>
+            <button type="button" class="rounded px-1.5 py-0.5 text-xs text-slate-400 hover:bg-slate-800" @click="cancelCopy">
               Cancel
             </button>
           </div>

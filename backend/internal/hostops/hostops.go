@@ -52,6 +52,10 @@ type Result struct {
 // and its one SSH implementation cover every SSH target OS with no
 // per-platform branch.
 type FileTransport interface {
+	// Stat returns one entry's own metadata — used ahead of Copy/Delete to
+	// report a total before the first byte moves (§5.2), and by List's
+	// implementations internally for each entry.
+	Stat(ctx context.Context, path string) (DirEntry, error)
 	List(ctx context.Context, path string) ([]DirEntry, error)
 	Read(ctx context.Context, path string) ([]byte, error)
 	Write(ctx context.Context, path string, data []byte) error

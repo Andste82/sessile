@@ -12,6 +12,7 @@ import type {
   HostKeyErrorDetails,
   HostFilesResponse,
   HostKeyProbeResponse,
+  HostopStatus,
   ProcessTreeResponse,
   Session,
   User,
@@ -123,6 +124,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ src, dst }),
     }),
+  copyHostFile: (id: string, src: string, dst: string) =>
+    request<{ opId: string }>(`/api/sessions/${id}/hostops/copy`, {
+      method: 'POST',
+      body: JSON.stringify({ src, dst }),
+    }),
+  deleteHostFile: (id: string, path: string) =>
+    request<{ opId: string }>(`/api/sessions/${id}/hostops/files?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    }),
+  hostopStatus: (id: string, opId: string) =>
+    request<HostopStatus>(`/api/sessions/${id}/hostops/ops/${opId}`),
 
   authStatus: () => request<AuthStatus>('/api/auth/status'),
   bootstrap: (creds: Credentials) =>

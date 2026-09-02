@@ -161,3 +161,14 @@ export interface HostFilesResponse {
   path: string
   entries: HostDirEntry[]
 }
+
+// Poll fallback for a Delete/Copy's progress (§5.2) — the same shape the WS
+// hostop* events carry, collapsed into one snapshot.
+export interface HostopStatus {
+  opId: string
+  kind: 'delete' | 'copy'
+  done: number
+  total: number
+  status: 'running' | 'ok' | 'error'
+  message?: string
+}

@@ -795,14 +795,24 @@ message type, not a new socket:
 {"type":"hostopDone","sessionId":"…","opId":"…","status":"error","message":"permission denied: …"}
 ```
 
-`total` is 0/omitted while still being discovered — `Delete` counts entries as
-its walk finds them, not from an up-front pass, so an early `hostopProgress`
-may report `done` climbing with no `total` yet; `Copy`'s `total` is the
-source file's size, known before the first byte moves. `done`/`total` count
-files for `Delete`, bytes for `Copy` — the two are not comparable and no
-caller should treat them as the same unit.
+`total` is known before the first `hostopProgress`: `Delete` lists the
+target's immediate children up front (one List call) before deleting
+anything, and `Copy` `Stat`s the source first. `done`/`total` count entries
+for `Delete`, bytes for `Copy` — the two are not comparable and no caller
+should treat them as the same unit.
 
-`POST .../hostops/delete` and `POST .../hostops/copy` (§6) return
+Both are coarser than a live byte counter would be, deliberately: `Delete`
+reports progress per *immediate child* of the target, not a full recursive
+walk — a subdirectory among those children is removed whole, by its own
+recursive call, and counted as one unit regardless of how much it contains.
+`Copy` isn't chunked (`FileTransport.Copy` is `Read` then `Write`, §4.10), so
+its progress is a start event and a complete event, not bytes moving in
+between. Both are real progress, not simulated — just at coarser
+granularity than "every byte, every file" would be, which is the tradeoff
+for not rewriting `FileTransport` around a streaming/chunked model it
+doesn't otherwise need at the sizes this feature targets.
+
+`DELETE .../hostops/files` and `POST .../hostops/copy` (§6) return
 `202 {"opId":"…"}` immediately rather than blocking; `GET
 .../hostops/ops/:opId` is the REST poll fallback for the same reason §5.1's
 list poll exists — the socket being down should not mean the UI has no way

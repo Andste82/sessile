@@ -44,6 +44,14 @@ func (localTransport) Files() FileTransport { return localFileTransport{} }
 // the machine whose filesystem it's touching.
 type localFileTransport struct{}
 
+func (localFileTransport) Stat(_ context.Context, path string) (DirEntry, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return DirEntry{}, fmt.Errorf("stat %s: %w", path, err)
+	}
+	return DirEntry{Name: info.Name(), IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime()}, nil
+}
+
 func (localFileTransport) List(_ context.Context, path string) ([]DirEntry, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
