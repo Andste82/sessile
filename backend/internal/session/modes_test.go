@@ -370,11 +370,11 @@ func TestSessionModesFromARealShell(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _ = mgr.Delete(info.ID) })
+	t.Cleanup(func() { _ = mgr.Delete(info.ID, "test-user") })
 
 	// What a TUI writes when it takes the screen.
 	const setup = `printf '\033[?1049h\033[?1002h\033[?1006h\033[?25l'` + "\n"
@@ -386,7 +386,7 @@ func TestSessionModesFromARealShell(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		c := &recordingClient{id: "probe"}
-		if _, err := mgr.Attach(info.ID, c); err != nil {
+		if _, err := mgr.Attach(info.ID, "test-user", c); err != nil {
 			t.Fatalf("attach: %v", err)
 		}
 		mgr.Detach(info.ID, c)
