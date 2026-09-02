@@ -4,15 +4,28 @@ import { useRouter } from 'vue-router'
 import { PlusIcon } from '@heroicons/vue/24/solid'
 import { useSessionsStore } from '@/stores/sessions'
 import { useHostsStore } from '@/stores/hosts'
-import { isAlreadyRunning } from '@/api/client'
+import { ApiRequestError, isAlreadyRunning } from '@/api/client'
 import SessionListItem from '@/components/SessionListItem.vue'
 import NewSessionDialog from '@/components/NewSessionDialog.vue'
-import type { Session } from '@/api/types'
+import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
+import type { HostKeyErrorDetails, Session } from '@/api/types'
 
 const store = useSessionsStore()
 const hostsStore = useHostsStore()
 const router = useRouter()
 const dialogOpen = ref(false)
+
+// Set only while a restart is blocked on an unrecognized/changed host key —
+// the backend maps that the same way session creation does (respondHostKeyError,
+// sessions.go), but until now nothing on this page checked for it, so a
+// reinstalled host's session could never be restarted from here: the user
+// just saw a raw error string with no way to trust the new key.
+const pendingHostKey = ref<{
+  sessionId: string
+  hostId: string
+  hostName: string
+  details: HostKeyErrorDetails
+} | null>(null)
 
 // Polling is App-wide (it feeds the sidebar and the tab bar too), so this only
 // has to make sure the list is loaded before the first tick.
@@ -50,8 +63,25 @@ async function onRestart(id: string) {
       router.push(`/sessions/${id}`)
       return
     }
+    const details = e instanceof ApiRequestError ? e.hostKeyDetails() : null
+    if (details) {
+      const sess = store.byId(id)
+      pendingHostKey.value = {
+        sessionId: id,
+        hostId: sess?.hostId ?? '',
+        hostName: sess?.hostDisplayName || 'this host',
+        details,
+      }
+      return
+    }
     store.error = e instanceof Error ? e.message : String(e)
   }
+}
+
+function retryRestartAfterTrust() {
+  const sessionId = pendingHostKey.value?.sessionId
+  pendingHostKey.value = null
+  if (sessionId) void onRestart(sessionId)
 }
 </script>
 
@@ -115,6 +145,15 @@ async function onRestart(id: string) {
       :open="dialogOpen"
       @close="dialogOpen = false"
       @created="onCreated"
+    />
+
+    <HostKeyTrustDialog
+      :open="pendingHostKey !== null"
+      :host-id="pendingHostKey?.hostId ?? ''"
+      :host-name="pendingHostKey?.hostName ?? ''"
+      :details="pendingHostKey?.details ?? null"
+      @close="pendingHostKey = null"
+      @trusted="retryRestartAfterTrust"
     />
   </div>
 </template>

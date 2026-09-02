@@ -3,9 +3,10 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import TerminalView from '@/components/TerminalView.vue'
 import TabBar from '@/components/TabBar.vue'
+import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
 import { useSessionsStore } from '@/stores/sessions'
-import { api, isAlreadyRunning } from '@/api/client'
-import type { Session } from '@/api/types'
+import { ApiRequestError, api, isAlreadyRunning } from '@/api/client'
+import type { HostKeyErrorDetails, Session } from '@/api/types'
 import type { ConnStatus } from '@/composables/useTerminal'
 
 const route = useRoute()
@@ -18,6 +19,12 @@ const loadError = ref<string | null>(null)
 
 const restarting = ref(false)
 const restartError = ref<string | null>(null)
+// Same host-key-changed recovery gap as DashboardPage.vue's restart button —
+// see its comment. Kept local to this page rather than shared, since the two
+// restart call sites otherwise have nothing in common to factor out.
+const pendingHostKey = ref<{ hostId: string; hostName: string; details: HostKeyErrorDetails } | null>(
+  null,
+)
 // A restart keeps the session id, so the id alone cannot re-key TerminalView.
 // Bumping this forces a remount, which is what makes useTerminal open a fresh
 // WebSocket and replay the restored scrollback.
@@ -38,12 +45,26 @@ async function restart() {
       await store.refreshSessions()
       session.value = store.byId(id.value) ?? session.value
       reloadNonce.value++
+      return
+    }
+    const details = e instanceof ApiRequestError ? e.hostKeyDetails() : null
+    if (details) {
+      pendingHostKey.value = {
+        hostId: session.value?.hostId ?? '',
+        hostName: session.value?.hostDisplayName || 'this host',
+        details,
+      }
     } else {
       restartError.value = e instanceof Error ? e.message : String(e)
     }
   } finally {
     restarting.value = false
   }
+}
+
+function retryRestartAfterTrust() {
+  pendingHostKey.value = null
+  void restart()
 }
 
 async function loadSession(sessionId: string) {
@@ -149,5 +170,14 @@ watch(
         </div>
       </div>
     </div>
+
+    <HostKeyTrustDialog
+      :open="pendingHostKey !== null"
+      :host-id="pendingHostKey?.hostId ?? ''"
+      :host-name="pendingHostKey?.hostName ?? ''"
+      :details="pendingHostKey?.details ?? null"
+      @close="pendingHostKey = null"
+      @trusted="retryRestartAfterTrust"
+    />
   </div>
 </template>
