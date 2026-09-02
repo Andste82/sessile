@@ -29,8 +29,15 @@ func init() {
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 }
 
-// maxBodyBytes bounds JSON request bodies (PROJECT_PLAN.md §11).
-const maxBodyBytes = 4 << 10 // 4 KiB
+// maxBodyBytes bounds JSON request bodies (PROJECT_PLAN.md §11). Shared with
+// host creation/update, which now carries private key material: a minimal
+// create-host body with an unencrypted OPENSSH RSA-4096 key is already
+// ~3.74 KiB on its own, and a passphrase-encrypted key plus a longer name/
+// group/address routinely crosses a tighter cap — indistinguishable from a
+// malformed request once MaxBytesReader cuts it off. 32 KiB comfortably
+// covers realistic key sizes while staying far short of anything that would
+// matter for memory use.
+const maxBodyBytes = 32 << 10 // 32 KiB
 
 // Server holds the dependencies shared by the HTTP handlers.
 type Server struct {
