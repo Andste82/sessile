@@ -57,6 +57,12 @@ func (s *Server) exchangeHostKeys(c *gin.Context) {
 		return
 	}
 
+	// The key was installed for body.Username on the remote host — not
+	// necessarily host.Username, which the exchange dialog prefills but lets
+	// the caller override. Persisting it here keeps the stored host pointed
+	// at the account that can actually authenticate with the new key; leaving
+	// the old value behind would silently break every later connection.
+	host.Username = strings.TrimSpace(body.Username)
 	host.AuthMethod = hosts.AuthPrivateKey
 	host.PrivateKey = privateKeyPEM
 	host.PrivateKeyPassphrase = ""
