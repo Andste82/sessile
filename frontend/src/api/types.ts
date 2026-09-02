@@ -128,3 +128,20 @@ export interface HostBody {
   terminalType: string
   customCommand: string
 }
+
+// A session's process tree (PROJECT_PLAN.md §4.10, §6). For a local
+// session, processes are the real descendants of the session's own shell.
+// For an SSH session there is no reliable way to learn the remote shell's
+// own PID over the protocol (§4.10's design note), so rootPid is always 1
+// there and processes is the whole target's tree, not just this session's.
+export interface Process {
+  pid: number
+  ppid: number
+  command: string
+  children: Process[]
+}
+
+export interface ProcessTreeResponse {
+  rootPid: number
+  processes: Process[]
+}

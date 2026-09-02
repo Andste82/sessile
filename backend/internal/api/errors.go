@@ -38,6 +38,10 @@ const (
 	// the host but failed there — wrong credentials, or the remote command
 	// that appends authorized_keys itself failed.
 	CodeExchangeFailed = "exchange_failed"
+	// CodeUnsupportedPlatform is for a hostops operation (§4.10) whose
+	// target has no Platform support — a target OS with no ProcessTree
+	// implementation yet.
+	CodeUnsupportedPlatform = "unsupported_platform"
 )
 
 // respondError writes a JSON error envelope with the given HTTP status.

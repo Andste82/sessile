@@ -4,6 +4,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Andste82/sessile/backend/internal/hostops"
 )
 
 // Status is a session's lifecycle state.
@@ -76,6 +78,7 @@ type Session struct {
 
 	// runtime-only
 	backend     Backend
+	hostOps     *hostops.HostSession // process tree + file browser/transfer (§4.10)
 	buffer      *RingBuffer
 	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
@@ -121,6 +124,12 @@ func (s *Session) Info() Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.infoLocked()
+}
+
+// HostOps returns the session's process-tree/file-browser handle (§4.10).
+// Set once at spawn and never reassigned, so this needs no lock.
+func (s *Session) HostOps() *hostops.HostSession {
+	return s.hostOps
 }
 
 func (s *Session) infoLocked() Info {

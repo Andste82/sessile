@@ -185,8 +185,14 @@ backend/
       hostops.go              # HostSession, Transport, FileTransport, Platform
       transport_local.go        # localTransport — stdlib os/exec + os.*
       transport_ssh.go            # sshTransport — reuses the session's *ssh.Client
-      platform_linux.go             # ps-based ProcessTree
-      platform_windows.go             # PowerShell-based ProcessTree
+      platform_linux_ps.go             # ps-based ProcessTree — named to avoid
+                                          # Go's implicit _linux/_windows.go
+                                          # GOOS build-constraint convention;
+                                          # both must build into every binary
+                                          # regardless of the host Go itself
+                                          # targets, since this is about the
+                                          # remote target's OS, not sessile's
+      platform_windows_ps.go             # PowerShell-based ProcessTree
       ops.go                            # Delete/Copy progress tracking (§5.2)
     auth/
       users.go               # users.yml store, bcrypt

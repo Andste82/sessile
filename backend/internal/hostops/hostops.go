@@ -11,8 +11,14 @@ package hostops
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrUnsupportedPlatform is returned by HostSession.ProcessTree when the
+// target's Platform has no ProcessTree support (§4.10 — Windows before
+// M23's windowsPlatform lands for a given target, or an "other" OS).
+var ErrUnsupportedPlatform = errors.New("hostops: unsupported platform")
 
 // Transport moves bytes/commands to and from a session's target.
 // localTransport and sshTransport are its only two implementations.
@@ -67,3 +73,50 @@ type DirEntry struct {
 	Size    int64
 	ModTime time.Time
 }
+
+// Platform is the one thing about a target that is genuinely OS-shaped:
+// process listing. File operations do not need this — FileTransport is
+// OS-agnostic by construction — so a target with no Platform support still
+// gets the full file browser and transfer; only ProcessTree is gated.
+type Platform interface {
+	// ProcessTree returns rootPID's descendants, assembled into a tree —
+	// not rootPID itself, which the caller already knows (its session's own
+	// foreground PID, §4.7). Implementations run one fixed, hardcoded
+	// listing command (never a caller-supplied one, §4.10) over t.Exec.
+	ProcessTree(ctx context.Context, t Transport, rootPID int) ([]Process, error)
+}
+
+// Process is one entry in a process tree.
+type Process struct {
+	PID, PPID int
+	Command   string
+	Children  []Process // pre-assembled; callers never re-link a flat list
+}
+
+// HostSession is the top-level handle a session's hostops hang off — one
+// built per session, alongside its Backend (§4.2), composing a Transport
+// (how to reach the target) with a Platform (what the target looks like,
+// consulted only by ProcessTree).
+type HostSession struct {
+	transport Transport
+	platform  Platform // nil means "no ProcessTree support for this target"
+}
+
+// NewHostSession composes transport and platform into a HostSession.
+// platform may be nil — see ProcessTree.
+func NewHostSession(transport Transport, platform Platform) *HostSession {
+	return &HostSession{transport: transport, platform: platform}
+}
+
+// ProcessTree returns rootPID's descendants for this session's target, or
+// ErrUnsupportedPlatform if it has no Platform (a target OS with no
+// ProcessTree implementation yet, or "other"/unset).
+func (h *HostSession) ProcessTree(ctx context.Context, rootPID int) ([]Process, error) {
+	if h.platform == nil {
+		return nil, ErrUnsupportedPlatform
+	}
+	return h.platform.ProcessTree(ctx, h.transport, rootPID)
+}
+
+// Files returns this session's target's file operations (§4.10 M24+).
+func (h *HostSession) Files() FileTransport { return h.transport.Files() }

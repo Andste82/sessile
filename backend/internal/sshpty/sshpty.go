@@ -31,6 +31,12 @@ type Target struct {
 	PrivateKeyPEM        string
 	PrivateKeyPassphrase string
 
+	// TargetOS is the host's declared OS ("linux"|"darwin"|"windows"|"other",
+	// hosts.TargetOS) — not used to connect (SSH doesn't care), carried
+	// through so internal/hostops (§4.10) can pick a Platform once the
+	// session exists. Never interpreted here.
+	TargetOS string
+
 	// TerminalType is the remote command to run: bash|zsh|fish|cmd|powershell
 	// run directly, or CustomCommand when it's "custom". There is no
 	// allowlist here (unlike the local shell one) — this is the user's own

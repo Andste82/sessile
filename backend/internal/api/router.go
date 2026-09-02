@@ -121,6 +121,7 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.DELETE("/sessions/:id", s.deleteSession)
 		authGroup.PATCH("/sessions/:id", s.renameSession)
 		authGroup.POST("/sessions/:id/restart", s.restartSession)
+		authGroup.GET("/sessions/:id/hostops/process-tree", s.getProcessTree)
 		authGroup.GET("/directories", s.listDirectories)
 	}
 
