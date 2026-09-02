@@ -214,6 +214,11 @@ func (p *PTY) Resize(rows, cols uint16) error {
 // Pid has no meaning for a remote shell.
 func (p *PTY) Pid() int { return 0 }
 
+// Client returns the underlying *ssh.Client so internal/hostops (§4.10) can
+// open its own exec/sftp channels on the same already-dialed, TOFU-verified
+// connection — no second dial, no second trust decision.
+func (p *PTY) Client() *ssh.Client { return p.client }
+
 // signalNames maps the POSIX signals terminate() sends to the RFC 4254
 // names the SSH "signal" request expects.
 var signalNames = map[syscall.Signal]ssh.Signal{
