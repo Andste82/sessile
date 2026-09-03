@@ -678,28 +678,52 @@ source). An SSH session has no equivalent: `Backend.Pid()` is always 0
 process is my shell". `HostSession.SessionRootPID` answers it with two
 mechanisms, tried in order:
 
-1. **The session tells us, directly.** `sshpty.Start` (for any POSIX
-   `TerminalType`) doesn't send the configured shell/command as-is — it
-   wraps it: `echo $$ > <private path>; exec sh -c '<original command>'`.
-   `echo $$` is a shell builtin (no fork), so it records *its own* PID;
-   `exec` then replaces that exact process with the real command, keeping
-   the PID identical. Nothing is written to the PTY the user sees — the
-   write goes to a file, not stdout/stderr — and semantics are unchanged,
-   since `exec`ing the original command in place of itself is exactly
-   what would have run anyway. `SessionRootPID` reads that file back
-   (briefly retried — `Start` returning only means the exec request was
-   accepted, not that its first statement has run yet). This is exact
-   whenever it applies, and self-contained: no external tool, no
-   permission dependency on the target at all.
+1. **The session tells us, directly.** `sshpty.Start` (for any non-Windows
+   target — gated on `TargetOS`, not `TerminalType`, since a Windows host
+   can still have `TerminalType: "custom"`) doesn't send the configured
+   shell/command as-is — it wraps it, and wraps the *whole preamble*, not
+   just the final command, as one single-quoted argument to an explicitly
+   named `sh -c`: `sh -c 'echo $$ > <path> 2>/dev/null; exec <target>'`,
+   where `<target>` is the bare shell name (`bash`/`zsh`/`fish` — nothing
+   to interpret, exec'd directly) or, for `TerminalType: "custom"`,
+   `sh -c '<CustomCommand>'`. `echo $$` is a shell builtin (no fork), so
+   it records *its own* PID; `exec` then replaces that exact process with
+   the real command, keeping the PID identical. Nothing is written to the
+   PTY the user sees — the write goes to a file, not stdout/stderr.
+   `SessionRootPID` reads that file back (briefly retried — `Start`
+   returning only means the exec request was accepted, not that its first
+   statement has run yet).
+
+   The outer `sh -c` wrap exists because `$$` and `2>` are not portable to
+   every login shell an operator's account might have — verified against
+   real `fish` and real (Debian's `bsd-csh`) `csh` binaries, not assumed:
+   fish rejects `$$` outright ("$$ is not the pid... please use
+   $fish_pid"), and csh's `2>` isn't fd-numbered redirect syntax at all —
+   `echo $$ > path 2>/dev/null` silently redirects `path`'s own stdout
+   instead of writing the pid to it, so the file is simply never created,
+   no error at all. Wrapping the whole preamble as one opaque quoted
+   argument means the login shell only ever needs to parse "invoke `sh`
+   with two quoted arguments" — ordinary external-command invocation
+   syntax, about as close to universal across interactive shells as
+   anything gets — and never has to understand `$$`/`2>`/`exec` itself.
+   `TerminalType: "custom"` is a real, documented exception to that
+   portability: its `CustomCommand` may contain actual shell syntax the
+   operator wrote assuming a specific (possibly non-POSIX) login shell's
+   own builtins, and that's interpreted by an explicitly-named `sh` now,
+   not whatever the account's login shell happens to be — sessile never
+   actually knew what that was in the first place (`TerminalType` is
+   sessile's own choice of what to run, not a read of `/etc/passwd`), so
+   "preserve the exact previous interpreter" was never a guarantee this
+   could keep making; a `CustomCommand` needing another shell's syntax
+   says so itself now (`"bash -c '…'"`), the same way a portable script
+   would.
 2. **Falling back to socket matching.** For a target the preamble doesn't
-   apply to (a Windows target, `TerminalType` `cmd`/`powershell` — Windows
-   OpenSSH doesn't run exec requests through a POSIX shell, so `exec sh -c`
-   makes no sense there) or where reading the file somehow failed, this
-   connection's own local TCP address is matched against `ss`'s socket
-   table on the target, naming the exact `sshd` worker process handling
-   this connection. Kept for defense in depth, but — measured against a
-   real sshd (see below) — it rarely resolves anything on its own, which
-   is exactly why (1) exists and is tried first.
+   apply to (a Windows target) or where reading the file somehow failed,
+   this connection's own local TCP address is matched against `ss`'s
+   socket table on the target, naming the exact `sshd` worker process
+   handling this connection. Kept for defense in depth, but — measured
+   against a real sshd (see below) — it rarely resolves anything on its
+   own, which is exactly why (1) exists and is tried first.
 
 Either mechanism, when it works, is exact — everything under the resolved
 PID in the process tree is this session's and nothing else's, never a
