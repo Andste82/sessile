@@ -26,6 +26,19 @@ const hostopLongTimeout = 10 * time.Minute
 // server.
 const hostopRetention = 2 * time.Minute
 
+// progressThrottleInterval bounds how often runDelete's per-entry loop
+// publishes a WS progress event. A fast local operation (thousands of
+// small removes, each a plain syscall) can otherwise emit far faster than
+// a browser drains /ws/events, and Manager.publish drops *and closes* a
+// subscriber whose queue fills (ws.Client's bounded send queue, §14.3) as
+// a slow consumer — the whole dashboard socket goes dead, not just this
+// operation's progress, and (combined with the frontend race this same
+// review pass also found and fixed) the client never even learns the
+// operation finished. The in-memory hostopStatus is still updated on
+// every call, unthrottled, so the poll fallback always sees the real
+// number even between throttled WS publishes.
+const progressThrottleInterval = 200 * time.Millisecond
+
 // hostopStatus tracks one in-flight or finished Delete/Copy, polled via GET
 // .../hostops/ops/:opId as the fallback for when the WS event channel is
 // down — the same reason §5.1's list poll exists.
@@ -164,7 +177,8 @@ func (s *Server) runDelete(op *hostopStatus, ops *hostops.HostSession, sessionID
 	}
 
 	total := int64(len(entries))
-	s.reportProgress(op, sessionID, userID, 0, total)
+	progress := &throttledProgress{s: s, op: op, sessionID: sessionID, userID: userID, total: total}
+	progress.report(0, true) // always publish the first one
 
 	for i, e := range entries {
 		// path.Join, not filepath.Join: both local and SSH targets here are
@@ -175,7 +189,7 @@ func (s *Server) runDelete(op *hostopStatus, ops *hostops.HostSession, sessionID
 			s.finishOpError(op, sessionID, userID, err)
 			return
 		}
-		s.reportProgress(op, sessionID, userID, int64(i+1), total)
+		progress.report(int64(i+1), i == len(entries)-1) // always publish the last one
 	}
 
 	if err := ops.Files().Remove(ctx, target); err != nil {
@@ -185,10 +199,41 @@ func (s *Server) runDelete(op *hostopStatus, ops *hostops.HostSession, sessionID
 	s.finishOpOK(op, sessionID, userID, total, total)
 }
 
+// reportProgress publishes a single, one-off progress update — runCopy's
+// only call (a "started" announcement before Copy's single, unchunked
+// transfer) doesn't need throttling, since it's never called in a loop.
 func (s *Server) reportProgress(op *hostopStatus, sessionID, userID string, done, total int64) {
 	op.setProgress(done, total)
 	s.manager.PublishHostop(userID, session.HostopProgressMsg{
 		Type: "hostopProgress", SessionID: sessionID, OpID: op.id, Done: done, Total: total,
+	})
+}
+
+// throttledProgress is reportProgress's loop-safe counterpart, for
+// runDelete's per-entry progress — see progressThrottleInterval's doc
+// comment for why a loop can't just call reportProgress on every
+// iteration the way a one-off announcement can.
+type throttledProgress struct {
+	s                 *Server
+	op                *hostopStatus
+	sessionID, userID string
+	total             int64
+	lastPublished     time.Time
+}
+
+// report always updates the in-memory status (op.setProgress — cheap,
+// what the poll fallback reads), but only publishes the WS event when
+// force is true or progressThrottleInterval has elapsed since the last
+// publish — the caller passes force=true for the first and last call in
+// its loop, so those two are never dropped regardless of timing.
+func (p *throttledProgress) report(done int64, force bool) {
+	p.op.setProgress(done, p.total)
+	if !force && time.Since(p.lastPublished) < progressThrottleInterval {
+		return
+	}
+	p.lastPublished = time.Now()
+	p.s.manager.PublishHostop(p.userID, session.HostopProgressMsg{
+		Type: "hostopProgress", SessionID: p.sessionID, OpID: p.op.id, Done: done, Total: p.total,
 	})
 }
 

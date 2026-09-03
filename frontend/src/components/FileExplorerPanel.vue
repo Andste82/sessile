@@ -45,25 +45,71 @@ interface ActiveOp {
 const activeOp = ref<ActiveOp | null>(null)
 let unsubscribeOp: (() => void) | null = null
 
-function trackOp(opId: string, kind: 'delete' | 'copy', entryName: string) {
+// startTracking subscribes *before* the request that starts the op is even
+// issued — a fast local Delete/Copy can complete (hostopStarted,
+// hostopProgress, hostopDone all published) before an await on the HTTP
+// response ever resolves, so subscribing only after that await, keyed on
+// the opId the response carries, misses every event for a fast enough op:
+// activeOp stays stuck at "running" forever, and the deleted/copied entry
+// keeps showing until a manual refresh.
+//
+// activeOp.opId starts "" and is adopted from the first hostopStarted seen
+// for this session — that event is itself the authoritative "this op just
+// started, here's its id", arriving no later than the HTTP response and
+// often earlier, so there's no need to already know the opId to start
+// listening for it.
+function startTracking(kind: 'delete' | 'copy', entryName: string) {
   unsubscribeOp?.()
-  activeOp.value = { opId, kind, entryName, done: 0, total: 0, status: 'running', message: '' }
+  activeOp.value = { opId: '', kind, entryName, done: 0, total: 0, status: 'running', message: '' }
   unsubscribeOp = onHostopEvent((e) => {
-    if (e.opId !== opId || !activeOp.value) return
+    if (e.sessionId !== props.sessionId || !activeOp.value) return
+    if (e.type === 'hostopStarted') {
+      if (!activeOp.value.opId) activeOp.value.opId = e.opId
+      return
+    }
+    if (e.opId !== activeOp.value.opId) return
     if (e.type === 'hostopProgress') {
       activeOp.value.done = e.done
       activeOp.value.total = e.total
     } else if (e.type === 'hostopDone') {
-      activeOp.value.status = e.status
-      activeOp.value.message = e.message
-      unsubscribeOp?.()
-      unsubscribeOp = null
-      void load(currentPath.value)
-      setTimeout(() => {
-        if (activeOp.value?.opId === opId) activeOp.value = null
-      }, 1200)
+      finishTracking(e.status, e.message)
     }
   })
+}
+
+function finishTracking(status: 'ok' | 'error', message: string) {
+  if (!activeOp.value) return
+  activeOp.value.status = status
+  activeOp.value.message = message
+  unsubscribeOp?.()
+  unsubscribeOp = null
+  void load(currentPath.value)
+  const opId = activeOp.value.opId
+  setTimeout(() => {
+    if (activeOp.value?.opId === opId) activeOp.value = null
+  }, 1200)
+}
+
+// Poll fallback for the same reason §5.1's list poll exists: the socket
+// being down (or, degenerately, closed and reopened in the exact window
+// between hostopStarted and hostopDone) shouldn't mean the UI never learns
+// an op finished. api.hostopStatus already existed for this but was never
+// called anywhere. One check, after a short grace period — not a repeating
+// poll loop, since the WS path above is the primary one and already
+// covers the fast-completion case this fixes.
+async function pollOpStatusFallback(opId: string) {
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+  if (!activeOp.value || activeOp.value.opId !== opId || activeOp.value.status !== 'running') return
+  try {
+    const status = await api.hostopStatus(props.sessionId, opId)
+    if (status.status === 'running') return
+    finishTracking(status.status === 'error' ? 'error' : 'ok', status.message ?? '')
+  } catch {
+    // Best-effort: the op may already be retired server-side (§5.2's
+    // hostopRetention window), or this poll itself failed transiently —
+    // either way there's nothing more useful to do than leave activeOp as
+    // it is; the WS path is still the primary source of truth.
+  }
 }
 
 onUnmounted(() => unsubscribeOp?.())
@@ -172,11 +218,19 @@ async function confirmCopy() {
     cancelCopy()
     return
   }
+  cancelCopy()
+  // Subscribed before the request is even sent — see startTracking's own
+  // comment for why that ordering, not "after", is what fixes a fast op's
+  // events arriving before a listener existed to catch them.
+  startTracking('copy', name)
   try {
     const { opId } = await api.copyHostFile(props.sessionId, src, dst)
-    cancelCopy()
-    trackOp(opId, 'copy', name)
+    if (activeOp.value && !activeOp.value.opId) activeOp.value.opId = opId
+    void pollOpStatusFallback(opId)
   } catch (e) {
+    activeOp.value = null
+    unsubscribeOp?.()
+    unsubscribeOp = null
     error.value = e instanceof Error ? e.message : String(e)
   }
 }
@@ -191,10 +245,15 @@ function cancelDelete() {
 
 async function confirmDelete(entry: HostDirEntry) {
   confirmingDeleteName.value = null
+  startTracking('delete', entry.name)
   try {
     const { opId } = await api.deleteHostFile(props.sessionId, joinPath(currentPath.value, entry.name))
-    trackOp(opId, 'delete', entry.name)
+    if (activeOp.value && !activeOp.value.opId) activeOp.value.opId = opId
+    void pollOpStatusFallback(opId)
   } catch (e) {
+    activeOp.value = null
+    unsubscribeOp?.()
+    unsubscribeOp = null
     error.value = e instanceof Error ? e.message : String(e)
   }
 }
