@@ -751,6 +751,40 @@ belongs to, so there is no meaningful sandbox left to add beyond the
 existing per-user host ownership check (§4.3, §4.5) that gates which
 session's `HostSession` a request can even reach.
 
+**Readiness for a third transport (Docker/devcontainer targets — not
+started, this is what "prepare" means here).** `Platform` already takes a
+`Transport` as a parameter rather than being tied to one, so `linuxPlatform`
+works unchanged against any transport that can run `ps` — a Docker
+transport gets process-tree support for free. `HostSession` no longer
+knows about SSH specifically for identity questions either: `SessionAware`
+(above) is a capability interface a `Transport` optionally implements —
+`sshTransport` does, `localTransport` doesn't (both correctly report
+"unknown" through the same path when they can't answer) — so a
+`dockerTransport` implementing it later requires zero changes to
+`HostSession`, `foreground.go`'s sampler, or `hostops.go`'s
+`resolveProcessTreeRoot`; they already dispatch on the interface, not a
+`TargetType` enum value.
+
+What Docker would still need, genuinely new work when it happens, not
+prepared for yet: a `dockerpty` `Backend` (§4.2) for the interactive
+session itself — `docker exec -it` or the Engine API's exec-and-attach,
+a different mechanism again, same as local/SSH each are; a `FileTransport`
+implementation, which is a real open design question rather than a
+straightforward third case — Docker has no SFTP-equivalent subsystem, so
+it's either shell-command-based (needs a shell + coreutils in the target
+container, fragile against a minimal/scratch image) or `docker cp`-based
+(works without a shell, but lists a directory by parsing a tar stream, not
+a listing RPC) — worth resolving with its own design pass, not a
+side-decision when the moment comes; and a `hosts.yml` modeling question —
+does "a host" become "a container on this machine", or "a container reached
+by first going through an SSH host"? — that's a product decision, not an
+architecture one, and stays open until it's actually asked. One thing that
+will likely be *simpler* than SSH when this happens: Docker's exec-inspect
+API hands back its own PID directly and authoritatively (containers share
+the host kernel's PID namespace on Linux), so a `dockerTransport.SessionRootPID`
+probably won't need anything like SSH's PID-recording-preamble-plus-socket-fallback
+dance (§4.10 above) at all.
+
 ---
 
 ## 5. WebSocket Protocol (exact spec)

@@ -38,22 +38,21 @@ func toProcessJSON(p hostops.Process) processJSON {
 // `?scope=` query param — "session" (the default) narrows to just this
 // session's own processes; "all" always shows the whole target.
 //
-// Local sessions have a real, known shell PID (info.PID, from the kernel —
-// §4.7's same source), so "session" is always exact there. SSH sessions
-// don't: Backend.Pid() is always 0 for SSH (§4.2, "no local meaning"), so
-// "session" there depends on HostSession.SessionRootPID (§4.10) — the
-// session's own started command records its own PID via an exec preamble
-// sshpty.Start writes for it, read back here; a socket-matching fallback
-// covers the rest (a Windows target, or the rare case the preamble read
-// fails). scoped reports which one the caller actually got: a "session"
-// request that couldn't be resolved by either falls back to the whole
-// host (rootPID 1) with scoped=false, never a silently wrong
-// narrower-looking answer.
+// A local session has a real, known shell PID (info.PID, from the kernel —
+// §4.7's same source) — always exact, no round trip needed, so that's used
+// directly rather than routing through the Transport at all. Every other
+// target type (SSH today; a future non-local transport later) asks its
+// HostSession instead (SessionAware, §4.10) — SSH resolves it via a PID an
+// exec preamble records for itself, with a socket-matching fallback for
+// what that can't cover; a future transport answers however fits its own
+// mechanism. scoped reports which one the caller actually got: a "session"
+// request that couldn't be resolved falls back to the whole host (rootPID
+// 1) with scoped=false, never a silently wrong narrower-looking answer.
 func (s *Server) resolveProcessTreeRoot(c *gin.Context, ops *hostops.HostSession, info session.Info) (rootPID int, scoped bool) {
 	if c.Query("scope") == "all" {
 		return 1, false
 	}
-	if info.TargetType != session.TargetSSH {
+	if info.TargetType == session.TargetLocal {
 		return info.PID, true
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)

@@ -36,9 +36,16 @@ type sshTransport struct {
 	sftpOnce *sftp.Client
 }
 
+// sshTransport satisfies SessionAware (SessionRootPID + Foreground below),
+// checked at compile time so a future refactor can't silently drop it —
+// HostSession only reaches this path via a type assertion against the
+// interface, which fails silently (a plain "unknown", not a build error)
+// if it stops holding.
+var _ SessionAware = (*sshTransport)(nil)
+
 // NewSSH returns a Transport backed by client. The caller owns client's
 // lifecycle — hostops never closes it. pidFilePath is sshpty.PTY's
-// PIDFilePath() — "" is fine, it just means sessionRootPID has one fewer
+// PIDFilePath() — "" is fine, it just means SessionRootPID has one fewer
 // way to resolve.
 func NewSSH(client *ssh.Client, pidFilePath string) Transport {
 	return &sshTransport{client: client, pidFilePath: pidFilePath}
@@ -234,7 +241,7 @@ func (t *sshFileTransport) Copy(ctx context.Context, src, dst string) error {
 	return t.Write(ctx, dst, data)
 }
 
-// pidFileRetries/pidFileRetryDelay bound how long sessionRootPID waits for
+// pidFileRetries/pidFileRetryDelay bound how long SessionRootPID waits for
 // sshpty.Start's exec preamble to have actually run "echo $$ > path" by
 // the time something asks — Start returning only means the exec request
 // was accepted, not that its first shell statement has executed yet. This
@@ -244,7 +251,7 @@ const (
 	pidFileRetryDelay = 100 * time.Millisecond
 )
 
-// sessionRootPID finds this SSH session's own PID on the target, trying
+// SessionRootPID finds this SSH session's own PID on the target, trying
 // two independent mechanisms in order:
 //
 //  1. Reading back sshpty.Start's exec preamble (§4.10's "wrap with PID
@@ -260,7 +267,7 @@ const (
 //     failed; on a stock OpenSSH target this mechanism alone usually
 //     can't resolve anything (see its own doc comment), which is exactly
 //     why (1) exists.
-func (t *sshTransport) sessionRootPID(ctx context.Context) (int, bool) {
+func (t *sshTransport) SessionRootPID(ctx context.Context) (int, bool) {
 	if t.pidFilePath != "" {
 		if pid, ok := t.readPIDFile(ctx); ok {
 			return pid, true
@@ -289,7 +296,7 @@ func (t *sshTransport) readPIDFile(ctx context.Context) (int, bool) {
 
 // sessionRootPIDViaSocket is the ss-based fallback — reached only when
 // there's no pidFilePath to read (a Windows target) or reading it failed
-// (see sessionRootPID's doc comment). It matches this *ssh.Client's own
+// (see SessionRootPID's doc comment). It matches this *ssh.Client's own
 // local TCP address/port — which, from the target's point of view, is the
 // peer of the established connection it's holding — against `ss`'s socket
 // table on the far end. That process is the one sshd forked for this
@@ -309,7 +316,7 @@ func (t *sshTransport) readPIDFile(ctx context.Context) (int, bool) {
 // /proc/<pid>/fd — and so `ss -p` — for everyone but root, even the
 // connection's own login user who technically owns that process. So on a
 // stock OpenSSH target this resolves to "not found" far more often than
-// "found" — which is exactly why sessionRootPID tries the pidFilePath
+// "found" — which is exactly why SessionRootPID tries the pidFilePath
 // first: that mechanism doesn't depend on any of this. This one stays as
 // the fallback for a Windows target and for defense in depth. ok is false
 // for anything else too (ss missing, a non-Linux target, no line matching
@@ -395,6 +402,17 @@ const maxForegroundChainDepth = 8
 // puts each job in a group of its own — so this is a corner case, not the
 // common path, and never produces a wrong-looking answer: it only picks
 // among processes that are genuinely in the foreground group already.
+// Foreground satisfies hostops.SessionAware: find this session's own PID
+// first (SessionRootPID), then its foreground process (foregroundViaTPGID).
+// Both steps report "unknown" rather than guessing, so this does too.
+func (t *sshTransport) Foreground(ctx context.Context) (name string, chain []string, ok bool) {
+	rootPID, ok := t.SessionRootPID(ctx)
+	if !ok {
+		return "", nil, false
+	}
+	return t.foregroundViaTPGID(ctx, rootPID)
+}
+
 func (t *sshTransport) foregroundViaTPGID(ctx context.Context, rootPID int) (name string, chain []string, ok bool) {
 	res, err := t.Exec(ctx, "ps -eo pid,ppid,pgid,tpgid,comm --no-headers")
 	if err != nil || res.ExitCode != 0 {

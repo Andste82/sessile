@@ -132,46 +132,48 @@ func (h *HostSession) ProcessTree(ctx context.Context, rootPID int) ([]Process, 
 // Files returns this session's target's file operations (§4.10 M24+).
 func (h *HostSession) Files() FileTransport { return h.transport.Files() }
 
-// SessionRootPID attempts to find the exact PID of this SSH session's own
-// process on the target — see transport_ssh.go's sessionRootPID for how
-// (primarily: reading back a PID the session's own started command
-// recorded for itself; a socket-matching fallback for what that can't
-// cover). Local sessions don't need this: the caller already has the
-// exact shell PID from the kernel (§4.7), so this only ever does anything
-// for an SSH-backed HostSession, and even then only when it can be
-// determined with certainty — it never guesses. ok is false when neither
-// mechanism can (a Windows target with no `ss` either, or anything else
-// that means "unknown" rather than "here's a plausible answer").
-func (h *HostSession) SessionRootPID(ctx context.Context) (pid int, ok bool) {
-	sshT, isSSH := h.transport.(*sshTransport)
-	if !isSSH {
-		return 0, false
-	}
-	return sshT.sessionRootPID(ctx)
+// SessionAware is optionally implemented by a Transport that can identify
+// its own session's identity on the target — which process it is, and
+// what's currently in its foreground. Local doesn't implement it: the
+// caller already has both facts straight from the kernel (§4.7), no round
+// trip needed, so HostSession's methods below just report "unknown" for
+// it, the same answer a failed lookup would give. sshTransport implements
+// it via /proc reads once it knows its own PID (§4.10). A future
+// transport with a more direct source of truth for the same two questions
+// (Docker's exec API hands back its own PID authoritatively, no
+// correlation needed at all) can implement this however fits its own
+// mechanism — HostSession only checks that the interface is satisfied,
+// never which concrete transport is behind it, so nothing here needs to
+// change for that to plug in.
+type SessionAware interface {
+	// SessionRootPID finds this session's own PID on the target, with
+	// certainty or not at all — it never guesses (§4.10's design note on
+	// why: a plausible-looking wrong answer is worse than none).
+	SessionRootPID(ctx context.Context) (pid int, ok bool)
+	// Foreground reports the session's current foreground process — name
+	// and the chain leading to it (a script, then what it's actually
+	// running) — with the same certainty-or-nothing contract.
+	Foreground(ctx context.Context) (name string, chain []string, ok bool)
 }
 
-// Foreground reports the SSH session's own foreground process — the same
-// kernel fact a local session gets from TIOCGPGRP (§4.7's Foreground()),
-// read here from /proc's tpgid field instead, since there's no
-// TIOCGPGRP-equivalent over the SSH protocol. name is the foreground
-// process group's leader; chain follows it down through children that
-// stayed in its group, exactly like the local implementation's chain (a
-// script's own name, then what it's actually running). ok is false when
-// it can't be determined — SessionRootPID couldn't resolve, the target
-// has no `ps -o tpgid` support (a non-Linux target), or the process
-// group's leader has already exited — never a guess.
-//
-// Local sessions don't need this: the caller already reads it straight
-// from the kernel (§4.7), so this only ever does anything for an
-// SSH-backed HostSession.
+// SessionRootPID finds this session's own PID on the target, if its
+// Transport can answer that (SessionAware) — "unknown" (ok=false)
+// otherwise, never a guess.
+func (h *HostSession) SessionRootPID(ctx context.Context) (pid int, ok bool) {
+	aware, isAware := h.transport.(SessionAware)
+	if !isAware {
+		return 0, false
+	}
+	return aware.SessionRootPID(ctx)
+}
+
+// Foreground reports this session's current foreground process, if its
+// Transport can answer that (SessionAware) — "unknown" (ok=false)
+// otherwise, never a guess.
 func (h *HostSession) Foreground(ctx context.Context) (name string, chain []string, ok bool) {
-	sshT, isSSH := h.transport.(*sshTransport)
-	if !isSSH {
+	aware, isAware := h.transport.(SessionAware)
+	if !isAware {
 		return "", nil, false
 	}
-	rootPID, ok := sshT.sessionRootPID(ctx)
-	if !ok {
-		return "", nil, false
-	}
-	return sshT.foregroundViaTPGID(ctx, rootPID)
+	return aware.Foreground(ctx)
 }

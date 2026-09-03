@@ -351,7 +351,7 @@ func TestSSHSessionRootPIDReadsPIDFile(t *testing.T) {
 		t.Fatal("Exec produced no pid on stdout")
 	}
 
-	pid, ok := tr.sessionRootPID(ctx)
+	pid, ok := tr.SessionRootPID(ctx)
 	if !ok {
 		t.Fatal("sessionRootPID: not found, want the pid file just written")
 	}
@@ -371,7 +371,7 @@ func TestSSHSessionRootPIDFallsBackWhenNoPIDFile(t *testing.T) {
 	client := newTestSSHClient(t, hs)
 	tr := &sshTransport{client: client, pidFilePath: ""}
 
-	pid, ok := tr.sessionRootPID(context.Background())
+	pid, ok := tr.SessionRootPID(context.Background())
 	if !ok || pid != os.Getpid() {
 		t.Fatalf("sessionRootPID = (%d, %v), want (%d, true) via the socket fallback", pid, ok, os.Getpid())
 	}

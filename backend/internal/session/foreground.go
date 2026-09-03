@@ -28,14 +28,15 @@ const (
 	chainSeparator = " › "
 	maxChainShown  = 3
 
-	// sshForegroundTimeout bounds one SSH session's foreground lookup — a
-	// remote `ps` plus reading back its own recorded PID (§4.10), unlike
-	// local's plain syscalls. Generous relative to foregroundSampleInterval
-	// so a slow but working link still gets an answer, but bounded so a
-	// genuinely stuck connection can't leak a goroutine per sample forever
-	// (sampleForeground waits for every session's sample before its next
-	// tick can start new ones).
-	sshForegroundTimeout = 3 * time.Second
+	// hostOpsForegroundTimeout bounds one SessionAware foreground lookup — a
+	// remote `ps` plus reading back its own recorded PID for SSH (§4.10),
+	// unlike local's plain syscalls (which never reach this path at all
+	// once Backend.Foreground() already has an answer). Generous relative
+	// to foregroundSampleInterval so a slow but working link still gets an
+	// answer, but bounded so a genuinely stuck connection can't leak a
+	// goroutine per sample forever (sampleForeground waits for every
+	// session's sample before its next tick can start new ones).
+	hostOpsForegroundTimeout = 3 * time.Second
 )
 
 // commandLabel renders the foreground chain: "bash › ping" for a script that
@@ -94,15 +95,24 @@ func (m *Manager) sampleSession(s *Session) (Info, bool) {
 		return s.clearDerived()
 	}
 
-	// Outside the lock: this is the slow part, and broadcast must never wait on
-	// a /proc read (or, for SSH, a remote round trip). Both fields it needs are
-	// fixed for a session's lifetime — a restart builds a new Session rather
-	// than re-pointing this one.
-	var fg terminal.Foreground
-	if s.TargetType == TargetSSH {
-		fg = sshForeground(s.hostOps)
-	} else {
-		fg = backend.Foreground()
+	// Outside the lock: this is the slow part, and broadcast must never wait
+	// on a /proc read (or, for a transport that needs one, a remote round
+	// trip). Both fields it needs are fixed for a session's lifetime — a
+	// restart builds a new Session rather than re-pointing this one.
+	//
+	// Backend.Foreground() first: real and free for local (TIOCGPGRP), and
+	// the common case, so a non-local target never pays for anything more
+	// than the one always-empty call that already costs nothing (§4.2, "no
+	// local meaning"). Only when it has nothing to say — always true for a
+	// non-local target, occasionally true for local too — does this ask the
+	// session's own HostSession (§4.10, SessionAware): a fast no-op for a
+	// Transport that isn't SessionAware, a bounded remote round trip for one
+	// that is (SSH today; whatever a future non-local transport's own
+	// mechanism looks like tomorrow — nothing here needs to change for
+	// that).
+	fg := backend.Foreground()
+	if fg.Name == "" {
+		fg = hostOpsForeground(s.hostOps)
 	}
 	command := commandLabel(fg)
 	cwd := relativeToRoot(m.root, fg.Cwd)
@@ -114,18 +124,18 @@ func (m *Manager) sampleSession(s *Session) (Info, bool) {
 	return s.infoLocked(), changed
 }
 
-// sshForeground reads an SSH session's foreground process the way
-// hostops.HostSession.Foreground finds it (§4.10) — /proc's tpgid on the
-// session's own root process, the same kernel fact TIOCGPGRP gives a local
-// pty, read a different way because there's no TIOCGPGRP over SSH. Cwd is
-// left empty: unlike command, there's no single cheap remote call for it yet,
-// and the dashboard already treats an empty cwd as "unknown" (§6, §7), same
-// as it always has for an SSH session.
-func sshForeground(hostOps *hostops.HostSession) terminal.Foreground {
+// hostOpsForeground asks a session's HostSession for its foreground process
+// (§4.10, SessionAware) — the zero value if its Transport has nothing to
+// say (not SessionAware at all, or SessionAware but couldn't resolve right
+// now), same as Backend.Foreground() already returns for exactly the same
+// "unknown" case. Cwd is left empty: unlike command, there's no single
+// cheap remote call for it yet, and the dashboard already treats an empty
+// cwd as "unknown" (§6, §7), same as it always has.
+func hostOpsForeground(hostOps *hostops.HostSession) terminal.Foreground {
 	if hostOps == nil {
 		return terminal.Foreground{}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sshForegroundTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), hostOpsForegroundTimeout)
 	defer cancel()
 	name, chain, ok := hostOps.Foreground(ctx)
 	if !ok {
