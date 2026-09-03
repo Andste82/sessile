@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -58,6 +59,12 @@ type Server struct {
 	users       *auth.UserStore
 	webSessions *auth.SessionStore
 	hosts       *hosts.Registry
+
+	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
+	// opId. Entries are removed once a client has had a chance to observe
+	// the terminal state — see hostops_ops.go.
+	opsMu sync.Mutex
+	ops   map[string]*hostopStatus
 }
 
 // NewServer constructs a Server.
@@ -66,6 +73,7 @@ func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handl
 		cfg: cfg, manager: manager, ws: wsHandler, log: log,
 		workspaceRoot: workspaceRoot, serverConfig: serverCfg,
 		users: users, webSessions: webSessions, hosts: hostsRegistry,
+		ops: make(map[string]*hostopStatus),
 	}
 }
 
@@ -75,13 +83,19 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(requestLogger(s.log))
-	r.Use(limitBody(maxBodyBytes))
+
+	// limitBody(maxBodyBytes) is applied per-group below, not once here on
+	// the root engine — the upload route (further down) needs a much larger
+	// ceiling than every other JSON endpoint, and a MaxBytesReader wrap
+	// can only ever shrink an already-wrapped body, never raise it, so it
+	// has to live in a group of its own rather than inherit this one.
 
 	// Public: no session cookie required. Everything else in /api/* is
 	// gated by requireAuth (§10, §11) — a client-supplied user id is never
 	// trusted, so every authed handler resolves its actor from the cookie,
 	// not from anything in the request body or query string.
 	publicGroup := r.Group("/api")
+	publicGroup.Use(limitBody(maxBodyBytes))
 	{
 		publicGroup.GET("/health", s.health)
 		publicGroup.GET("/auth/status", s.authStatus)
@@ -92,6 +106,7 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 
 	authGroup := r.Group("/api")
 	authGroup.Use(s.requireAuth())
+	authGroup.Use(limitBody(maxBodyBytes))
 	{
 		authGroup.POST("/auth/logout", s.authLogout)
 		authGroup.GET("/auth/me", s.authMe)
@@ -121,7 +136,23 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.DELETE("/sessions/:id", s.deleteSession)
 		authGroup.PATCH("/sessions/:id", s.renameSession)
 		authGroup.POST("/sessions/:id/restart", s.restartSession)
+		authGroup.GET("/sessions/:id/hostops/process-tree", s.getProcessTree)
+		authGroup.GET("/sessions/:id/hostops/files", s.listHostFiles)
+		authGroup.POST("/sessions/:id/hostops/move", s.moveHostFile)
+		authGroup.POST("/sessions/:id/hostops/copy", s.copyHostFile)
+		authGroup.DELETE("/sessions/:id/hostops/files", s.deleteHostFile)
+		authGroup.GET("/sessions/:id/hostops/ops/:opId", s.getHostopStatus)
 		authGroup.GET("/directories", s.listDirectories)
+	}
+
+	// Download/upload get their own routes outside authGroup's blanket
+	// 32 KiB JSON cap. Download has no request body to limit; upload needs
+	// its own, much larger ceiling (hostopsUploadMaxBytes, hostops_ops.go).
+	authOnly := r.Group("/api")
+	authOnly.Use(s.requireAuth())
+	{
+		authOnly.GET("/sessions/:id/hostops/download", s.downloadHostFile)
+		authOnly.POST("/sessions/:id/hostops/upload", limitBody(hostopsUploadMaxBytes), s.uploadHostFile)
 	}
 
 	if s.ws != nil {

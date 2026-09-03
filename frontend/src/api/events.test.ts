@@ -100,4 +100,37 @@ describe('parseEvent', () => {
     expect(ev).toHaveProperty('session.command', '')
     expect(ev).toHaveProperty('session.title', '')
   })
+
+  it('parses a hostopStarted event', () => {
+    const ev = parseEvent(
+      JSON.stringify({ type: 'hostopStarted', sessionId: 's1', opId: 'op1', kind: 'delete', path: '/tmp/x' }),
+    )
+    expect(ev).toEqual({ type: 'hostopStarted', sessionId: 's1', opId: 'op1', kind: 'delete', path: '/tmp/x' })
+  })
+
+  it('parses a hostopProgress event', () => {
+    const ev = parseEvent(JSON.stringify({ type: 'hostopProgress', sessionId: 's1', opId: 'op1', done: 3, total: 10 }))
+    expect(ev).toEqual({ type: 'hostopProgress', sessionId: 's1', opId: 'op1', done: 3, total: 10 })
+  })
+
+  it('parses a hostopDone event, ok and error alike', () => {
+    expect(parseEvent(JSON.stringify({ type: 'hostopDone', sessionId: 's1', opId: 'op1', status: 'ok' }))).toEqual({
+      type: 'hostopDone',
+      sessionId: 's1',
+      opId: 'op1',
+      status: 'ok',
+      message: '',
+    })
+    expect(
+      parseEvent(JSON.stringify({ type: 'hostopDone', sessionId: 's1', opId: 'op1', status: 'error', message: 'boom' })),
+    ).toEqual({ type: 'hostopDone', sessionId: 's1', opId: 'op1', status: 'error', message: 'boom' })
+  })
+
+  it.each([
+    ['hostopStarted missing opId', '{"type":"hostopStarted","sessionId":"s1"}'],
+    ['hostopProgress missing sessionId', '{"type":"hostopProgress","opId":"op1","done":1,"total":2}'],
+    ['hostopDone missing opId', '{"type":"hostopDone","sessionId":"s1","status":"ok"}'],
+  ])('returns null for %s', (_label, input) => {
+    expect(parseEvent(input)).toBeNull()
+  })
 })

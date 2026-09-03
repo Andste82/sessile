@@ -40,12 +40,21 @@ verify each milestone's acceptance criteria before moving on.
   see §4.7's note — plus the window title the program sets for itself (§4.8),
   available for both local and SSH sessions since it is scanned out of the
   output stream rather than read from /proc
+- A session's process tree, and a file browser (list/move/copy/delete on the
+  target, download a file to the browser, upload one back) for its target —
+  local or SSH, Linux or Windows (§4.10). Both ride the session's own identity
+  and, for SSH, its own already-trusted connection — neither is a general
+  remote-command or file-transfer tool, see Out of Scope below
 
 ### Explicitly Out of Scope (do NOT build these, even partially)
-- File manager, SFTP, upload/download
+- An in-app text editor for files reached through §4.10 — the read/write path
+  that download/upload already needs is not an editor; that is a later,
+  separate decision layered on top, not implied by this one
+- A generic remote-command endpoint, or any file operation that takes more
+  than one explicit src/dst/path — §4.10's operations are a fixed, named set
+  for exactly that reason
 - Docker/Kubernetes management
 - RDP/VNC, host monitoring (CPU/RAM/disk/service dashboards), server inventory
-- Script execution framework
 - Encryption-at-rest for stored host credentials (tracked as a TODO — see
   §11 — not built in v0.4)
 
@@ -172,6 +181,19 @@ backend/
       sshpty.go              # SSH-backed Backend implementation
       hostkey.go               # TOFU HostKeyCallback, ProbeHostKey
       exchange.go                # ExchangeKeys — passwordless setup
+    hostops/                # process tree + file browser/transfer (§4.10)
+      hostops.go              # HostSession, Transport, FileTransport, Platform
+      transport_local.go        # localTransport — stdlib os/exec + os.*
+      transport_ssh.go            # sshTransport — reuses the session's *ssh.Client
+      platform_linux_ps.go             # ps-based ProcessTree — named to avoid
+                                          # Go's implicit _linux/_windows.go
+                                          # GOOS build-constraint convention;
+                                          # both must build into every binary
+                                          # regardless of the host Go itself
+                                          # targets, since this is about the
+                                          # remote target's OS, not sessile's
+      platform_windows_ps.go             # PowerShell-based ProcessTree
+      ops.go                            # Delete/Copy progress tracking (§5.2)
     auth/
       users.go               # users.yml store, bcrypt
       sessions.go              # in-memory web session store (sliding TTL)
@@ -363,12 +385,20 @@ sends, once the exchange succeeds.
 
 ### 4.7 Session foreground (app-agnostic, no emulation)
 
-**Local sessions only.** This entire section applies to `TargetLocal`
-sessions. An SSH-backed session's `Backend.Foreground()` always returns the
-zero value — there is no way to introspect a remote process's `/proc` from
-here, and `sampleSession`'s existing diff logic already treats the zero
-value as "nothing to report," so an SSH session's dashboard card simply
-shows no foreground program. No code in this section changes for SSH.
+**This section is about `Backend.Foreground()`, which is local-only.**
+`Backend.Foreground()` (`TIOCGPGRP` + `/proc`) always returns the zero
+value for an SSH-backed session — there is no way to introspect a remote
+process's `/proc` from a local ioctl, and nothing in this section changes
+that. `sampleSession` (foreground.go) branches around it instead: for an
+SSH session it calls `hostops.HostSession.Foreground` (§4.10) — the same
+kernel fact (`tpgid`, the field `TIOCGPGRP` itself reads) fetched over a
+remote `ps` rather than a local ioctl, once the session's own PID is known
+(§4.10's PID-recording mechanism). `Foreground`'s `ok=false` case (the
+target's PID couldn't be resolved, or has no `ps -o tpgid` support) is what
+still produces the zero value/"nothing to report" dashboard card `Foreground()`
+always did for SSH before this existed. Working directory is not part of
+this — `fgCwd` stays empty for SSH, same as always; there is no equally
+cheap single remote call for it yet.
 
 A running session reports the name of the program in its foreground and that
 program's working directory. Both are facts read from the kernel and passed
@@ -561,6 +591,239 @@ browser terminal owns itself or does not implement are ignored rather than
 guessed at. A restart builds a new session and a new read loop, so no mode
 outlives the shell that set it.
 
+### 4.10 Host operations: process tree, file browser, transfer
+
+A session's target — local or SSH, Linux or Windows — also exposes a small,
+**fixed set of named operations**: its process tree, listing/moving/copying/
+deleting files, and downloading/uploading one file to/from the browser. This
+is deliberately not a generic remote-command facility (§1, CLAUDE.md's
+"Scope" rule) — every operation is a specific typed method with typed
+arguments, never a caller-supplied command line.
+
+**Two independent axes, not a class per combination.** *Transport* is how a
+command or file operation reaches the target: `local` (this process) or `ssh`
+(the session's own already-dialed, TOFU-verified `*ssh.Client` — §4.5.1 — no
+second connection, no second trust decision). *Platform* is what the target
+looks like: Linux, Windows, or an unsupported "other". They compose:
+
+```go
+// HostSession is the top-level handle a session's hostops hang off. One is
+// built per session, alongside its Backend (§4.2), and lives exactly as
+// long as it does — session.Session gets a HostOps() accessor returning it.
+type HostSession struct {
+    transport Transport
+    platform  Platform // consulted only by ProcessTree — see below
+}
+
+// Transport moves bytes/commands to and from the target. Local and SSH are
+// its only two implementations, ever — a third transport (say, WinRM) would
+// be a new Transport, not a new type per OS it happens to support.
+type Transport interface {
+    Exec(ctx context.Context, line string) (Result, error)
+    Files() FileTransport
+}
+
+// FileTransport is OS-agnostic by construction. Local's is a thin wrapper
+// over os.ReadDir/os.ReadFile/os.WriteFile/os.Rename; SSH's is
+// github.com/pkg/sftp over the session's ssh.Client — the sftp-server
+// subsystem is what OpenSSH-for-Windows serves too, so this one
+// implementation covers every SSH target OS with no per-platform branch.
+type FileTransport interface {
+    List(ctx context.Context, path string) ([]DirEntry, error)
+    Read(ctx context.Context, path string) ([]byte, error)
+    Write(ctx context.Context, path string, data []byte) error
+    Rename(ctx context.Context, oldpath, newpath string) error // Move
+    Remove(ctx context.Context, path string) error             // walks + deletes for a directory — neither SFTP nor a single syscall has a recursive-delete primitive, so both transports hand-roll the same walk
+    Copy(ctx context.Context, src, dst string) error            // Read(src) then Write(dst); whole file in memory — fine at the sizes this feature targets, revisit if it grows into bulk transfer
+}
+
+// Platform is the one thing that is genuinely OS-shaped: process listing.
+// Everything else a HostSession does is transport-level and does not need
+// this — a file browser and download/upload work against an SSH target
+// with zero Platform support at all. Only ProcessTree needs one written for
+// a given OS to work; Linux ships first, Windows second (§12c), and a
+// target with neither returns a clear "unsupported platform" error rather
+// than a guess.
+type Platform interface {
+    ProcessTree(ctx context.Context, t Transport, rootPID int) ([]Process, error)
+}
+
+type Process struct {
+    PID, PPID int
+    Command   string
+    Children  []Process // pre-assembled tree; callers never re-link a flat list
+}
+```
+
+`localTransport`/`sshTransport` implement `Transport`; `linuxPlatform`/
+`windowsPlatform` implement `Platform`. `Manager.CreateSSH` builds the
+`sshTransport` from the same `*ssh.Client` `sshpty.Start` already produced —
+`sshpty.PTY` gains a `Client() *ssh.Client` accessor for exactly this, so
+nothing dials twice. `TargetOS` (already tracked per host, §9) selects the
+`Platform`; local sessions always get `linuxPlatform` — the server binary
+only ships for Linux (§2), so there is no "local Windows" case to support.
+
+**`Exec` stays internal.** No handler, route, or frontend call ever supplies
+its `line` argument — `Platform` implementations build it from a fixed
+template plus quoted path arguments (`ps -eo pid,ppid,comm --no-headers` for
+Linux; a small `Get-CimInstance Win32_Process | Select …` for Windows). It
+sits at the same trust depth `internal/sshpty` already has: the operator's
+own already-authenticated connection to their own host, one more channel on
+it rather than a new one.
+
+**Scoping an SSH session's process tree.** A local session's root is exact
+by construction — `info.PID` comes straight from the kernel (§4.7's same
+source). An SSH session has no equivalent: `Backend.Pid()` is always 0
+(§4.2), and there is no SSH-protocol-level way to ask "which remote
+process is my shell". `HostSession.SessionRootPID` answers it with two
+mechanisms, tried in order:
+
+1. **The session tells us, directly.** `sshpty.Start` (for any non-Windows
+   target — gated on `TargetOS`, not `TerminalType`, since a Windows host
+   can still have `TerminalType: "custom"`) doesn't send the configured
+   shell/command as-is — it wraps it, and wraps the *whole preamble*, not
+   just the final command, as one single-quoted argument to an explicitly
+   named `sh -c`: `sh -c 'echo $$ > <path> 2>/dev/null; exec <target>'`,
+   where `<target>` is the bare shell name (`bash`/`zsh`/`fish` — nothing
+   to interpret, exec'd directly) or, for `TerminalType: "custom"`,
+   `sh -c '<CustomCommand>'`. `echo $$` is a shell builtin (no fork), so
+   it records *its own* PID; `exec` then replaces that exact process with
+   the real command, keeping the PID identical. Nothing is written to the
+   PTY the user sees — the write goes to a file, not stdout/stderr.
+   `SessionRootPID` reads that file back (briefly retried — `Start`
+   returning only means the exec request was accepted, not that its first
+   statement has run yet).
+
+   The outer `sh -c` wrap exists because `$$` and `2>` are not portable to
+   every login shell an operator's account might have — verified against
+   real `fish` and real (Debian's `bsd-csh`) `csh` binaries, not assumed:
+   fish rejects `$$` outright ("$$ is not the pid... please use
+   $fish_pid"), and csh's `2>` isn't fd-numbered redirect syntax at all —
+   `echo $$ > path 2>/dev/null` silently redirects `path`'s own stdout
+   instead of writing the pid to it, so the file is simply never created,
+   no error at all. Wrapping the whole preamble as one opaque quoted
+   argument means the login shell only ever needs to parse "invoke `sh`
+   with two quoted arguments" — ordinary external-command invocation
+   syntax, about as close to universal across interactive shells as
+   anything gets — and never has to understand `$$`/`2>`/`exec` itself.
+   `TerminalType: "custom"` is a real, documented exception to that
+   portability: its `CustomCommand` may contain actual shell syntax the
+   operator wrote assuming a specific (possibly non-POSIX) login shell's
+   own builtins, and that's interpreted by an explicitly-named `sh` now,
+   not whatever the account's login shell happens to be — sessile never
+   actually knew what that was in the first place (`TerminalType` is
+   sessile's own choice of what to run, not a read of `/etc/passwd`), so
+   "preserve the exact previous interpreter" was never a guarantee this
+   could keep making; a `CustomCommand` needing another shell's syntax
+   says so itself now (`"bash -c '…'"`), the same way a portable script
+   would.
+2. **Falling back to socket matching.** For a target the preamble doesn't
+   apply to (a Windows target) or where reading the file somehow failed,
+   this connection's own local TCP address is matched against `ss`'s
+   socket table on the target, naming the exact `sshd` worker process
+   handling this connection. Kept for defense in depth, but — measured
+   against a real sshd (see below) — it rarely resolves anything on its
+   own, which is exactly why (1) exists and is tried first.
+
+Either mechanism, when it works, is exact — everything under the resolved
+PID in the process tree is this session's and nothing else's, never a
+plausible-looking wrong answer (not inference from process names or
+timing, the class of technique §4.7's removed activity classifier already
+showed doesn't hold up). `GET .../hostops/process-tree`'s `scope=session`
+(default, §6) uses whichever resolves and falls back to `scope=all` (root
+at PID 1, the whole target) when neither does, reporting `scoped:false` so
+the UI can say so rather than presenting a wrong-looking narrow view as if
+it were correct.
+
+**Why the fallback alone isn't enough, measured against a real sshd.**
+Reading the pid behind a socket needs `/proc/<pid>/fd` — readable by that
+pid's own uid on an ordinary process, but OpenSSH's per-connection process
+is routinely non-dumpable (`PR_SET_DUMPABLE` cleared, standard hardening
+for something that started as root), which blocks `/proc/<pid>/fd` — and
+so `ss -p`'s pid resolution — for everyone but root, including the
+connection's own login user. Verified directly: a real throwaway SSH
+session's own `ss -Htnp` (run as that session's own login user) listed
+every socket on the box but resolved **no** pid for any of them, not even
+the one it owned itself, while root could read all of them;
+`/proc/<that-same-pid>/fd` was `Permission denied` for that user, and
+`/proc/<a-pid-it-spawned-directly>/fd` was not — confirming it's the
+non-dumpable process, not a broken permission model, doing the blocking.
+Mechanism (1) exists specifically because of this finding, and re-running
+the exact same scenario (a real throwaway SSH session, real sleep children
+spawned in it) after adding it resolved correctly: `scoped:true`, the tree
+showing exactly the shell and its own children, nothing else from the
+host.
+
+**Long-running operations report progress; fast ones don't.** `ListDir`,
+`ProcessTree`, and `Rename`/Move are single round-trips and stay synchronous
+REST calls. `Delete` (a recursive walk with no natural client-visible byte
+stream to hang a progress bar on) and same-target `Copy` (potentially a
+large single file, same reason) are started, return an operation id
+immediately, and report progress on `/ws/events` (§5.2) the same way
+foreground/title changes already do — an *event*, not a poll. `Download` and
+`Upload` need **no** custom server-pushed progress channel at all: `Download`
+is a plain `<a download>` to the endpoint, so the browser's own download
+manager shows the transfer; `Upload` is one `XMLHttpRequest` (not `fetch` —
+`fetch` has no upload-progress event, only `XMLHttpRequest.upload.onprogress`
+does) reading real byte counts as the body streams out. Either way, nothing
+server-side needs to compute or push a number the browser already has.
+
+**Trust boundary.** Local paths still go through §4.5's sandbox — nothing
+here loosens that. Remote (SSH) paths do not: the user already has a full
+interactive shell on that host through the terminal this `HostSession`
+belongs to, so there is no meaningful sandbox left to add beyond the
+existing per-user host ownership check (§4.3, §4.5) that gates which
+session's `HostSession` a request can even reach.
+
+**Readiness for Docker/devcontainer targets (not started — this is what
+"prepare" means here).** The product shape isn't a third peer of local/SSH:
+a container is reached *through* a host you already have — "isolate this
+session in a container" is an option offered when creating a session
+against a local or SSH host you've already configured (an image, or a git
+repo to clone with a devcontainer config), not a new kind of host
+alongside them. Architecturally that makes `dockerTransport` a **decorator
+over an existing `Transport`**, not a new peer implementation — it wraps
+whichever `Transport` the chosen host already resolves to (`localTransport`
+or `sshTransport`) and prefixes every command with `docker exec
+<container>`, delegating the actual sending to the transport it wraps:
+
+```go
+type dockerTransport struct {
+    base        Transport // localTransport or sshTransport — whichever host this session is against
+    containerID string
+}
+
+func (d *dockerTransport) Exec(ctx context.Context, line string) (Result, error) {
+    return d.base.Exec(ctx, "docker exec "+d.containerID+" sh -c "+shellQuote(line))
+}
+```
+
+`Platform` already takes a `Transport` as a parameter rather than being
+tied to one, so `linuxPlatform` works unchanged against a `dockerTransport`
+too — process-tree support for free, same as it would for a peer
+implementation. `SessionAware` (above) composes the same way: whether
+`dockerTransport` implements it directly (Docker's own exec-inspect API
+hands back its own PID authoritatively — no PID-recording preamble or
+socket-matching needed at all, simpler than SSH's story) or just delegates
+to `base`'s isn't decided yet, but either way `HostSession` needs no
+changes either way — it already dispatches on the interface, not a
+concrete type.
+
+What's still genuinely new work when this happens, not prepared for yet: a
+`dockerpty` `Backend` (§4.2) for the interactive session itself — likely
+also a decorator over the local/SSH `Backend` it's layered on, `docker exec
+-it` (or the Engine API's exec-and-attach) run *through* that connection
+rather than a fourth independent mechanism; a `FileTransport` — Docker has
+no SFTP-equivalent subsystem, so it's either shell-command-based (needs a
+shell + coreutils in the target container, fragile against a
+minimal/scratch image) or `docker cp`-based (works without a shell, but
+lists a directory by parsing a tar stream, not a listing RPC) — worth its
+own design pass, not a side-decision when the moment comes; and the actual
+create-session flow (image picker, optional git-clone-a-devcontainer step)
+and `hosts.yml`/session-metadata modeling for "isolated in a container, on
+top of host X" — product decisions, not architecture, and stay open until
+they're actually asked.
+
 ---
 
 ## 5. WebSocket Protocol (exact spec)
@@ -660,6 +923,42 @@ as a **fallback while the socket is down** — the socket closing is itself the
 signal that the list may be stale, and an unreachable backend still has to mark
 every session stopped (`markAllStopped`).
 
+### 5.2 Host operation progress
+
+`Delete` and same-target `Copy` (§4.10) are the only two hostops that report
+progress, and they report it on this same `/ws/events` channel — one more
+message type, not a new socket:
+
+```json
+{"type":"hostopStarted","sessionId":"…","opId":"…","kind":"delete","path":"…"}
+{"type":"hostopProgress","sessionId":"…","opId":"…","done":12,"total":47}
+{"type":"hostopDone","sessionId":"…","opId":"…","status":"ok","message":""}
+{"type":"hostopDone","sessionId":"…","opId":"…","status":"error","message":"permission denied: …"}
+```
+
+`total` is known before the first `hostopProgress`: `Delete` lists the
+target's immediate children up front (one List call) before deleting
+anything, and `Copy` `Stat`s the source first. `done`/`total` count entries
+for `Delete`, bytes for `Copy` — the two are not comparable and no caller
+should treat them as the same unit.
+
+Both are coarser than a live byte counter would be, deliberately: `Delete`
+reports progress per *immediate child* of the target, not a full recursive
+walk — a subdirectory among those children is removed whole, by its own
+recursive call, and counted as one unit regardless of how much it contains.
+`Copy` isn't chunked (`FileTransport.Copy` is `Read` then `Write`, §4.10), so
+its progress is a start event and a complete event, not bytes moving in
+between. Both are real progress, not simulated — just at coarser
+granularity than "every byte, every file" would be, which is the tradeoff
+for not rewriting `FileTransport` around a streaming/chunked model it
+doesn't otherwise need at the sizes this feature targets.
+
+`DELETE .../hostops/files` and `POST .../hostops/copy` (§6) return
+`202 {"opId":"…"}` immediately rather than blocking; `GET
+.../hostops/ops/:opId` is the REST poll fallback for the same reason §5.1's
+list poll exists — the socket being down should not mean the UI has no way
+to find out whether a delete finished.
+
 ---
 
 ## 6. REST API (exact spec)
@@ -708,6 +1007,21 @@ never trusts a client-supplied user id.
 | `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (local), 404 `host_not_found` or 409 host-key responses (SSH) |
 | `GET /api/directories` | Browse dirs under the local-host workspace; optional `?path=` (relative, validated by §4.5) navigates into subdirs | 403 if `allowLocalHost` is off. `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
 | `GET /api/config` | Display name, available shells, `allowLocalHost`, version | Shells = allowlist ∩ installed |
+| `GET /api/sessions/:id/hostops/process-tree?scope=` | Process tree (§4.10) | `scope` is `session` (default, narrowed to this session's own processes) or `all` (the whole target). `{"rootPid":123,"scoped":true,"processes":[…Process…]}` — `scoped` is false when `session` was asked for but couldn't be resolved (falls back to `all` rather than erroring). 501 `unsupported_platform` if the target's `Platform` has no `ProcessTree` |
+| `GET /api/sessions/:id/hostops/files?path=` | List a directory on the target | `{"path":"…","entries":[…DirEntry…]}` |
+| `POST /api/sessions/:id/hostops/move` | Move/rename on the target | `{"src":"…","dst":"…"}` → 200, synchronous |
+| `POST /api/sessions/:id/hostops/copy` | Copy on the target | `{"src":"…","dst":"…"}` → 202 `{"opId":"…"}`, progress on §5.2 |
+| `DELETE /api/sessions/:id/hostops/files?path=` | Delete a file or directory on the target | 202 `{"opId":"…"}`, progress on §5.2 |
+| `GET /api/sessions/:id/hostops/ops/:opId` | Poll a `delete`/`copy` op | `{"opId":"…","kind":"delete","done":12,"total":47,"status":"running"}`. Poll fallback for §5.2 |
+| `GET /api/sessions/:id/hostops/download?path=` | Download one file from the target | Streamed body, `Content-Disposition: attachment`, `Content-Length` when known |
+| `POST /api/sessions/:id/hostops/upload?path=` | Upload one file to the target | Raw streamed body, not multipart — goes straight into `FileTransport.Write`. Its own, much larger body-size ceiling (§11) — not the 32 KiB JSON-endpoint cap |
+
+Every `hostops` route resolves the same `mgr.Get(id, userID)` every other
+`/api/sessions/:id/*` route does (§4.3) before reaching the session's
+`HostSession` — a hostops request against a session you don't own is
+indistinguishable from one against a session that doesn't exist, same as
+everywhere else. `DirEntry` is `{"name":"…","isDir":bool,"size":123,"modTime":"…"}`
+(RFC 3339, §9); `Process` is `{"pid":1,"ppid":0,"command":"…","children":[…]}`.
 
 Create-session body is a discriminator on `target`:
 ```json
@@ -770,7 +1084,8 @@ frontend/src/
                 # admin.ts: admin user list/delete/promote
   components/   # Sidebar.vue, SessionListItem.vue, NewSessionDialog.vue,
                 # TerminalView.vue, StatusDot.vue, TabBar.vue,
-                # HostDialog.vue, HostKeyTrustDialog.vue
+                # HostDialog.vue, HostKeyTrustDialog.vue,
+                # ProcessTreePanel.vue, FileBrowserPanel.vue (§4.10, §12c)
   pages/        # DashboardPage.vue, TerminalPage.vue, SettingsPage.vue,
                 # LoginPage.vue, HostsPage.vue, UsersPage.vue (admin-only)
   router/       # beforeEach guard: redirect to /login when unauthenticated,
@@ -796,11 +1111,13 @@ frontend/src/
   admin" 409 inline.
 - **Dashboard** (`/`): session cards, "New Session" button. A card carries
   the status indicator, name, target (local shell or the SSH host's display
-  name), the foreground program for local sessions only (§4.7) with the
-  session's window title (§4.8, both local and SSH) on the line below it,
-  the working directory — `cwd` when known, falling back to the stored
-  `directory` — the client count when more than one browser is attached, and
-  last activity.
+  name), the foreground program (§4.7 for local; §4.10's remote `tpgid`
+  read for SSH, when it can be determined — a blank line otherwise, not a
+  guess) with the session's window title (§4.8, both local and SSH) on the
+  line below it, the working directory — `cwd` when known, falling back to
+  the stored `directory` (local only; still always blank for SSH, no
+  equally cheap remote call for it yet) — the client count when more than
+  one browser is attached, and last activity.
 
   The two middle lines are deliberately unequal: the foreground is mono and the
   brighter of the two because it is the fact, the title is dimmer because it is
@@ -819,7 +1136,16 @@ frontend/src/
   No browser notifications and no document-title signalling, per "zero
   distractions" (§1).
 - **Terminal** (`/sessions/:id`): full-height xterm, tab bar of open
-  sessions, dark theme default.
+  sessions, dark theme default. A "Files" panel (`FileBrowserPanel.vue`,
+  §4.10) opens alongside the terminal rather than as a separate page — it
+  belongs to *this* session's `HostSession`, not to the session list, the
+  same reason foreground/title (§4.7, §4.8) are per-card rather than a
+  standalone view. It carries the file browser (list/move/copy/delete,
+  download/upload) and, in its own tab within the panel, the process tree
+  (`ProcessTreePanel.vue`) rooted at the session's own foreground PID —
+  local sessions get it from §4.7's existing lookup, SSH sessions from
+  §4.10's `ProcessTree`. A `Delete`/`Copy` in progress shows an inline
+  progress bar fed by §5.2's events, not a poll.
 - **Settings** (`/settings`): read-only server config display (display name,
   shells, version, whether local-host sessions are allowed), plus — admin
   only — an editable panel for `displayName`/`allowRegistration`/
@@ -1224,7 +1550,42 @@ layout and §11 for what they do and don't encrypt.
 - WebSocket origin check: same-origin by default, `--allow-origin` flag to
   override (needed for Vite dev — allow `http://localhost:5173` when
   `--dev` flag set).
-- Body size limits on JSON endpoints (e.g. 4 KiB).
+- Body size limits on JSON endpoints (32 KiB — raised from an initial 4 KiB,
+  which a pasted private key plus the rest of a host-creation body could
+  exceed). `POST .../hostops/upload` (§4.10, §6) is deliberately **not**
+  under this cap — a real file upload needs its own, much larger ceiling,
+  applied as separate route-group middleware rather than raising the
+  JSON-endpoint cap itself, which stays sized for JSON.
+- Host operations (§4.10) add no new identity or path-trust model: routes are
+  scoped by the same session ownership check as every other
+  `/api/sessions/:id/*` route (§4.3, §6), local paths still pass §4.5's
+  sandbox, and a remote (SSH) path is not sandboxed beyond that ownership
+  check — the user already has an interactive shell on that host through
+  the session the operation belongs to, so there is no narrower boundary to
+  enforce than "this is your own session." Since there's no sandbox to stay
+  inside, `listHostFiles` canonicalizes an SSH path to the target's own real
+  absolute form (`FileTransport.Resolve`, via SFTP's `REALPATH`) rather than
+  a synthetic relative starting point with nowhere "above" it — the file
+  browser can navigate anywhere the login already can, siblings and parents
+  included, same as a real shell on that host would let them. A local
+  session's path stays relative to the sandbox root (§4.5) — there being
+  nothing above that root to show is the point of the sandbox, not a gap.
+- Destructive host operations (Delete, and Copy/Move's destination) go
+  through `resolveDestructiveHostopsPath`, not the plain path-resolution
+  helper every other hostops route uses — it rejects a resolved path that
+  *is* the operation's own root: the local sandbox root (§4.5) for a local
+  session, `.`/`/` for an unsandboxed SSH session. A read-only route (List,
+  Stat, Download) still resolves and allows the root — you can browse or
+  read it, just not `DELETE .../hostops/files?path=.` and wipe the whole
+  sandbox, or the equivalent on an SSH target's own filesystem root.
+- `GET .../hostops/download` streams (`FileTransport.Open` + `io.Copy` to
+  the response writer) rather than buffering the whole file
+  (`FileTransport.Read`) as it did originally — a target where `Stat`'s
+  reported size doesn't reflect what reading it actually produces (e.g. a
+  device file) could otherwise grow the server's heap without bound. The
+  stream itself is also capped (`hostopsDownloadMaxBytes`, same value as
+  the upload cap) as defense in depth for exactly that case, since `Stat`
+  alone can't be trusted to reject it up front.
 - Rate limiting: still deferred — not added in this pass either. Login
   brute-forcing is the main gap this leaves open; worth revisiting before a
   wider deployment than "an admin who trusts their own users."
@@ -1475,6 +1836,51 @@ auth — shipped in M8-M21 above.
 
 ---
 
+## 12c. Milestones — Host Operations (v0.5)
+
+Process tree, file browser, and file transfer (§4.10), for local and SSH
+sessions, Linux and Windows targets. Ordered so every milestone ships a
+working, verifiable slice rather than half of `hostops` and half of the UI.
+
+### M22 — `internal/hostops` core
+`Transport` (`localTransport`, `sshTransport` off the session's existing
+`*ssh.Client`), `FileTransport` (stdlib for local, `github.com/pkg/sftp` for
+SSH), no HTTP surface yet. ✅ *Verify:* `go test ./...`; against a real
+throwaway SSH user (this repo's established pattern), list/read/write/
+rename/remove round-trip correctly, and a directory `Remove` with nested
+files actually empties before removing the top directory.
+
+### M23 — Process tree
+`Platform` (`linuxPlatform` first; `windowsPlatform` once a Windows SSH
+target is available to test against), `GET .../hostops/process-tree`,
+`ProcessTreePanel.vue`, rooted at the session's own foreground PID.
+✅ *Verify:* open a session, run `sleep 100 & sleep 200 &`, the panel shows
+both as children of the shell; kill one, the panel drops it within a
+sampler tick.
+
+### M24 — File browser (read-only) + move
+`GET .../hostops/files`, `POST .../hostops/move`, `FileBrowserPanel.vue`
+(list + rename/move; no copy/delete/transfer yet). ✅ *Verify:* browse a
+real directory tree over both a local and an SSH session; move a file into
+a subdirectory and back.
+
+### M25 — Copy + Delete, with progress
+`POST .../hostops/copy`, `DELETE .../hostops/files`, `GET
+.../hostops/ops/:opId`, the `hostop*` messages on `/ws/events` (§5.2), a
+progress bar in `FileBrowserPanel.vue`. ✅ *Verify:* delete a directory with
+enough files that the progress bar visibly moves before completion; copy a
+large file and confirm the byte progress reaches the source file's size
+exactly once, not more.
+
+### M26 — Download + Upload
+`GET .../hostops/download`, `POST .../hostops/upload` (own body-size
+ceiling, §11), browser-native transfer progress in `FileBrowserPanel.vue`.
+✅ *Verify:* download a file, checksum matches the source; upload a file
+larger than the JSON-endpoint body cap and confirm it is not rejected by
+that cap.
+
+---
+
 ## 13. Testing Strategy
 
 - **Unit (Go):** RingBuffer (wraparound, exact-boundary), path sandbox
@@ -1486,7 +1892,11 @@ auth — shipped in M8-M21 above.
   the event fan-out including its slow-subscriber drop.
 - **Integration (Go):** `httptest` + real PTY: create → attach → I/O →
   replay → delete. Use `sh -c 'echo READY; cat'` as a deterministic shell
-  for tests instead of bash.
+  for tests instead of bash. `internal/hostops` (§4.10, §12c) additionally
+  gets a real-SSH integration pass — a throwaway system user, same as the
+  SSH-backend tests already use — since `FileTransport`'s SSH
+  implementation is a real `pkg/sftp` client and a fake wire response would
+  not catch what an actual `sftp-server` disagrees with the library about.
 - **Frontend:** keep it light — `vitest` for the API layer and the WS
   message codec; no E2E framework in v0.x.
 - CI (GitHub Actions): `go vet`, `go test ./...`, `npm run build`,

@@ -60,6 +60,14 @@ func (m *Manager) publishGone(id, userID string) {
 	m.publish(userID, SessionGoneMsg{Type: "sessionGone", SessionID: id})
 }
 
+// PublishHostop fans a Delete/Copy progress message (§5.2) out to userID's
+// /ws/events subscribers — the API layer's hostop orchestration (internal/
+// api's ops tracking) calls this directly, since it owns the goroutine that
+// runs the operation and knows its progress; Manager only owns the fan-out.
+func (m *Manager) PublishHostop(userID string, v any) {
+	m.publish(userID, v)
+}
+
 // publish fans a message out to subscribers owned by userID. A subscriber
 // whose queue is full is a slow consumer and is dropped and closed, exactly
 // as an attached terminal client would be (§4.4) — a dashboard that cannot

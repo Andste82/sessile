@@ -10,7 +10,10 @@ import type {
   Host,
   HostBody,
   HostKeyErrorDetails,
+  HostFilesResponse,
   HostKeyProbeResponse,
+  HostopStatus,
+  ProcessTreeResponse,
   Session,
   User,
 } from './types'
@@ -48,6 +51,14 @@ export class ApiRequestError extends Error {
 // cue to reconnect, not an error to show.
 export function isAlreadyRunning(e: unknown): boolean {
   return e instanceof ApiRequestError && e.code === 'already_running'
+}
+
+// isUnsupportedPlatform reports whether a hostops request (§4.10) failed
+// only because the target has no Platform support yet (e.g. a Windows SSH
+// target before windowsPlatform is wired up for it) — worth a distinct,
+// calmer message than a generic error.
+export function isUnsupportedPlatform(e: unknown): boolean {
+  return e instanceof ApiRequestError && e.code === 'unsupported_platform'
 }
 
 // unauthorizedHandler fires whenever a request comes back 401. The auth store
@@ -102,6 +113,30 @@ export const api = {
     }),
   restartSession: (id: string) =>
     request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),
+  processTree: (id: string, scope?: 'session' | 'all') =>
+    request<ProcessTreeResponse>(
+      `/api/sessions/${id}/hostops/process-tree${scope ? `?scope=${scope}` : ''}`,
+    ),
+  listHostFiles: (id: string, path?: string) =>
+    request<HostFilesResponse>(
+      `/api/sessions/${id}/hostops/files${path ? `?path=${encodeURIComponent(path)}` : ''}`,
+    ),
+  moveHostFile: (id: string, src: string, dst: string) =>
+    request<void>(`/api/sessions/${id}/hostops/move`, {
+      method: 'POST',
+      body: JSON.stringify({ src, dst }),
+    }),
+  copyHostFile: (id: string, src: string, dst: string) =>
+    request<{ opId: string }>(`/api/sessions/${id}/hostops/copy`, {
+      method: 'POST',
+      body: JSON.stringify({ src, dst }),
+    }),
+  deleteHostFile: (id: string, path: string) =>
+    request<{ opId: string }>(`/api/sessions/${id}/hostops/files?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    }),
+  hostopStatus: (id: string, opId: string) =>
+    request<HostopStatus>(`/api/sessions/${id}/hostops/ops/${opId}`),
 
   authStatus: () => request<AuthStatus>('/api/auth/status'),
   bootstrap: (creds: Credentials) =>

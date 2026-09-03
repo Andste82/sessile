@@ -128,3 +128,57 @@ export interface HostBody {
   terminalType: string
   customCommand: string
 }
+
+// A session's process tree (PROJECT_PLAN.md §4.10, §6).
+export interface Process {
+  pid: number
+  ppid: number
+  command: string
+  children: Process[]
+}
+
+// rootPid is null when processes is a forest rather than one rooted tree
+// (scope=all, or an unresolved scope=session) — there is no portable
+// single "whole host" root pid to name (Linux's "1"/init convention has no
+// Windows equivalent), so the backend reports every process with no
+// visible parent as its own root instead of guessing one.
+//
+// scoped is true when processes is actually narrowed to this session's own
+// processes — always true for a local session's default view, but for SSH
+// it depends on HostSession.SessionRootPID finding a match (§4.10): an exec
+// preamble records the session's own PID for itself, which resolves
+// reliably on a POSIX SSH target; a socket-matching fallback covers the
+// rest, less reliably. false means processes is the whole target instead,
+// honestly labeled rather than presented as if it were narrowed.
+export interface ProcessTreeResponse {
+  rootPid: number | null
+  scoped: boolean
+  processes: Process[]
+}
+
+// One entry from a session's file browser (§4.10, §6). For a local session,
+// name/path are relative to the shared local-host workspace root, same
+// convention as DirectoriesResponse. For an SSH session there is no
+// sandbox root — path is whatever the target's own filesystem uses.
+export interface HostDirEntry {
+  name: string
+  isDir: boolean
+  size: number
+  modTime: string // RFC 3339 UTC
+}
+
+export interface HostFilesResponse {
+  path: string
+  entries: HostDirEntry[]
+}
+
+// Poll fallback for a Delete/Copy's progress (§5.2) — the same shape the WS
+// hostop* events carry, collapsed into one snapshot.
+export interface HostopStatus {
+  opId: string
+  kind: 'delete' | 'copy'
+  done: number
+  total: number
+  status: 'running' | 'ok' | 'error'
+  message?: string
+}

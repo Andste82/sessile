@@ -60,6 +60,61 @@ func TestResolveDir(t *testing.T) {
 	}
 }
 
+func TestResolvePath(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "project-a"))
+	if err := os.WriteFile(filepath.Join(root, "project-a", "file.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "evil")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	rootResolved, _ := filepath.EvalSymlinks(root)
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+		want    string
+	}{
+		{name: "existing file", input: "project-a/file.txt", want: filepath.Join(rootResolved, "project-a", "file.txt")},
+		{name: "existing directory", input: "project-a", want: filepath.Join(rootResolved, "project-a")},
+		{name: "new file in existing directory", input: "project-a/new.txt", want: filepath.Join(rootResolved, "project-a", "new.txt")},
+		{name: "dot resolves to root", input: ".", want: rootResolved},
+		{name: "empty resolves to root", input: "", want: rootResolved},
+		{name: "absolute rejected", input: "/etc/passwd", wantErr: true},
+		{name: "parent traversal rejected", input: "..", wantErr: true},
+		{name: "deep traversal rejected", input: "../../etc/passwd", wantErr: true},
+		{name: "embedded traversal rejected", input: "project-a/../../etc/passwd", wantErr: true},
+		{name: "symlink escape rejected", input: "evil/secret.txt", wantErr: true},
+		{name: "new file in nonexistent directory rejected", input: "does-not-exist/new.txt", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolvePath(root, tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ResolvePath(%q) = %q, want error", tc.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolvePath(%q) unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("ResolvePath(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestListDirs(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, "project-a"))
