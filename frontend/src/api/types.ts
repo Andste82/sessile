@@ -129,11 +129,7 @@ export interface HostBody {
   customCommand: string
 }
 
-// A session's process tree (PROJECT_PLAN.md §4.10, §6). For a local
-// session, processes are the real descendants of the session's own shell.
-// For an SSH session there is no reliable way to learn the remote shell's
-// own PID over the protocol (§4.10's design note), so rootPid is always 1
-// there and processes is the whole target's tree, not just this session's.
+// A session's process tree (PROJECT_PLAN.md §4.10, §6).
 export interface Process {
   pid: number
   ppid: number
@@ -141,15 +137,21 @@ export interface Process {
   children: Process[]
 }
 
+// rootPid is null when processes is a forest rather than one rooted tree
+// (scope=all, or an unresolved scope=session) — there is no portable
+// single "whole host" root pid to name (Linux's "1"/init convention has no
+// Windows equivalent), so the backend reports every process with no
+// visible parent as its own root instead of guessing one.
+//
 // scoped is true when processes is actually narrowed to this session's own
 // processes — always true for a local session's default view, but for SSH
-// it depends on HostSession.SessionRootPID finding a match (§4.10), which
-// on a stock OpenSSH target usually can't (its per-connection process is
-// commonly non-dumpable, hiding its pid from everyone but root). false
-// means processes is the whole target instead, honestly labeled rather
-// than presented as if it were narrowed.
+// it depends on HostSession.SessionRootPID finding a match (§4.10): an exec
+// preamble records the session's own PID for itself, which resolves
+// reliably on a POSIX SSH target; a socket-matching fallback covers the
+// rest, less reliably. false means processes is the whole target instead,
+// honestly labeled rather than presented as if it were narrowed.
 export interface ProcessTreeResponse {
-  rootPid: number
+  rootPid: number | null
   scoped: boolean
   processes: Process[]
 }
