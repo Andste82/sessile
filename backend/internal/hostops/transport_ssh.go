@@ -32,8 +32,17 @@ type sshTransport struct {
 	pidFilePath string
 
 	sftpMu   sync.Mutex
-	sftpErr  error
 	sftpOnce *sftp.Client
+
+	// rootPID/rootPIDFound cache SessionRootPID's result: the session's own
+	// PID on the target cannot change for the life of the connection, so
+	// resolving it once (a remote round trip, possibly several with
+	// readPIDFile's retry loop) and reusing it avoids repeating that work
+	// on every ProcessTree/Foreground call against a session that's already
+	// been resolved.
+	rootPIDMu    sync.Mutex
+	rootPID      int
+	rootPIDFound bool
 }
 
 // sshTransport satisfies SessionAware (SessionRootPID + Foreground below),
@@ -90,17 +99,19 @@ func (t *sshTransport) Files() FileTransport { return &sshFileTransport{transpor
 // sftpClient opens the sftp-server subsystem on first use and reuses it —
 // most sessions never touch the file browser, so paying for the subsystem
 // request only when something does keeps ProcessTree/Exec-only sessions
-// (and targets with no sftp-server at all) unaffected.
+// (and targets with no sftp-server at all) unaffected. Only a successful
+// open is memoized: a failure (e.g. a transient dial hiccup) is retried on
+// the next call rather than cached for the session's lifetime, since
+// nothing here guarantees the failure is permanent.
 func (t *sshTransport) sftpClient() (*sftp.Client, error) {
 	t.sftpMu.Lock()
 	defer t.sftpMu.Unlock()
-	if t.sftpOnce != nil || t.sftpErr != nil {
-		return t.sftpOnce, t.sftpErr
+	if t.sftpOnce != nil {
+		return t.sftpOnce, nil
 	}
 	c, err := sftp.NewClient(t.client)
 	if err != nil {
-		t.sftpErr = fmt.Errorf("open sftp session: %w", err)
-		return nil, t.sftpErr
+		return nil, fmt.Errorf("open sftp session: %w", err)
 	}
 	t.sftpOnce = c
 	return c, nil
@@ -174,6 +185,23 @@ func (t *sshFileTransport) Read(_ context.Context, p string) ([]byte, error) {
 		return nil, fmt.Errorf("read %s: %w", p, err)
 	}
 	return data, nil
+}
+
+// Open streams p via SFTP instead of buffering it whole (contrast Read) —
+// the *sftp.File returned reads lazily over the wire chunk by chunk, so the
+// download handler's io.Copy to the response writer never holds more than
+// one chunk in memory regardless of the remote file's size (§4.10, review
+// finding on unbounded download memory).
+func (t *sshFileTransport) Open(_ context.Context, p string) (io.ReadCloser, error) {
+	c, err := t.transport.sftpClient()
+	if err != nil {
+		return nil, err
+	}
+	f, err := c.Open(p)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", p, err)
+	}
+	return f, nil
 }
 
 func (t *sshFileTransport) Write(_ context.Context, p string, data []byte) error {
@@ -268,6 +296,25 @@ const (
 //     can't resolve anything (see its own doc comment), which is exactly
 //     why (1) exists.
 func (t *sshTransport) SessionRootPID(ctx context.Context) (int, bool) {
+	t.rootPIDMu.Lock()
+	if t.rootPIDFound {
+		pid := t.rootPID
+		t.rootPIDMu.Unlock()
+		return pid, true
+	}
+	t.rootPIDMu.Unlock()
+
+	pid, ok := t.resolveSessionRootPID(ctx)
+	if !ok {
+		return 0, false
+	}
+	t.rootPIDMu.Lock()
+	t.rootPID, t.rootPIDFound = pid, true
+	t.rootPIDMu.Unlock()
+	return pid, true
+}
+
+func (t *sshTransport) resolveSessionRootPID(ctx context.Context) (int, bool) {
 	if t.pidFilePath != "" {
 		if pid, ok := t.readPIDFile(ctx); ok {
 			return pid, true
@@ -282,8 +329,12 @@ func (t *sshTransport) readPIDFile(ctx context.Context) (int, bool) {
 		res, err := t.Exec(ctx, line)
 		if err == nil && res.ExitCode == 0 {
 			if pid, atoiErr := strconv.Atoi(strings.TrimSpace(string(res.Stdout))); atoiErr == nil && pid > 0 {
+				t.cleanupPIDFile()
 				return pid, true
 			}
+		}
+		if attempt == pidFileRetries-1 {
+			break // no point sleeping after the last attempt
 		}
 		select {
 		case <-ctx.Done():
@@ -292,6 +343,22 @@ func (t *sshTransport) readPIDFile(ctx context.Context) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// cleanupPIDFile removes the remote pidfile once it's been read
+// successfully — SessionRootPID caches the result (above), so the file is
+// never read again, and leaving it in place would otherwise accumulate one
+// /tmp entry per SSH session ever started against a target (§4.10). Fire
+// with its own detached context and timeout: this is best-effort tidiness,
+// not something a caller waiting on SessionRootPID should block on or fail
+// over.
+func (t *sshTransport) cleanupPIDFile() {
+	path := t.pidFilePath
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = t.Exec(ctx, fmt.Sprintf("rm -f %s", path))
+	}()
 }
 
 // sessionRootPIDViaSocket is the ss-based fallback — reached only when

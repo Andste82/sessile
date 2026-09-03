@@ -6,13 +6,16 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -30,6 +33,12 @@ type hostopsTestServer struct {
 	addr        string
 	fingerprint string
 	root        string
+
+	// sftpFailures, when > 0, rejects that many "sftp" subsystem requests
+	// before letting one through — used by TestSftpClientRetriesAfterATransientFailure
+	// to simulate a real, transient dial hiccup on a real (if deliberately
+	// uncooperative) server, not a mock return value.
+	sftpFailures int32
 }
 
 func newHostopsTestServer(t *testing.T) *hostopsTestServer {
@@ -109,6 +118,11 @@ func (hs *hostopsTestServer) serveSession(ch ssh.Channel, requests <-chan *ssh.R
 			var payload struct{ Name string }
 			_ = ssh.Unmarshal(req.Payload, &payload)
 			if payload.Name != "sftp" {
+				req.Reply(false, nil)
+				continue
+			}
+			if atomic.LoadInt32(&hs.sftpFailures) > 0 {
+				atomic.AddInt32(&hs.sftpFailures, -1)
 				req.Reply(false, nil)
 				continue
 			}
@@ -260,6 +274,55 @@ func TestSSHFilesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSSHFilesOpenStreamsTheSameContentAsRead(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	ctx := context.Background()
+	files := NewSSH(newTestSSHClient(t, hs), "").Files()
+
+	if err := files.Write(ctx, "a.txt", []byte("streamed content")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	rc, err := files.Open(ctx, "a.txt")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll(Open result): %v", err)
+	}
+	if string(data) != "streamed content" {
+		t.Errorf("Open content = %q, want %q", data, "streamed content")
+	}
+}
+
+// TestSftpClientRetriesAfterATransientFailure is finding #10's exact repro:
+// the sftp-server subsystem request fails once (a real rejection from a
+// real server, not a mocked error) and a later call must retry rather than
+// replaying the same failure for the rest of the session's life.
+func TestSftpClientRetriesAfterATransientFailure(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	hs.sftpFailures = 1
+	client := newTestSSHClient(t, hs)
+	tr := &sshTransport{client: client}
+
+	if _, err := tr.sftpClient(); err == nil {
+		t.Fatal("first sftpClient call: want an error (server deliberately rejects it)")
+	}
+	if tr.sftpOnce != nil {
+		t.Fatal("a failed sftpClient attempt must not be cached")
+	}
+
+	c, err := tr.sftpClient()
+	if err != nil {
+		t.Fatalf("sftpClient retry after the transient failure: %v", err)
+	}
+	if c == nil {
+		t.Fatal("sftpClient returned a nil client with no error")
+	}
+}
+
 func TestSSHRemoveDeletesNestedDirectory(t *testing.T) {
 	hs := newHostopsTestServer(t)
 	ctx := context.Background()
@@ -357,6 +420,68 @@ func TestSSHSessionRootPIDReadsPIDFile(t *testing.T) {
 	}
 	if strconv.Itoa(pid) != wantPID {
 		t.Fatalf("sessionRootPID = %d, want %s (from the same command's own stdout)", pid, wantPID)
+	}
+}
+
+// TestSSHSessionRootPIDIsCachedAfterFirstResolution is finding #12: once
+// resolved, the pid can't change for the session's life, so a second call
+// must return the cached value rather than re-reading the remote pidfile —
+// proven here by overwriting the pidfile with a different pid between the
+// two calls and confirming the second call still returns the first pid.
+func TestSSHSessionRootPIDIsCachedAfterFirstResolution(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	pidFile := filepath.Join(t.TempDir(), "pidfile")
+	tr := &sshTransport{client: client, pidFilePath: pidFile}
+	ctx := context.Background()
+
+	if _, err := tr.Exec(ctx, fmt.Sprintf("echo 111 > %s", pidFile)); err != nil {
+		t.Fatalf("Exec (write first pid): %v", err)
+	}
+	first, ok := tr.SessionRootPID(ctx)
+	if !ok || first != 111 {
+		t.Fatalf("SessionRootPID = (%d, %v), want (111, true)", first, ok)
+	}
+
+	if _, err := tr.Exec(ctx, fmt.Sprintf("echo 222 > %s", pidFile)); err != nil {
+		t.Fatalf("Exec (write second pid): %v", err)
+	}
+	second, ok := tr.SessionRootPID(ctx)
+	if !ok || second != 111 {
+		t.Fatalf("SessionRootPID (cached) = (%d, %v), want the cached (111, true), not the pidfile's new content", second, ok)
+	}
+}
+
+// TestSSHSessionRootPIDCleansUpThePIDFileAfterReading is finding #11: once
+// SessionRootPID has resolved (and cached) the pid, the remote pidfile it
+// read is no longer needed and must be removed rather than left behind —
+// otherwise every SSH session ever started against a target leaves one
+// /tmp entry forever. Cleanup runs detached (cleanupPIDFile), so this polls
+// briefly rather than asserting it's gone the instant SessionRootPID
+// returns.
+func TestSSHSessionRootPIDCleansUpThePIDFileAfterReading(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	pidFile := filepath.Join(t.TempDir(), "pidfile")
+	tr := &sshTransport{client: client, pidFilePath: pidFile}
+	ctx := context.Background()
+
+	if _, err := tr.Exec(ctx, fmt.Sprintf("echo $$ > %s", pidFile)); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if _, ok := tr.SessionRootPID(ctx); !ok {
+		t.Fatal("SessionRootPID: not found")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(pidFile); os.IsNotExist(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pidfile %s still exists after SessionRootPID resolved it", pidFile)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
