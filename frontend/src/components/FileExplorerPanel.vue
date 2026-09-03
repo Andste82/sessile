@@ -272,10 +272,11 @@ async function onFileSelected(e: Event) {
   input.value = '' // allow re-selecting the same file next time
   if (!file) return
 
-  upload.value = { name: file.name, loaded: 0, total: file.size, status: 'running' }
+  const name = file.name
+  upload.value = { name, loaded: 0, total: file.size, status: 'running' }
   try {
-    await uploadHostFile(props.sessionId, joinPath(currentPath.value, file.name), file, (loaded, total) => {
-      if (upload.value) {
+    await uploadHostFile(props.sessionId, joinPath(currentPath.value, name), file, (loaded, total) => {
+      if (upload.value?.name === name) {
         upload.value.loaded = loaded
         upload.value.total = total
       }
@@ -283,8 +284,15 @@ async function onFileSelected(e: Event) {
     await load(currentPath.value)
     upload.value = null
   } catch (err) {
-    if (upload.value) upload.value.status = 'error'
+    if (upload.value?.name === name) upload.value.status = 'error'
     error.value = err instanceof Error ? err.message : String(err)
+    // Auto-clear so the toolbar's Upload button (:disabled="!!upload")
+    // isn't stuck disabled forever — same pattern as finishTracking's
+    // activeOp auto-clear below. error.value stays set independently, so
+    // the failure message is still visible after the banner is gone.
+    setTimeout(() => {
+      if (upload.value?.name === name && upload.value.status === 'error') upload.value = null
+    }, 1200)
   }
 }
 
