@@ -92,9 +92,15 @@ type DirEntry struct {
 type Platform interface {
 	// ProcessTree returns rootPID's descendants, assembled into a tree —
 	// not rootPID itself, which the caller already knows (its session's own
-	// foreground PID, §4.7). Implementations run one fixed, hardcoded
-	// listing command (never a caller-supplied one, §4.10) over t.Exec.
-	ProcessTree(ctx context.Context, t Transport, rootPID int) ([]Process, error)
+	// foreground PID, §4.7) — or, when rootPID is nil, the whole target's
+	// process forest: every process with no visible parent in the listing,
+	// each its own root. nil exists because there is no portable "root
+	// pid" to hand implementations instead — Linux's "1" convention (init)
+	// has no Windows equivalent, and guessing one risks a self-referential
+	// entry a caller would have no way to know is wrong. Implementations
+	// run one fixed, hardcoded listing command (never a caller-supplied
+	// one, §4.10) over t.Exec.
+	ProcessTree(ctx context.Context, t Transport, rootPID *int) ([]Process, error)
 }
 
 // Process is one entry in a process tree.
@@ -119,10 +125,11 @@ func NewHostSession(transport Transport, platform Platform) *HostSession {
 	return &HostSession{transport: transport, platform: platform}
 }
 
-// ProcessTree returns rootPID's descendants for this session's target, or
-// ErrUnsupportedPlatform if it has no Platform (a target OS with no
-// ProcessTree implementation yet, or "other"/unset).
-func (h *HostSession) ProcessTree(ctx context.Context, rootPID int) ([]Process, error) {
+// ProcessTree returns rootPID's descendants for this session's target — or,
+// rootPID nil, the whole target's process forest — or ErrUnsupportedPlatform
+// if it has no Platform (a target OS with no ProcessTree implementation
+// yet, or "other"/unset).
+func (h *HostSession) ProcessTree(ctx context.Context, rootPID *int) ([]Process, error) {
 	if h.platform == nil {
 		return nil, ErrUnsupportedPlatform
 	}

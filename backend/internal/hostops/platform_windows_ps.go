@@ -19,7 +19,7 @@ func NewWindowsPlatform() Platform { return windowsPlatform{} }
 
 const windowsProcessListScript = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Csv -NoTypeInformation"`
 
-func (windowsPlatform) ProcessTree(ctx context.Context, t Transport, rootPID int) ([]Process, error) {
+func (windowsPlatform) ProcessTree(ctx context.Context, t Transport, rootPID *int) ([]Process, error) {
 	res, err := t.Exec(ctx, windowsProcessListScript)
 	if err != nil {
 		return nil, fmt.Errorf("powershell: %w", err)
@@ -31,7 +31,13 @@ func (windowsPlatform) ProcessTree(ctx context.Context, t Transport, rootPID int
 	if err != nil {
 		return nil, fmt.Errorf("parse powershell output: %w", err)
 	}
-	return buildProcessTree(flat, rootPID), nil
+	if rootPID == nil {
+		// Windows has no equivalent of Linux's "1" (init) convention — no
+		// single well-known ancestor of everything — so "the whole
+		// target's tree" means a forest here, not a rooted walk.
+		return buildProcessForest(flat), nil
+	}
+	return buildProcessTree(flat, *rootPID), nil
 }
 
 // parseWindowsProcessCSV reads ConvertTo-Csv's output: a header row

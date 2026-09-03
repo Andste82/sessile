@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -36,7 +37,9 @@ func toProcessJSON(p hostops.Process) processJSON {
 
 // resolveProcessTreeRoot picks what ProcessTree roots at, per the optional
 // `?scope=` query param — "session" (the default) narrows to just this
-// session's own processes; "all" always shows the whole target.
+// session's own processes; "all" always shows the whole target's process
+// forest (rootPID nil — there is no portable single "whole host" root pid
+// to hand back instead; see Platform.ProcessTree's doc comment).
 //
 // A local session has a real, known shell PID (info.PID, from the kernel —
 // §4.7's same source) — always exact, no round trip needed, so that's used
@@ -47,20 +50,21 @@ func toProcessJSON(p hostops.Process) processJSON {
 // what that can't cover; a future transport answers however fits its own
 // mechanism. scoped reports which one the caller actually got: a "session"
 // request that couldn't be resolved falls back to the whole host (rootPID
-// 1) with scoped=false, never a silently wrong narrower-looking answer.
-func (s *Server) resolveProcessTreeRoot(c *gin.Context, ops *hostops.HostSession, info session.Info) (rootPID int, scoped bool) {
+// nil) with scoped=false, never a silently wrong narrower-looking answer.
+func (s *Server) resolveProcessTreeRoot(c *gin.Context, ops *hostops.HostSession, info session.Info) (rootPID *int, scoped bool) {
 	if c.Query("scope") == "all" {
-		return 1, false
+		return nil, false
 	}
 	if info.TargetType == session.TargetLocal {
-		return info.PID, true
+		pid := info.PID
+		return &pid, true
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
 	defer cancel()
 	if pid, ok := ops.SessionRootPID(ctx); ok {
-		return pid, true
+		return &pid, true
 	}
-	return 1, false
+	return nil, false
 }
 
 func (s *Server) getProcessTree(c *gin.Context) {
@@ -91,6 +95,8 @@ func (s *Server) getProcessTree(c *gin.Context) {
 	for _, p := range procs {
 		out = append(out, toProcessJSON(p))
 	}
+	// rootPid is null in the response when this is a forest (scope=all, or
+	// an unresolved scope=session) — there is no single root to name.
 	c.JSON(http.StatusOK, gin.H{"rootPid": rootPID, "scoped": scoped, "processes": out})
 }
 
@@ -130,6 +136,42 @@ func (s *Server) resolveHostopsPath(info session.Info, userPath string) (resolve
 		return "", "", err
 	}
 	return resolved, normalizeRel(userPath), nil
+}
+
+// resolveDestructiveHostopsPath is resolveHostopsPath plus a guard against
+// the one path listing legitimately needs to resolve but a destructive
+// operation must never accept: the target's own root.
+//
+// session.ResolvePath correctly returns the sandbox root itself for
+// path="." or "" (so listHostFiles can list it) — but Delete/Move/Copy
+// calling resolveHostopsPath directly inherited that same resolution with
+// no guard against it, so path="." reached FileTransport.Remove/Rename/
+// Copy pointed straight at the workspace root: DELETE …/files?path=.
+// listed every entry under it, removed each one, then removed the root
+// directory itself — os.RemoveAll on the shared local-host workspace,
+// reachable by any authenticated user who owns any local session, not
+// just the resolveDir/ResolvePath escape-the-sandbox class of bug the
+// existing sandbox tests already cover (this path never left the sandbox
+// — it targeted the sandbox itself).
+//
+// SSH has no sandbox root to compare against, so the same rule is applied
+// to the two paths that unambiguously mean "here" or "everything" if left
+// unresolved: "." and "/".
+func (s *Server) resolveDestructiveHostopsPath(info session.Info, userPath string) (resolved, display string, err error) {
+	resolved, display, err = s.resolveHostopsPath(info, userPath)
+	if err != nil {
+		return "", "", err
+	}
+	if info.TargetType == session.TargetSSH {
+		if resolved == "." || resolved == "/" {
+			return "", "", fmt.Errorf("refusing to operate on %q", resolved)
+		}
+		return resolved, display, nil
+	}
+	if root, rootErr := session.ResolvePath(s.workspaceRoot, "."); rootErr == nil && resolved == root {
+		return "", "", errors.New("refusing to operate on the workspace root")
+	}
+	return resolved, display, nil
 }
 
 func (s *Server) listHostFiles(c *gin.Context) {
@@ -195,12 +237,12 @@ func (s *Server) moveHostFile(c *gin.Context) {
 		return
 	}
 
-	resolvedSrc, _, err := s.resolveHostopsPath(info, body.Src)
+	resolvedSrc, _, err := s.resolveDestructiveHostopsPath(info, body.Src)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 		return
 	}
-	resolvedDst, _, err := s.resolveHostopsPath(info, body.Dst)
+	resolvedDst, _, err := s.resolveDestructiveHostopsPath(info, body.Dst)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 		return

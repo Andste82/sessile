@@ -24,7 +24,8 @@ func TestWindowsProcessTreeParsesCSV(t *testing.T) {
 		"\"200\",\"100\",\"powershell.exe\"\r\n"
 	tr := fakeTransport{result: Result{Stdout: []byte(csv), ExitCode: 0}}
 
-	tree, err := NewWindowsPlatform().ProcessTree(context.Background(), tr, 4)
+	rootPID := 4
+	tree, err := NewWindowsPlatform().ProcessTree(context.Background(), tr, &rootPID)
 	if err != nil {
 		t.Fatalf("ProcessTree: %v", err)
 	}
@@ -36,9 +37,30 @@ func TestWindowsProcessTreeParsesCSV(t *testing.T) {
 	}
 }
 
+// TestWindowsProcessTreeForestModeFindsRootWithNoLinuxConvention proves
+// finding #6's fix: Windows has no "1" (init) equivalent, so rootPID=nil
+// (forest mode) is what makes "the whole target" reachable at all — the
+// old hardcoded rootPID=1 never matched anything here and the whole
+// windowsPlatform implementation was unreachable in practice.
+func TestWindowsProcessTreeForestModeFindsRootWithNoLinuxConvention(t *testing.T) {
+	csv := "\"ProcessId\",\"ParentProcessId\",\"Name\"\r\n" +
+		"\"4\",\"0\",\"System\"\r\n" +
+		"\"100\",\"4\",\"cmd.exe\"\r\n"
+	tr := fakeTransport{result: Result{Stdout: []byte(csv), ExitCode: 0}}
+
+	forest, err := NewWindowsPlatform().ProcessTree(context.Background(), tr, nil)
+	if err != nil {
+		t.Fatalf("ProcessTree: %v", err)
+	}
+	if len(forest) != 1 || forest[0].PID != 4 || len(forest[0].Children) != 1 || forest[0].Children[0].PID != 100 {
+		t.Fatalf("forest = %+v, want one root pid=4 with one child pid=100", forest)
+	}
+}
+
 func TestWindowsProcessTreeSurfacesNonZeroExit(t *testing.T) {
 	tr := fakeTransport{result: Result{ExitCode: 1, Stderr: []byte("access denied")}}
-	if _, err := NewWindowsPlatform().ProcessTree(context.Background(), tr, 4); err == nil {
+	rootPID := 4
+	if _, err := NewWindowsPlatform().ProcessTree(context.Background(), tr, &rootPID); err == nil {
 		t.Fatal("ProcessTree returned nil error on non-zero exit")
 	}
 }

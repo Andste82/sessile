@@ -125,7 +125,7 @@ func (s *Server) deleteHostFile(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, CodeValidation, "path is required")
 		return
 	}
-	resolvedPath, _, err := s.resolveHostopsPath(info, userPath)
+	resolvedPath, _, err := s.resolveDestructiveHostopsPath(info, userPath)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 		return
@@ -211,12 +211,12 @@ func (s *Server) copyHostFile(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, CodeValidation, "src and dst are required")
 		return
 	}
-	resolvedSrc, _, err := s.resolveHostopsPath(info, body.Src)
+	resolvedSrc, _, err := s.resolveDestructiveHostopsPath(info, body.Src)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 		return
 	}
-	resolvedDst, _, err := s.resolveHostopsPath(info, body.Dst)
+	resolvedDst, _, err := s.resolveDestructiveHostopsPath(info, body.Dst)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 		return
