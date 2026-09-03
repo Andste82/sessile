@@ -365,3 +365,99 @@ func parseSSPeerPID(output, myPort string) (int, bool) {
 	}
 	return 0, false
 }
+
+// fgProc is one process's own account of itself, for foreground detection —
+// enough of `ps -eo pid,ppid,pgid,tpgid,comm`'s columns to find the
+// foreground process group and walk down from its leader.
+type fgProc struct {
+	pid, ppid, pgid, tpgid int
+	comm                   string
+}
+
+// maxForegroundChainDepth mirrors terminal.maxChainDepth (§4.7) — real
+// chains are one or two deep; anything past this is a build system, and
+// the label has long stopped being readable.
+const maxForegroundChainDepth = 8
+
+// foregroundViaTPGID reads /proc's tpgid for rootPID — the same kernel
+// fact TIOCGPGRP exposes for a local pty (§4.7), since every process
+// attached to a given controlling terminal reports the identical tpgid
+// regardless of whether it is itself in the foreground group — then walks
+// down from that group's leader exactly the way terminal.chainFrom does
+// for a local session: only children that stayed in the same process
+// group, one command per level.
+//
+// The one approximation against the local implementation: tie-breaking
+// among more than one candidate child uses PID order (lower pid wins) as
+// a stand-in for "started first", since a single `ps` call doesn't carry
+// start time the way a /proc/<pid>/stat read does. A process group with
+// more than one candidate child at a time is rare — an interactive shell
+// puts each job in a group of its own — so this is a corner case, not the
+// common path, and never produces a wrong-looking answer: it only picks
+// among processes that are genuinely in the foreground group already.
+func (t *sshTransport) foregroundViaTPGID(ctx context.Context, rootPID int) (name string, chain []string, ok bool) {
+	res, err := t.Exec(ctx, "ps -eo pid,ppid,pgid,tpgid,comm --no-headers")
+	if err != nil || res.ExitCode != 0 {
+		return "", nil, false
+	}
+	procs := parseForegroundPS(string(res.Stdout))
+	if len(procs) == 0 {
+		return "", nil, false
+	}
+
+	root, found := procs[rootPID]
+	if !found {
+		return "", nil, false
+	}
+	fgGroup := root.tpgid
+	leader, found := procs[fgGroup] // the group leader's pid equals the group id, by definition
+	if !found || leader.pgid != fgGroup {
+		return "", nil, false
+	}
+
+	chain = []string{leader.comm}
+	pid := leader.pid
+	for len(chain) < maxForegroundChainDepth {
+		next, nextComm, found := groupChildAmong(procs, pid, fgGroup)
+		if !found {
+			break
+		}
+		chain = append(chain, nextComm)
+		pid = next
+	}
+	return leader.comm, chain, true
+}
+
+func parseForegroundPS(output string) map[int]fgProc {
+	procs := make(map[int]fgProc)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(fields[0])
+		ppid, err2 := strconv.Atoi(fields[1])
+		pgid, err3 := strconv.Atoi(fields[2])
+		tpgid, err4 := strconv.Atoi(fields[3])
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+			continue
+		}
+		procs[pid] = fgProc{pid: pid, ppid: ppid, pgid: pgid, tpgid: tpgid, comm: strings.Join(fields[4:], " ")}
+	}
+	return procs
+}
+
+// groupChildAmong finds pid's child that stayed in process group group —
+// see foregroundViaTPGID's doc comment for the tie-break among more than
+// one candidate.
+func groupChildAmong(procs map[int]fgProc, pid, group int) (bestPID int, bestComm string, found bool) {
+	for _, p := range procs {
+		if p.ppid != pid || p.pgid != group {
+			continue
+		}
+		if bestPID == 0 || p.pid < bestPID {
+			bestPID, bestComm = p.pid, p.comm
+		}
+	}
+	return bestPID, bestComm, bestPID != 0
+}

@@ -58,8 +58,11 @@ type Session struct {
 	Rows, Cols   uint16
 
 	// derived foreground, refreshed by the manager's sampler (§4.7). Both are
-	// empty for a session that is not running, and always empty for an SSH
-	// session — there is no way to introspect a remote process's /proc.
+	// empty for a session that is not running. fgCommand is also available
+	// for a running SSH session (hostops.HostSession.Foreground, §4.10 —
+	// /proc's tpgid read remotely, the same kernel fact TIOCGPGRP gives a
+	// local pty) when it can be determined; fgCwd stays local-only for now,
+	// same as before — there's no equally cheap single remote call for it yet.
 	fgCommand string // foreground program name
 	fgCwd     string // its working directory, relative to root
 

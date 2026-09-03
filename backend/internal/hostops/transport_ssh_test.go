@@ -376,3 +376,49 @@ func TestSSHSessionRootPIDFallsBackWhenNoPIDFile(t *testing.T) {
 		t.Fatalf("sessionRootPID = (%d, %v), want (%d, true) via the socket fallback", pid, ok, os.Getpid())
 	}
 }
+
+func TestParseForegroundPS(t *testing.T) {
+	// Real `ps -eo pid,ppid,pgid,tpgid,comm --no-headers` output shape: a
+	// shell (pid 100) at pgid 100, with a script (pid 200, same pgid) that
+	// started a backgrounded sleep (pid 201, its OWN pgid — not part of the
+	// foreground group) and a foreground grep it's piped into (pid 202,
+	// same pgid as the script).
+	output := "  100   1  100  100 bash\n" +
+		"  200 100  100  100 deploy.sh\n" +
+		"  201 200  201  100 sleep\n" +
+		"  202 200  100  100 grep\n"
+	procs := parseForegroundPS(output)
+	if len(procs) != 4 {
+		t.Fatalf("parseForegroundPS = %d entries, want 4", len(procs))
+	}
+	if procs[200] != (fgProc{pid: 200, ppid: 100, pgid: 100, tpgid: 100, comm: "deploy.sh"}) {
+		t.Errorf("procs[200] = %+v", procs[200])
+	}
+}
+
+func TestGroupChildAmongSkipsBackgroundedProcesses(t *testing.T) {
+	// Same shape as above: pid 200's children are 201 (own pgid — a
+	// backgrounded job) and 202 (same pgid — stayed in the foreground
+	// group). Only 202 should be found.
+	procs := map[int]fgProc{
+		200: {pid: 200, ppid: 100, pgid: 100, tpgid: 100, comm: "deploy.sh"},
+		201: {pid: 201, ppid: 200, pgid: 201, tpgid: 100, comm: "sleep"},
+		202: {pid: 202, ppid: 200, pgid: 100, tpgid: 100, comm: "grep"},
+	}
+	pid, comm, found := groupChildAmong(procs, 200, 100)
+	if !found || pid != 202 || comm != "grep" {
+		t.Fatalf("groupChildAmong = (%d, %q, %v), want (202, \"grep\", true)", pid, comm, found)
+	}
+}
+
+func TestGroupChildAmongPicksLowestPIDAmongTies(t *testing.T) {
+	procs := map[int]fgProc{
+		100: {pid: 100, ppid: 1, pgid: 100, tpgid: 100, comm: "bash"},
+		150: {pid: 150, ppid: 100, pgid: 100, tpgid: 100, comm: "later"},
+		120: {pid: 120, ppid: 100, pgid: 100, tpgid: 100, comm: "earlier"},
+	}
+	pid, comm, found := groupChildAmong(procs, 100, 100)
+	if !found || pid != 120 || comm != "earlier" {
+		t.Fatalf("groupChildAmong = (%d, %q, %v), want (120, \"earlier\", true)", pid, comm, found)
+	}
+}

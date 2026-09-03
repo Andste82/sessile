@@ -385,12 +385,20 @@ sends, once the exchange succeeds.
 
 ### 4.7 Session foreground (app-agnostic, no emulation)
 
-**Local sessions only.** This entire section applies to `TargetLocal`
-sessions. An SSH-backed session's `Backend.Foreground()` always returns the
-zero value — there is no way to introspect a remote process's `/proc` from
-here, and `sampleSession`'s existing diff logic already treats the zero
-value as "nothing to report," so an SSH session's dashboard card simply
-shows no foreground program. No code in this section changes for SSH.
+**This section is about `Backend.Foreground()`, which is local-only.**
+`Backend.Foreground()` (`TIOCGPGRP` + `/proc`) always returns the zero
+value for an SSH-backed session — there is no way to introspect a remote
+process's `/proc` from a local ioctl, and nothing in this section changes
+that. `sampleSession` (foreground.go) branches around it instead: for an
+SSH session it calls `hostops.HostSession.Foreground` (§4.10) — the same
+kernel fact (`tpgid`, the field `TIOCGPGRP` itself reads) fetched over a
+remote `ps` rather than a local ioctl, once the session's own PID is known
+(§4.10's PID-recording mechanism). `Foreground`'s `ok=false` case (the
+target's PID couldn't be resolved, or has no `ps -o tpgid` support) is what
+still produces the zero value/"nothing to report" dashboard card `Foreground()`
+always did for SSH before this existed. Working directory is not part of
+this — `fgCwd` stays empty for SSH, same as always; there is no equally
+cheap single remote call for it yet.
 
 A running session reports the name of the program in its foreground and that
 program's working directory. Both are facts read from the kernel and passed
@@ -1030,11 +1038,13 @@ frontend/src/
   admin" 409 inline.
 - **Dashboard** (`/`): session cards, "New Session" button. A card carries
   the status indicator, name, target (local shell or the SSH host's display
-  name), the foreground program for local sessions only (§4.7) with the
-  session's window title (§4.8, both local and SSH) on the line below it,
-  the working directory — `cwd` when known, falling back to the stored
-  `directory` — the client count when more than one browser is attached, and
-  last activity.
+  name), the foreground program (§4.7 for local; §4.10's remote `tpgid`
+  read for SSH, when it can be determined — a blank line otherwise, not a
+  guess) with the session's window title (§4.8, both local and SSH) on the
+  line below it, the working directory — `cwd` when known, falling back to
+  the stored `directory` (local only; still always blank for SSH, no
+  equally cheap remote call for it yet) — the client count when more than
+  one browser is attached, and last activity.
 
   The two middle lines are deliberately unequal: the foreground is mono and the
   brighter of the two because it is the fact, the title is dimmer because it is

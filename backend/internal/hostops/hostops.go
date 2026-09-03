@@ -149,3 +149,29 @@ func (h *HostSession) SessionRootPID(ctx context.Context) (pid int, ok bool) {
 	}
 	return sshT.sessionRootPID(ctx)
 }
+
+// Foreground reports the SSH session's own foreground process — the same
+// kernel fact a local session gets from TIOCGPGRP (§4.7's Foreground()),
+// read here from /proc's tpgid field instead, since there's no
+// TIOCGPGRP-equivalent over the SSH protocol. name is the foreground
+// process group's leader; chain follows it down through children that
+// stayed in its group, exactly like the local implementation's chain (a
+// script's own name, then what it's actually running). ok is false when
+// it can't be determined — SessionRootPID couldn't resolve, the target
+// has no `ps -o tpgid` support (a non-Linux target), or the process
+// group's leader has already exited — never a guess.
+//
+// Local sessions don't need this: the caller already reads it straight
+// from the kernel (§4.7), so this only ever does anything for an
+// SSH-backed HostSession.
+func (h *HostSession) Foreground(ctx context.Context) (name string, chain []string, ok bool) {
+	sshT, isSSH := h.transport.(*sshTransport)
+	if !isSSH {
+		return "", nil, false
+	}
+	rootPID, ok := sshT.sessionRootPID(ctx)
+	if !ok {
+		return "", nil, false
+	}
+	return sshT.foregroundViaTPGID(ctx, rootPID)
+}
