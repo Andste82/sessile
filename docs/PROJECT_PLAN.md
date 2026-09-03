@@ -751,39 +751,54 @@ belongs to, so there is no meaningful sandbox left to add beyond the
 existing per-user host ownership check (§4.3, §4.5) that gates which
 session's `HostSession` a request can even reach.
 
-**Readiness for a third transport (Docker/devcontainer targets — not
-started, this is what "prepare" means here).** `Platform` already takes a
-`Transport` as a parameter rather than being tied to one, so `linuxPlatform`
-works unchanged against any transport that can run `ps` — a Docker
-transport gets process-tree support for free. `HostSession` no longer
-knows about SSH specifically for identity questions either: `SessionAware`
-(above) is a capability interface a `Transport` optionally implements —
-`sshTransport` does, `localTransport` doesn't (both correctly report
-"unknown" through the same path when they can't answer) — so a
-`dockerTransport` implementing it later requires zero changes to
-`HostSession`, `foreground.go`'s sampler, or `hostops.go`'s
-`resolveProcessTreeRoot`; they already dispatch on the interface, not a
-`TargetType` enum value.
+**Readiness for Docker/devcontainer targets (not started — this is what
+"prepare" means here).** The product shape isn't a third peer of local/SSH:
+a container is reached *through* a host you already have — "isolate this
+session in a container" is an option offered when creating a session
+against a local or SSH host you've already configured (an image, or a git
+repo to clone with a devcontainer config), not a new kind of host
+alongside them. Architecturally that makes `dockerTransport` a **decorator
+over an existing `Transport`**, not a new peer implementation — it wraps
+whichever `Transport` the chosen host already resolves to (`localTransport`
+or `sshTransport`) and prefixes every command with `docker exec
+<container>`, delegating the actual sending to the transport it wraps:
 
-What Docker would still need, genuinely new work when it happens, not
-prepared for yet: a `dockerpty` `Backend` (§4.2) for the interactive
-session itself — `docker exec -it` or the Engine API's exec-and-attach,
-a different mechanism again, same as local/SSH each are; a `FileTransport`
-implementation, which is a real open design question rather than a
-straightforward third case — Docker has no SFTP-equivalent subsystem, so
-it's either shell-command-based (needs a shell + coreutils in the target
-container, fragile against a minimal/scratch image) or `docker cp`-based
-(works without a shell, but lists a directory by parsing a tar stream, not
-a listing RPC) — worth resolving with its own design pass, not a
-side-decision when the moment comes; and a `hosts.yml` modeling question —
-does "a host" become "a container on this machine", or "a container reached
-by first going through an SSH host"? — that's a product decision, not an
-architecture one, and stays open until it's actually asked. One thing that
-will likely be *simpler* than SSH when this happens: Docker's exec-inspect
-API hands back its own PID directly and authoritatively (containers share
-the host kernel's PID namespace on Linux), so a `dockerTransport.SessionRootPID`
-probably won't need anything like SSH's PID-recording-preamble-plus-socket-fallback
-dance (§4.10 above) at all.
+```go
+type dockerTransport struct {
+    base        Transport // localTransport or sshTransport — whichever host this session is against
+    containerID string
+}
+
+func (d *dockerTransport) Exec(ctx context.Context, line string) (Result, error) {
+    return d.base.Exec(ctx, "docker exec "+d.containerID+" sh -c "+shellQuote(line))
+}
+```
+
+`Platform` already takes a `Transport` as a parameter rather than being
+tied to one, so `linuxPlatform` works unchanged against a `dockerTransport`
+too — process-tree support for free, same as it would for a peer
+implementation. `SessionAware` (above) composes the same way: whether
+`dockerTransport` implements it directly (Docker's own exec-inspect API
+hands back its own PID authoritatively — no PID-recording preamble or
+socket-matching needed at all, simpler than SSH's story) or just delegates
+to `base`'s isn't decided yet, but either way `HostSession` needs no
+changes either way — it already dispatches on the interface, not a
+concrete type.
+
+What's still genuinely new work when this happens, not prepared for yet: a
+`dockerpty` `Backend` (§4.2) for the interactive session itself — likely
+also a decorator over the local/SSH `Backend` it's layered on, `docker exec
+-it` (or the Engine API's exec-and-attach) run *through* that connection
+rather than a fourth independent mechanism; a `FileTransport` — Docker has
+no SFTP-equivalent subsystem, so it's either shell-command-based (needs a
+shell + coreutils in the target container, fragile against a
+minimal/scratch image) or `docker cp`-based (works without a shell, but
+lists a directory by parsing a tar stream, not a listing RPC) — worth its
+own design pass, not a side-decision when the moment comes; and the actual
+create-session flow (image picker, optional git-clone-a-devcontainer step)
+and `hosts.yml`/session-metadata modeling for "isolated in a container, on
+top of host X" — product decisions, not architecture, and stay open until
+they're actually asked.
 
 ---
 
