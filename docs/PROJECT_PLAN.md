@@ -1570,6 +1570,22 @@ layout and §11 for what they do and don't encrypt.
   included, same as a real shell on that host would let them. A local
   session's path stays relative to the sandbox root (§4.5) — there being
   nothing above that root to show is the point of the sandbox, not a gap.
+- Destructive host operations (Delete, and Copy/Move's destination) go
+  through `resolveDestructiveHostopsPath`, not the plain path-resolution
+  helper every other hostops route uses — it rejects a resolved path that
+  *is* the operation's own root: the local sandbox root (§4.5) for a local
+  session, `.`/`/` for an unsandboxed SSH session. A read-only route (List,
+  Stat, Download) still resolves and allows the root — you can browse or
+  read it, just not `DELETE .../hostops/files?path=.` and wipe the whole
+  sandbox, or the equivalent on an SSH target's own filesystem root.
+- `GET .../hostops/download` streams (`FileTransport.Open` + `io.Copy` to
+  the response writer) rather than buffering the whole file
+  (`FileTransport.Read`) as it did originally — a target where `Stat`'s
+  reported size doesn't reflect what reading it actually produces (e.g. a
+  device file) could otherwise grow the server's heap without bound. The
+  stream itself is also capped (`hostopsDownloadMaxBytes`, same value as
+  the upload cap) as defense in depth for exactly that case, since `Stat`
+  alone can't be trusted to reject it up front.
 - Rate limiting: still deferred — not added in this pass either. Login
   brute-forcing is the main gap this leaves open; worth revisiting before a
   wider deployment than "an admin who trusts their own users."

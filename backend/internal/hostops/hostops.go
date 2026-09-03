@@ -12,6 +12,7 @@ package hostops
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -65,6 +66,11 @@ type FileTransport interface {
 	Stat(ctx context.Context, path string) (DirEntry, error)
 	List(ctx context.Context, path string) ([]DirEntry, error)
 	Read(ctx context.Context, path string) ([]byte, error)
+	// Open streams a file's content instead of buffering it whole, as Read
+	// does — for the one caller (the download handler) that must not hold
+	// an entire file in memory just to relay it to an HTTP response writer.
+	// The caller must Close the returned reader.
+	Open(ctx context.Context, path string) (io.ReadCloser, error)
 	Write(ctx context.Context, path string, data []byte) error
 	Rename(ctx context.Context, oldpath, newpath string) error // Move
 	// Remove deletes a file, or a directory and everything under it. Neither

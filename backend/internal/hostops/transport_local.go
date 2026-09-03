@@ -82,6 +82,14 @@ func (localFileTransport) Read(_ context.Context, path string) ([]byte, error) {
 	return data, nil
 }
 
+func (localFileTransport) Open(_ context.Context, path string) (io.ReadCloser, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	return f, nil
+}
+
 func (localFileTransport) Write(_ context.Context, path string, data []byte) error {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)

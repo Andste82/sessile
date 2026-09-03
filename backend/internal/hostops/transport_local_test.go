@@ -2,6 +2,7 @@ package hostops
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -89,6 +90,29 @@ func TestLocalFilesRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "c.txt")); err != nil {
 		t.Errorf("c.txt missing after rename: %v", err)
+	}
+}
+
+func TestLocalFilesOpenStreamsTheSameContentAsRead(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	files := NewLocal().Files()
+
+	if err := files.Write(ctx, filepath.Join(dir, "a.txt"), []byte("streamed content")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	rc, err := files.Open(ctx, filepath.Join(dir, "a.txt"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll(Open result): %v", err)
+	}
+	if string(data) != "streamed content" {
+		t.Errorf("Open content = %q, want %q", data, "streamed content")
 	}
 }
 
