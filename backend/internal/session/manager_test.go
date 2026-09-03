@@ -107,12 +107,12 @@ func waitForStatus(t *testing.T, m *Manager, id string, want Status) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if info, err := m.Get(id); err == nil && info.Status == want {
+		if info, err := m.Get(id, "test-user"); err == nil && info.Status == want {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	info, _ := m.Get(id)
+	info, _ := m.Get(id, "test-user")
 	t.Fatalf("session %s status = %s, want %s", id, info.Status, want)
 }
 
@@ -145,7 +145,7 @@ func liveSession(t *testing.T, m *Manager, id string) *Session {
 func TestRestartRestoresIdentityAndScrollback(t *testing.T) {
 	mgr, _, dataDir := testManager(t)
 
-	created, err := mgr.Create("restore-me", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "restore-me", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestRestartRestoresIdentityAndScrollback(t *testing.T) {
 		t.Fatalf("no scrollback snapshot written: %v", err)
 	}
 
-	restarted, err := mgr.Restart(created.ID)
+	restarted, err := mgr.Restart(created.ID, "test-user")
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestRestartRestoresIdentityAndScrollback(t *testing.T) {
 func TestRestartReusesTheSameHistoryFile(t *testing.T) {
 	mgr, _, dataDir := testManager(t)
 
-	created, err := mgr.Create("hist", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "hist", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestRestartReusesTheSameHistoryFile(t *testing.T) {
 	}
 	waitForStatus(t, mgr, created.ID, StatusStopped)
 
-	restarted, err := mgr.Restart(created.ID)
+	restarted, err := mgr.Restart(created.ID, "test-user")
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestRestartReusesTheSameHistoryFile(t *testing.T) {
 func TestRestartFromStoreOnlyRow(t *testing.T) {
 	mgr, store, dataDir := testManager(t)
 
-	created, err := mgr.Create("survivor", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "survivor", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestRestartFromStoreOnlyRow(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(revived.Shutdown)
 
-	restarted, err := revived.Restart(created.ID)
+	restarted, err := revived.Restart(created.ID, "test-user")
 	if err != nil {
 		t.Fatalf("Restart from store-only row: %v", err)
 	}
@@ -290,15 +290,15 @@ func TestRestartFromStoreOnlyRow(t *testing.T) {
 func TestRestartErrors(t *testing.T) {
 	mgr, _, _ := testManager(t)
 
-	if _, err := mgr.Restart("11111111-2222-3333-4444-555555555555"); err != ErrNotFound {
+	if _, err := mgr.Restart("11111111-2222-3333-4444-555555555555", "test-user"); err != ErrNotFound {
 		t.Errorf("Restart of unknown id = %v, want %v", err, ErrNotFound)
 	}
 
-	created, err := mgr.Create("live", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "live", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := mgr.Restart(created.ID); err != ErrAlreadyRunning {
+	if _, err := mgr.Restart(created.ID, "test-user"); err != ErrAlreadyRunning {
 		t.Errorf("Restart of running session = %v, want %v", err, ErrAlreadyRunning)
 	}
 }
@@ -313,7 +313,7 @@ func TestRestartErrors(t *testing.T) {
 func TestConcurrentRestartStartsOneShell(t *testing.T) {
 	mgr, _, _ := testManager(t)
 
-	created, err := mgr.Create("contended", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "contended", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestConcurrentRestartStartsOneShell(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			infos[i], errs[i] = mgr.Restart(created.ID)
+			infos[i], errs[i] = mgr.Restart(created.ID, "test-user")
 		}(i)
 	}
 	close(start)
@@ -377,7 +377,7 @@ func TestConcurrentRestartStartsOneShell(t *testing.T) {
 func TestRegisterAfterShutdownDiscardsTheShell(t *testing.T) {
 	mgr, _, _ := testManager(t)
 
-	s, err := mgr.spawn("11111111-2222-3333-4444-555555555555", "late", ".", "sh", timeNow())
+	s, err := mgr.spawnLocal("11111111-2222-3333-4444-555555555555", "test-user", "late", ".", "sh", timeNow())
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -403,16 +403,16 @@ func TestRegisterAfterShutdownDiscardsTheShell(t *testing.T) {
 func TestStartAfterShutdownIsRefused(t *testing.T) {
 	mgr, _, _ := testManager(t)
 
-	created, err := mgr.Create("doomed", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "doomed", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	mgr.Shutdown()
 
-	if _, err := mgr.Restart(created.ID); !errors.Is(err, ErrShuttingDown) {
+	if _, err := mgr.Restart(created.ID, "test-user"); !errors.Is(err, ErrShuttingDown) {
 		t.Errorf("Restart after shutdown = %v, want %v", err, ErrShuttingDown)
 	}
-	if _, err := mgr.Create("too-late", ".", "sh"); !errors.Is(err, ErrShuttingDown) {
+	if _, err := mgr.CreateLocal("test-user", "too-late", ".", "sh"); !errors.Is(err, ErrShuttingDown) {
 		t.Errorf("Create after shutdown = %v, want %v", err, ErrShuttingDown)
 	}
 	if n := len(mgr.sessions); n != 0 {
@@ -432,7 +432,7 @@ func TestStartAfterShutdownIsRefused(t *testing.T) {
 func TestDeleteDuringRestartIsRefused(t *testing.T) {
 	mgr, store, _ := testManager(t)
 
-	created, err := mgr.Create("contested", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "contested", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestDeleteDuringRestartIsRefused(t *testing.T) {
 	if err := mgr.claimRestart(created.ID); err != nil {
 		t.Fatalf("claimRestart: %v", err)
 	}
-	if err := mgr.Delete(created.ID); !errors.Is(err, ErrRestarting) {
+	if err := mgr.Delete(created.ID, "test-user"); !errors.Is(err, ErrRestarting) {
 		t.Errorf("Delete during a restart = %v, want %v", err, ErrRestarting)
 	}
 	if _, found, _ := store.Get(created.ID); !found {
@@ -453,7 +453,7 @@ func TestDeleteDuringRestartIsRefused(t *testing.T) {
 
 	// Once the restart has let go, the delete goes through as usual.
 	mgr.releaseRestart(created.ID)
-	if err := mgr.Delete(created.ID); err != nil {
+	if err := mgr.Delete(created.ID, "test-user"); err != nil {
 		t.Fatalf("Delete after the restart finished: %v", err)
 	}
 	if _, found, _ := store.Get(created.ID); found {
@@ -470,7 +470,7 @@ func TestRestartRejectsVanishedDirectory(t *testing.T) {
 	if err := os.Mkdir(sub, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	created, err := mgr.Create("gone", "work", "sh")
+	created, err := mgr.CreateLocal("test-user", "gone", "work", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestRestartRejectsVanishedDirectory(t *testing.T) {
 	if err := os.RemoveAll(sub); err != nil {
 		t.Fatalf("remove dir: %v", err)
 	}
-	if _, err := mgr.Restart(created.ID); err == nil {
+	if _, err := mgr.Restart(created.ID, "test-user"); err == nil {
 		t.Error("Restart into a deleted directory succeeded, want an error")
 	}
 }
@@ -493,7 +493,7 @@ func TestRestartRejectsVanishedDirectory(t *testing.T) {
 func TestStoppedSessionReleasesItsBuffer(t *testing.T) {
 	mgr, _, dataDir := testManager(t)
 
-	created, err := mgr.Create("leaky", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "leaky", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestStoppedSessionReleasesItsBuffer(t *testing.T) {
 	if n := s.buffer.Len(); n != 0 {
 		t.Errorf("stopped session still holds %d scrollback bytes, want 0", n)
 	}
-	if _, err := mgr.Get(created.ID); err != nil {
+	if _, err := mgr.Get(created.ID, "test-user"); err != nil {
 		t.Errorf("stopped session no longer resolvable: %v", err)
 	}
 
@@ -574,13 +574,13 @@ func (w *snapshotWatcher) SendControl(v any) bool {
 func TestSnapshotIsWrittenBeforeClientsAreToldOfExit(t *testing.T) {
 	mgr, _, dataDir := testManager(t)
 
-	created, err := mgr.Create("racy", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "racy", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
 	watcher := newSnapshotWatcher(NewScrollbackStore(dataDir), created.ID)
-	if _, err := mgr.Attach(created.ID, watcher); err != nil {
+	if _, err := mgr.Attach(created.ID, "test-user", watcher); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -618,7 +618,7 @@ func TestSnapshotIsWrittenBeforeClientsAreToldOfExit(t *testing.T) {
 func TestShutdownDoesNotOverwriteAStoppedSnapshot(t *testing.T) {
 	mgr, _, dataDir := testManager(t)
 
-	created, err := mgr.Create("stopped-early", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "stopped-early", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestShutdownDoesNotOverwriteAStoppedSnapshot(t *testing.T) {
 func TestLateFlushKeepsFinalSnapshot(t *testing.T) {
 	mgr, _, dataDir := testManager(t)
 
-	created, err := mgr.Create("late-flush", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "late-flush", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -695,11 +695,11 @@ func TestLateFlushKeepsFinalSnapshot(t *testing.T) {
 func TestPruneStopped(t *testing.T) {
 	mgr, store, dataDir := testManager(t)
 
-	old, err := mgr.Create("ancient", ".", "sh")
+	old, err := mgr.CreateLocal("test-user", "ancient", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	recent, err := mgr.Create("recent", ".", "sh")
+	recent, err := mgr.CreateLocal("test-user", "recent", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -760,7 +760,7 @@ func TestPruneStopped(t *testing.T) {
 func TestDeleteDiscardsScrollbackAndHistory(t *testing.T) {
 	mgr, _, dataDir := testManager(t)
 
-	created, err := mgr.Create("temporary", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "temporary", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -789,7 +789,7 @@ func TestDeleteDiscardsScrollbackAndHistory(t *testing.T) {
 		t.Fatalf("write history: %v", err)
 	}
 
-	if err := mgr.Delete(created.ID); err != nil {
+	if err := mgr.Delete(created.ID, "test-user"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
@@ -858,12 +858,12 @@ func countControls[T any](controls []any) int {
 func TestStoppedSessionKeepsItsClients(t *testing.T) {
 	mgr, _, _ := testManager(t)
 
-	created, err := mgr.Create("watched", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "watched", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	client := &recordingClient{id: "c1"}
-	if _, err := mgr.Attach(created.ID, client); err != nil {
+	if _, err := mgr.Attach(created.ID, "test-user", client); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -879,7 +879,7 @@ func TestStoppedSessionKeepsItsClients(t *testing.T) {
 	if closed {
 		t.Error("stopped session closed its client; it has to stay attached for the restart")
 	}
-	if info, _ := mgr.Get(created.ID); info.ClientCount != 1 {
+	if info, _ := mgr.Get(created.ID, "test-user"); info.ClientCount != 1 {
 		t.Errorf("stopped session reports %d clients, want 1", info.ClientCount)
 	}
 
@@ -897,13 +897,13 @@ func TestStoppedSessionKeepsItsClients(t *testing.T) {
 func TestRestartMovesEveryClientToTheNewShell(t *testing.T) {
 	mgr, _, _ := testManager(t)
 
-	created, err := mgr.Create("shared", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "shared", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	clients := []*recordingClient{{id: "c1"}, {id: "c2"}}
 	for _, c := range clients {
-		if _, err := mgr.Attach(created.ID, c); err != nil {
+		if _, err := mgr.Attach(created.ID, "test-user", c); err != nil {
 			t.Fatalf("Attach %s: %v", c.ID(), err)
 		}
 	}
@@ -913,7 +913,7 @@ func TestRestartMovesEveryClientToTheNewShell(t *testing.T) {
 	}
 	waitForStatus(t, mgr, created.ID, StatusStopped)
 
-	info, err := mgr.Restart(created.ID)
+	info, err := mgr.Restart(created.ID, "test-user")
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
@@ -942,7 +942,7 @@ func TestRestartMovesEveryClientToTheNewShell(t *testing.T) {
 func TestRestartFromStoreOnlyRowMigratesNothing(t *testing.T) {
 	mgr, store, _ := testManager(t)
 
-	created, err := mgr.Create("survivor", ".", "sh")
+	created, err := mgr.CreateLocal("test-user", "survivor", ".", "sh")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -951,7 +951,7 @@ func TestRestartFromStoreOnlyRowMigratesNothing(t *testing.T) {
 	revived := NewManager(t.TempDir(), []string{"sh"}, 64<<10, t.TempDir(), store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(revived.Shutdown)
 
-	info, err := revived.Restart(created.ID)
+	info, err := revived.Restart(created.ID, "test-user")
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}

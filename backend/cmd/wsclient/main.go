@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -16,13 +17,18 @@ func main() {
 	url := flag.String("url", "", "ws URL, e.g. ws://localhost:8080/ws/sessions/<id>")
 	input := flag.String("input", "", "optional input to send (binary), e.g. 'echo hi\\n'")
 	dur := flag.Duration("duration", 1500*time.Millisecond, "how long to read output")
+	cookie := flag.String("cookie", "", "Cookie header to send on the upgrade request, e.g. 'sessile_session=<token>' — every WS route requires it (§10)")
 	flag.Parse()
 	if *url == "" {
-		fmt.Fprintln(os.Stderr, "usage: wsclient -url ws://... [-input 'cmd\\n'] [-duration 2s]")
+		fmt.Fprintln(os.Stderr, "usage: wsclient -url ws://... [-cookie 'sessile_session=<token>'] [-input 'cmd\\n'] [-duration 2s]")
 		os.Exit(2)
 	}
 
-	c, _, err := websocket.DefaultDialer.Dial(*url, nil)
+	var header http.Header
+	if *cookie != "" {
+		header = http.Header{"Cookie": {*cookie}}
+	}
+	c, _, err := websocket.DefaultDialer.Dial(*url, header)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dial:", err)
 		os.Exit(1)

@@ -14,7 +14,7 @@ func size(t *testing.T, s *Session) (uint16, uint16) {
 // writing for.
 func TestResizeTakesTheSmallestClient(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("resize", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "resize", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestResizeTakesTheSmallestClient(t *testing.T) {
 	desktop := &recordingClient{id: "desktop"}
 	phone := &recordingClient{id: "phone"}
 	for _, c := range []*recordingClient{desktop, phone} {
-		if _, err := mgr.Attach(info.ID, c); err != nil {
+		if _, err := mgr.Attach(info.ID, "test-user", c); err != nil {
 			t.Fatalf("attach %s: %v", c.id, err)
 		}
 	}
@@ -59,7 +59,7 @@ func TestResizeTakesTheSmallestClient(t *testing.T) {
 // has to fit inside both at once.
 func TestResizeTakesEachAxisFromWhicheverClientIsSmaller(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("axes", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "axes", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestResizeTakesEachAxisFromWhicheverClientIsSmaller(t *testing.T) {
 	tall := &recordingClient{id: "tall-narrow"}
 	wide := &recordingClient{id: "wide-short"}
 	for _, c := range []*recordingClient{tall, wide} {
-		if _, err := mgr.Attach(info.ID, c); err != nil {
+		if _, err := mgr.Attach(info.ID, "test-user", c); err != nil {
 			t.Fatalf("attach %s: %v", c.id, err)
 		}
 	}
@@ -88,7 +88,7 @@ func TestResizeTakesEachAxisFromWhicheverClientIsSmaller(t *testing.T) {
 // their space back rather than staying squeezed by a phone that is gone.
 func TestDetachReleasesTheSizeItHeld(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("detach", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "detach", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestDetachReleasesTheSizeItHeld(t *testing.T) {
 	desktop := &recordingClient{id: "desktop"}
 	phone := &recordingClient{id: "phone"}
 	for _, c := range []*recordingClient{desktop, phone} {
-		if _, err := mgr.Attach(info.ID, c); err != nil {
+		if _, err := mgr.Attach(info.ID, "test-user", c); err != nil {
 			t.Fatalf("attach %s: %v", c.id, err)
 		}
 	}
@@ -125,21 +125,21 @@ func TestDetachReleasesTheSizeItHeld(t *testing.T) {
 // session anywhere — least of all to a default nobody is displaying.
 func TestAttachWithoutResizeDoesNotChangeTheSize(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("silent", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "silent", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	s := liveSession(t, mgr, info.ID)
 
 	desktop := &recordingClient{id: "desktop"}
-	if _, err := mgr.Attach(info.ID, desktop); err != nil {
+	if _, err := mgr.Attach(info.ID, "test-user", desktop); err != nil {
 		t.Fatalf("attach desktop: %v", err)
 	}
 	if err := mgr.Resize(info.ID, desktop, 50, 120); err != nil {
 		t.Fatalf("resize desktop: %v", err)
 	}
 
-	if _, err := mgr.Attach(info.ID, &recordingClient{id: "quiet"}); err != nil {
+	if _, err := mgr.Attach(info.ID, "test-user", &recordingClient{id: "quiet"}); err != nil {
 		t.Fatalf("attach quiet: %v", err)
 	}
 	if rows, cols := size(t, s); rows != 50 || cols != 120 {
@@ -150,14 +150,14 @@ func TestAttachWithoutResizeDoesNotChangeTheSize(t *testing.T) {
 // A resize from a connection that is not attached has no window behind it.
 func TestResizeFromADetachedClientIsIgnored(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("stale", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "stale", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	s := liveSession(t, mgr, info.ID)
 
 	desktop := &recordingClient{id: "desktop"}
-	if _, err := mgr.Attach(info.ID, desktop); err != nil {
+	if _, err := mgr.Attach(info.ID, "test-user", desktop); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	if err := mgr.Resize(info.ID, desktop, 50, 120); err != nil {

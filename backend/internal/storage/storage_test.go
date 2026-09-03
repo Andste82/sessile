@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -155,4 +156,109 @@ func TestDeleteStoppedBefore(t *testing.T) {
 	if err != nil || len(ids) != 0 {
 		t.Errorf("second prune = (%v, %v), want (nil, nil)", ids, err)
 	}
+}
+
+// User/target fields round-trip through Insert/Get/LoadStopped — the actual
+// point of the §12b M17 migration, not just that Open doesn't error.
+func TestUserAndTargetFieldsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	in := newInfo("ssh-1", session.StatusStopped)
+	in.UserID = "user-42"
+	in.TargetType = session.TargetSSH
+	in.HostID = "host-7"
+	in.HostDisplayName = "prod-db"
+	if err := st.Insert(in); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, found, err := st.Get("ssh-1")
+	if err != nil || !found {
+		t.Fatalf("get: found=%v err=%v", found, err)
+	}
+	if got.UserID != "user-42" || got.TargetType != session.TargetSSH ||
+		got.HostID != "host-7" || got.HostDisplayName != "prod-db" {
+		t.Fatalf("round-tripped info = %+v, want the SSH fields preserved", got)
+	}
+
+	stopped, err := st.LoadStopped()
+	if err != nil {
+		t.Fatalf("load stopped: %v", err)
+	}
+	if len(stopped) != 1 || stopped[0].UserID != "user-42" || stopped[0].TargetType != session.TargetSSH {
+		t.Fatalf("LoadStopped = %+v, want the same SSH fields", stopped)
+	}
+}
+
+// TestMigrationUpgradesPreM17Database is the actual upgrade path: a database
+// created under the original schema (no user_id/target_type/host_id/
+// host_display_name columns, PROJECT_PLAN.md §8 pre-M17) must open cleanly
+// under the current one, and rows written before the migration must default
+// to an empty user_id (invisible under strict per-owner scoping — expected) and
+// target_type='local' (correct: every pre-M17 session was local).
+func TestMigrationUpgradesPreM17Database(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+
+	// Hand-build the pre-M17 schema directly — Open would already apply the
+	// current one, which is exactly what this test must not start from.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	const oldSchema = `
+	CREATE TABLE sessions (
+	  id            TEXT PRIMARY KEY,
+	  name          TEXT NOT NULL,
+	  directory     TEXT NOT NULL,
+	  shell         TEXT NOT NULL,
+	  status        TEXT NOT NULL DEFAULT 'running',
+	  created       TEXT NOT NULL,
+	  last_activity TEXT NOT NULL
+	);`
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	if _, err := db.Exec(
+		`INSERT INTO sessions (id, name, directory, shell, status, created, last_activity)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"pre-migration", "old-session", "project-a", "bash", string(session.StatusStopped), now, now,
+	); err != nil {
+		t.Fatalf("insert under old schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	// Now open it the real way — this is what must apply the migration.
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on a pre-M17 database: %v", err)
+	}
+	defer st.Close()
+
+	got, found, err := st.Get("pre-migration")
+	if err != nil || !found {
+		t.Fatalf("get pre-migration row: found=%v err=%v", found, err)
+	}
+	if got.UserID != "" {
+		t.Errorf("UserID = %q, want empty for a row written before the migration", got.UserID)
+	}
+	if got.TargetType != session.TargetLocal {
+		t.Errorf("TargetType = %q, want %q for a row written before the migration", got.TargetType, session.TargetLocal)
+	}
+
+	// The migration must also be idempotent: a second Open (simulating a
+	// second server start) must not error on columns that already exist.
+	st.Close()
+	st2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open on an already-migrated database: %v", err)
+	}
+	st2.Close()
 }

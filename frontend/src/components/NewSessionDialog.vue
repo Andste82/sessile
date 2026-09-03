@@ -8,8 +8,11 @@ import {
   TransitionChild,
 } from '@headlessui/vue'
 import { useSessionsStore } from '@/stores/sessions'
+import { useHostsStore } from '@/stores/hosts'
+import { ApiRequestError } from '@/api/client'
 import DirectoryBrowser from './DirectoryBrowser.vue'
-import type { Session } from '@/api/types'
+import HostKeyTrustDialog from './HostKeyTrustDialog.vue'
+import type { CreateSessionBody, HostKeyErrorDetails, Session } from '@/api/types'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{
@@ -18,6 +21,17 @@ const emit = defineEmits<{
 }>()
 
 const store = useSessionsStore()
+const hostsStore = useHostsStore()
+
+// One picker for the session's target (§12b M18): every configured SSH host,
+// plus "This host (local)" as an ordinary entry in the same list when the
+// admin has turned allowLocalHost on — not a separate mode switch. localValue
+// is the sentinel selection identifies that entry by; it can't collide with a
+// real host id (those are UUIDs).
+const localValue = '__local__'
+const selection = ref('')
+const target = computed<'ssh' | 'local'>(() => (selection.value === localValue ? 'local' : 'ssh'))
+const hostId = computed(() => (target.value === 'ssh' ? selection.value : ''))
 
 const name = ref('')
 const directory = ref('.')
@@ -25,10 +39,23 @@ const shell = ref('')
 const submitting = ref(false)
 const error = ref<string | null>(null)
 
-const shells = computed(() => store.config?.shells ?? [])
-const canSubmit = computed(
-  () => name.value.trim().length > 0 && directory.value !== '' && shell.value !== '',
+// Set only while a create attempt is blocked on an unrecognized/changed
+// host key. Holding the pending request body here (rather than recomputing
+// it) means "trust and retry" resends exactly what was refused.
+const pendingHostKey = ref<{ hostId: string; hostName: string; details: HostKeyErrorDetails } | null>(
+  null,
 )
+const pendingBody = ref<CreateSessionBody | null>(null)
+
+const shells = computed(() => store.config?.shells ?? [])
+const allowLocalHost = computed(() => store.config?.allowLocalHost ?? false)
+const hosts = computed(() => hostsStore.hosts)
+
+const canSubmit = computed(() => {
+  if (name.value.trim().length === 0) return false
+  if (target.value === 'ssh') return hostId.value !== ''
+  return directory.value !== '' && shell.value !== ''
+})
 
 // Reset to defaults whenever the dialog opens; the browser starts at the root.
 watch(
@@ -36,28 +63,58 @@ watch(
   (isOpen) => {
     if (!isOpen) return
     error.value = null
+    pendingHostKey.value = null
+    pendingBody.value = null
     name.value = ''
     directory.value = '.'
     shell.value = shells.value[0] ?? ''
+    selection.value = ''
+    if (hostsStore.hosts.length === 0) void hostsStore.fetchHosts()
   },
 )
 
-async function submit() {
-  if (!canSubmit.value || submitting.value) return
+function bodyFromForm(): CreateSessionBody {
+  if (target.value === 'ssh') {
+    return { name: name.value.trim(), target: 'ssh', hostId: hostId.value }
+  }
+  return { name: name.value.trim(), target: 'local', directory: directory.value, shell: shell.value }
+}
+
+async function attemptCreate(body: CreateSessionBody) {
   submitting.value = true
   error.value = null
   try {
-    const session = await store.createSession({
-      name: name.value.trim(),
-      directory: directory.value,
-      shell: shell.value,
-    })
+    const session = await store.createSession(body)
+    pendingHostKey.value = null
+    pendingBody.value = null
     emit('created', session)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    const hostKeyDetails = e instanceof ApiRequestError ? e.hostKeyDetails() : null
+    if (hostKeyDetails && body.target === 'ssh') {
+      const host = hosts.value.find((h) => h.id === body.hostId)
+      pendingBody.value = body
+      pendingHostKey.value = {
+        hostId: body.hostId,
+        hostName: host?.name ?? 'this host',
+        details: hostKeyDetails,
+      }
+    } else {
+      error.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
     submitting.value = false
   }
+}
+
+function submit() {
+  if (!canSubmit.value || submitting.value) return
+  void attemptCreate(bodyFromForm())
+}
+
+function retryAfterTrust() {
+  const body = pendingBody.value
+  pendingHostKey.value = null
+  if (body) void attemptCreate(body)
 }
 </script>
 
@@ -107,19 +164,40 @@ async function submit() {
               </label>
 
               <label class="flex flex-col gap-1 text-sm">
-                <span class="text-slate-400">Directory</span>
-                <DirectoryBrowser v-model="directory" />
-              </label>
-
-              <label class="flex flex-col gap-1 text-sm">
-                <span class="text-slate-400">Shell</span>
+                <span class="text-slate-400">Host</span>
                 <select
-                  v-model="shell"
+                  v-model="selection"
                   class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
                 >
-                  <option v-for="s in shells" :key="s" :value="s">{{ s }}</option>
+                  <option value="" disabled>
+                    {{ hosts.length || allowLocalHost ? 'Select a host…' : 'No hosts configured yet' }}
+                  </option>
+                  <option v-if="allowLocalHost" :value="localValue">This host (local)</option>
+                  <option v-for="h in hosts" :key="h.id" :value="h.id">
+                    {{ h.group ? `${h.group} / ${h.name}` : h.name }}
+                  </option>
                 </select>
               </label>
+              <p v-if="hosts.length === 0 && !allowLocalHost" class="text-xs text-slate-400">
+                Add a host on the Hosts page before starting a session.
+              </p>
+
+              <template v-if="target === 'local'">
+                <label class="flex flex-col gap-1 text-sm">
+                  <span class="text-slate-400">Directory</span>
+                  <DirectoryBrowser v-model="directory" />
+                </label>
+
+                <label class="flex flex-col gap-1 text-sm">
+                  <span class="text-slate-400">Shell</span>
+                  <select
+                    v-model="shell"
+                    class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
+                  >
+                    <option v-for="s in shells" :key="s" :value="s">{{ s }}</option>
+                  </select>
+                </label>
+              </template>
 
               <p v-if="error" class="text-sm text-rose-400">{{ error }}</p>
 
@@ -145,4 +223,13 @@ async function submit() {
       </div>
     </Dialog>
   </TransitionRoot>
+
+  <HostKeyTrustDialog
+    :open="pendingHostKey !== null"
+    :host-id="pendingHostKey?.hostId ?? ''"
+    :host-name="pendingHostKey?.hostName ?? ''"
+    :details="pendingHostKey?.details ?? null"
+    @close="pendingHostKey = null"
+    @trusted="retryAfterTrust"
+  />
 </template>

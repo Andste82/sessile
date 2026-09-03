@@ -11,6 +11,7 @@
 # Runtime state
 /sandbox/
 /workspace/
+/data/
 *.db
 *.db-journal
 *.db-wal
@@ -30,3 +31,7 @@
 
 # Go
 /backend/vendor/
+/.go/
+
+# Node
+/.node/

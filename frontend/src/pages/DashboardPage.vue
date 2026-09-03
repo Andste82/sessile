@@ -3,19 +3,34 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { PlusIcon } from '@heroicons/vue/24/solid'
 import { useSessionsStore } from '@/stores/sessions'
-import { isAlreadyRunning } from '@/api/client'
+import { useHostsStore } from '@/stores/hosts'
+import { ApiRequestError, isAlreadyRunning } from '@/api/client'
 import SessionListItem from '@/components/SessionListItem.vue'
 import NewSessionDialog from '@/components/NewSessionDialog.vue'
-import type { Session } from '@/api/types'
+import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
+import type { HostKeyErrorDetails, Session } from '@/api/types'
 
 const store = useSessionsStore()
+const hostsStore = useHostsStore()
 const router = useRouter()
 const dialogOpen = ref(false)
+
+// Set only while a restart is blocked on an unrecognized/changed host key —
+// the backend maps that the same way session creation does (respondHostKeyError,
+// sessions.go), but until now nothing on this page checked for it, so a
+// reinstalled host's session could never be restarted from here: the user
+// just saw a raw error string with no way to trust the new key.
+const pendingHostKey = ref<{
+  sessionId: string
+  hostId: string
+  hostName: string
+  details: HostKeyErrorDetails
+} | null>(null)
 
 // Polling is App-wide (it feeds the sidebar and the tab bar too), so this only
 // has to make sure the list is loaded before the first tick.
 onMounted(async () => {
-  await Promise.all([store.fetchConfig(), store.fetchSessions()])
+  await Promise.all([store.fetchConfig(), store.fetchSessions(), hostsStore.fetchHosts()])
 })
 
 function onCreated(session: Session) {
@@ -48,8 +63,25 @@ async function onRestart(id: string) {
       router.push(`/sessions/${id}`)
       return
     }
+    const details = e instanceof ApiRequestError ? e.hostKeyDetails() : null
+    if (details) {
+      const sess = store.byId(id)
+      pendingHostKey.value = {
+        sessionId: id,
+        hostId: sess?.hostId ?? '',
+        hostName: sess?.hostDisplayName || 'this host',
+        details,
+      }
+      return
+    }
     store.error = e instanceof Error ? e.message : String(e)
   }
+}
+
+function retryRestartAfterTrust() {
+  const sessionId = pendingHostKey.value?.sessionId
+  pendingHostKey.value = null
+  if (sessionId) void onRestart(sessionId)
 }
 </script>
 
@@ -59,12 +91,6 @@ async function onRestart(id: string) {
       class="flex items-center gap-3 border-b border-slate-800 bg-slate-900 px-4 py-4 sm:px-6"
     >
       <h1 class="text-lg font-semibold tracking-tight">Sessions</h1>
-      <span
-        v-if="store.config"
-        class="ml-2 hidden truncate font-mono text-xs text-slate-500 sm:inline"
-        :title="store.config.root"
-        >root: {{ store.config.root }}</span
-      >
       <button
         class="ml-auto flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-500"
         @click="dialogOpen = true"
@@ -80,13 +106,28 @@ async function onRestart(id: string) {
         v-if="!store.loading && store.sessions.length === 0"
         class="mt-24 flex flex-col items-center gap-3 text-center text-slate-400"
       >
-        <p class="text-lg">No sessions yet.</p>
-        <button
-          class="flex items-center gap-2 rounded-md border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800"
-          @click="dialogOpen = true"
-        >
-          <PlusIcon class="h-4 w-4" /> Create your first session
-        </button>
+        <template v-if="hostsStore.hosts.length === 0 && !store.config?.allowLocalHost">
+          <p class="text-lg">No hosts configured yet.</p>
+          <p class="max-w-sm text-sm">
+            Sessions connect to an SSH host you configure. Add one on the Hosts page to start
+            your first session.
+          </p>
+          <router-link
+            to="/hosts"
+            class="flex items-center gap-2 rounded-md border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800"
+          >
+            Go to Hosts
+          </router-link>
+        </template>
+        <template v-else>
+          <p class="text-lg">No sessions yet.</p>
+          <button
+            class="flex items-center gap-2 rounded-md border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800"
+            @click="dialogOpen = true"
+          >
+            <PlusIcon class="h-4 w-4" /> Create your first session
+          </button>
+        </template>
       </div>
 
       <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -104,6 +145,15 @@ async function onRestart(id: string) {
       :open="dialogOpen"
       @close="dialogOpen = false"
       @created="onCreated"
+    />
+
+    <HostKeyTrustDialog
+      :open="pendingHostKey !== null"
+      :host-id="pendingHostKey?.hostId ?? ''"
+      :host-name="pendingHostKey?.hostName ?? ''"
+      :details="pendingHostKey?.details ?? null"
+      @close="pendingHostKey = null"
+      @trusted="retryRestartAfterTrust"
     />
   </div>
 </template>

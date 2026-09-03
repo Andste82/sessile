@@ -242,7 +242,8 @@ jobs:
 
             ```
             docker pull ${{ steps.repo.outputs.image }}:${{ needs.version.outputs.version }}
-            docker run -p 8080:8080 -v "$PWD/workspace:/workspace" \
+            docker run -p 8080:8080 \
+              -v "$PWD/data/config:/config" -v "$PWD/data/workspace:/workspace" \
               ${{ steps.repo.outputs.image }}:${{ needs.version.outputs.version }}
             ```
 

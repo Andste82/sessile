@@ -24,6 +24,63 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_activity TEXT NOT NULL
 );`
 
+// migrationColumns adds columns introduced after the original schema, each
+// guarded by a column-existence check so running it is safe on every
+// startup regardless of which schema version the database was created
+// under — the first such migration this project has needed (§12b M17):
+// sessions gained ownership and an SSH target once auth and hosts arrived.
+// Rows written before this migration get an empty user_id and target_type=local
+// — the former makes them invisible under strict per-owner scoping (§10,
+// §4.3), an expected, one-time consequence of adding auth to a previously
+// single-tenant table; the latter is simply correct, since every session
+// before this milestone was a local one.
+var migrationColumns = []struct{ name, ddl string }{
+	{"user_id", `ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`},
+	{"target_type", `ALTER TABLE sessions ADD COLUMN target_type TEXT NOT NULL DEFAULT 'local'`},
+	{"host_id", `ALTER TABLE sessions ADD COLUMN host_id TEXT NOT NULL DEFAULT ''`},
+	{"host_display_name", `ALTER TABLE sessions ADD COLUMN host_display_name TEXT NOT NULL DEFAULT ''`},
+}
+
+// migrate applies migrationColumns, skipping any column that already exists.
+func migrate(db *sql.DB) error {
+	for _, m := range migrationColumns {
+		exists, err := columnExists(db, m.name)
+		if err != nil {
+			return fmt.Errorf("check column %s: %w", m.name, err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.Exec(m.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", m.name, err)
+		}
+	}
+	return nil
+}
+
+// columnExists reports whether the sessions table already has column —
+// always that one hardcoded table, so this never interpolates anything
+// caller-supplied into the PRAGMA statement.
+func columnExists(db *sql.DB, column string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 // Store is a SQLite-backed session metadata store.
 type Store struct {
 	db *sql.DB
@@ -52,6 +109,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
 	if _, err := db.Exec(`UPDATE sessions SET status='stopped' WHERE status='running'`); err != nil {
 		db.Close()

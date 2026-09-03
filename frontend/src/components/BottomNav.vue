@@ -4,14 +4,18 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   HomeIcon,
   CommandLineIcon,
+  ServerIcon,
   Cog6ToothIcon,
   Squares2X2Icon,
+  UsersIcon,
 } from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
 
 const store = useSessionsStore()
 const ui = useUiStore()
+const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -59,12 +63,29 @@ function goTerminal() {
       Keys
     </button>
     <RouterLink
+      to="/hosts"
+      class="flex flex-1 flex-col items-center justify-center gap-0.5 text-xs"
+      :class="route.name === 'hosts' ? 'text-emerald-400' : 'text-slate-400'"
+    >
+      <ServerIcon class="h-6 w-6" />
+      Hosts
+    </RouterLink>
+    <RouterLink
       to="/settings"
       class="flex flex-1 flex-col items-center justify-center gap-0.5 text-xs"
       :class="route.name === 'settings' ? 'text-emerald-400' : 'text-slate-400'"
     >
       <Cog6ToothIcon class="h-6 w-6" />
       Settings
+    </RouterLink>
+    <RouterLink
+      v-if="auth.user?.isAdmin"
+      to="/admin/users"
+      class="flex flex-1 flex-col items-center justify-center gap-0.5 text-xs"
+      :class="route.name === 'admin-users' ? 'text-emerald-400' : 'text-slate-400'"
+    >
+      <UsersIcon class="h-6 w-6" />
+      Users
     </RouterLink>
   </nav>
 </template>

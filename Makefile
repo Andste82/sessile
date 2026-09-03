@@ -2,6 +2,7 @@
 .DEFAULT_GOAL := help
 
 ROOT      ?= $(CURDIR)/sandbox
+DATA_DIR  ?= $(ROOT)/data
 
 # The version compiled into the binary and shown on the Settings page. A build
 # from a tagged commit reports the tag; every other build reports the commit it
@@ -30,9 +31,9 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-dev-backend: ## Run the Go backend against ./sandbox in dev mode
-	@mkdir -p $(ROOT)
-	cd backend && go run ./cmd/server --root=$(ROOT) --dev
+dev-backend: ## Run the Go backend against ./sandbox/data in dev mode
+	@mkdir -p $(DATA_DIR)
+	cd backend && go run ./cmd/server --data-dir=$(DATA_DIR) --dev
 
 dev-frontend: ## Run the Vite dev server (proxies to :8080)
 	cd frontend && npm run dev

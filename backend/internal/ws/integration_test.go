@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,9 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/Andste82/sessile/backend/internal/api"
+	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/ws"
 )
@@ -32,25 +35,25 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 
 	root := t.TempDir()
 	cfg := &config.Config{
-		Root:       root,
 		Shells:     []string{"sh"},
 		BufferSize: 512 << 10,
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
 	wsHandler := ws.NewHandler(mgr, cfg, log)
-	srv := api.NewServer(cfg, mgr, wsHandler, log)
+	users, webSessions, serverCfg, cookie, _ := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, wsHandler, log, root, serverCfg, users, webSessions, nil)
 
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
 	// Create a session in the root directory using the deterministic shell.
-	id := createSession(t, ts.URL, `{"name":"test","directory":".","shell":"sh"}`)
+	id := createSession(t, ts.URL, `{"name":"test","directory":".","shell":"sh"}`, cookie)
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
 
 	// First client: attach, send a command, observe its output.
-	c1 := dialWS(t, wsURL)
+	c1 := dialWS(t, wsURL, cookie)
 	assertAttached(t, c1, id)
 	writeInput(t, c1, "echo hello-m1\n")
 	if !readUntil(t, c1, "hello-m1", 5*time.Second) {
@@ -62,7 +65,7 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Second client: attach fresh, the replay must contain the earlier output.
-	c2 := dialWS(t, wsURL)
+	c2 := dialWS(t, wsURL, cookie)
 	assertAttached(t, c2, id)
 	if !readUntil(t, c2, "hello-m1", 5*time.Second) {
 		t.Fatal("replay on second client did not contain earlier output")
@@ -71,6 +74,7 @@ func TestSessionLifecycleAndReplay(t *testing.T) {
 
 	// Delete the session.
 	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/sessions/"+id, nil)
+	req.AddCookie(cookie)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -88,32 +92,33 @@ func TestMultiClientMirroring(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 512 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 512 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	users, webSessions, serverCfg, cookie, _ := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
-	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`)
+	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`, cookie)
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
 
-	c1 := dialWS(t, wsURL)
+	c1 := dialWS(t, wsURL, cookie)
 	defer c1.Close()
 	assertAttached(t, c1, id)
-	c2 := dialWS(t, wsURL)
+	c2 := dialWS(t, wsURL, cookie)
 	defer c2.Close()
 	assertAttached(t, c2, id)
 
 	// Both clients attached: clientCount should report 2.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if sessionClientCount(t, ts.URL, id) == 2 {
+		if sessionClientCount(t, ts.URL, id, cookie) == 2 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if n := sessionClientCount(t, ts.URL, id); n != 2 {
+	if n := sessionClientCount(t, ts.URL, id, cookie); n != 2 {
 		t.Fatalf("clientCount = %d, want 2", n)
 	}
 
@@ -135,35 +140,36 @@ func TestAttachStoppedSessionRejected(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	users, webSessions, serverCfg, cookie, userID := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
-	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`)
+	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`, cookie)
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
 
 	// End the shell from the first client, then wait for status=stopped.
-	c1 := dialWS(t, wsURL)
+	c1 := dialWS(t, wsURL, cookie)
 	assertAttached(t, c1, id)
 	writeInput(t, c1, "exit\n")
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		info, err := mgr.Get(id)
+		info, err := mgr.Get(id, userID)
 		if err == nil && info.Status == session.StatusStopped {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	_ = c1.Close()
-	if info, _ := mgr.Get(id); info.Status != session.StatusStopped {
+	if info, _ := mgr.Get(id, userID); info.Status != session.StatusStopped {
 		t.Fatalf("session did not stop; status=%s", info.Status)
 	}
 
 	// A fresh attach must be rejected with close code 4404.
-	c2 := dialWS(t, wsURL)
+	c2 := dialWS(t, wsURL, cookie)
 	defer c2.Close()
 	_ = c2.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, _, err := c2.ReadMessage()
@@ -187,15 +193,16 @@ func TestExitFrameDeliveredAndConnectionKept(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	users, webSessions, serverCfg, cookie, _ := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
-	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`)
-	c := dialWS(t, "ws"+strings.TrimPrefix(ts.URL, "http")+"/ws/sessions/"+id)
+	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`, cookie)
+	c := dialWS(t, "ws"+strings.TrimPrefix(ts.URL, "http")+"/ws/sessions/"+id, cookie)
 	defer c.Close()
 	assertAttached(t, c, id)
 	writeInput(t, c, "exit\n")
@@ -229,20 +236,21 @@ func TestRestartReattachesEveryClient(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	users, webSessions, serverCfg, cookie, userID := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
-	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`)
+	id := createSession(t, ts.URL, `{"name":"t","directory":".","shell":"sh"}`, cookie)
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
 
-	c1 := dialWS(t, wsURL)
+	c1 := dialWS(t, wsURL, cookie)
 	defer c1.Close()
 	assertAttached(t, c1, id)
-	c2 := dialWS(t, wsURL)
+	c2 := dialWS(t, wsURL, cookie)
 	defer c2.Close()
 	assertAttached(t, c2, id)
 
@@ -252,7 +260,7 @@ func TestRestartReattachesEveryClient(t *testing.T) {
 
 	// The restart one browser performs, over REST, while both still hold their
 	// sockets. Only c1 knows it happened; c2 has to be told.
-	info, err := mgr.Restart(id)
+	info, err := mgr.Restart(id, userID)
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
@@ -306,17 +314,18 @@ func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	root := t.TempDir()
-	cfg := &config.Config{Root: root, Shells: []string{"sh"}, BufferSize: 64 << 10}
+	cfg := &config.Config{Shells: []string{"sh"}, BufferSize: 64 << 10}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := session.NewManager(cfg.Root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
-	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log)
+	mgr := session.NewManager(root, cfg.Shells, cfg.BufferSize, t.TempDir(), nil, log)
+	users, webSessions, serverCfg, cookie, userID := newTestAuth(t)
+	srv := api.NewServer(cfg, mgr, ws.NewHandler(mgr, cfg, log), log, root, serverCfg, users, webSessions, nil)
 	ts := httptest.NewServer(srv.Router(nil))
 	defer ts.Close()
 
-	id := createSession(t, ts.URL, `{"name":"restore","directory":".","shell":"sh"}`)
+	id := createSession(t, ts.URL, `{"name":"restore","directory":".","shell":"sh"}`, cookie)
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/sessions/" + id
 
-	c1 := dialWS(t, wsURL)
+	c1 := dialWS(t, wsURL, cookie)
 	assertAttached(t, c1, id)
 	writeInput(t, c1, "echo before-the-stop\n")
 	if !readUntil(t, c1, "before-the-stop", 5*time.Second) {
@@ -325,30 +334,30 @@ func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
 	writeInput(t, c1, "exit\n")
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if info, err := mgr.Get(id); err == nil && info.Status == session.StatusStopped {
+		if info, err := mgr.Get(id, userID); err == nil && info.Status == session.StatusStopped {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	_ = c1.Close()
-	if info, _ := mgr.Get(id); info.Status != session.StatusStopped {
+	if info, _ := mgr.Get(id, userID); info.Status != session.StatusStopped {
 		t.Fatalf("session did not stop; status=%s", info.Status)
 	}
 
 	// Restarting an unknown session is a 404, a running one a 409.
-	if code := restartStatus(t, ts.URL, "11111111-2222-3333-4444-555555555555"); code != http.StatusNotFound {
+	if code := restartStatus(t, ts.URL, "11111111-2222-3333-4444-555555555555", cookie); code != http.StatusNotFound {
 		t.Errorf("restart of unknown session = %d, want 404", code)
 	}
-	if code := restartStatus(t, ts.URL, id); code != http.StatusOK {
+	if code := restartStatus(t, ts.URL, id, cookie); code != http.StatusOK {
 		t.Fatalf("restart = %d, want 200", code)
 	}
-	if code := restartStatus(t, ts.URL, id); code != http.StatusConflict {
+	if code := restartStatus(t, ts.URL, id, cookie); code != http.StatusConflict {
 		t.Errorf("restart of a running session = %d, want 409", code)
 	}
 
 	// Reattaching now replays the old output, then the separator, and the new
 	// shell takes commands.
-	c2 := dialWS(t, wsURL)
+	c2 := dialWS(t, wsURL, cookie)
 	defer c2.Close()
 	assertAttached(t, c2, id)
 	// One read: the replay arrives as a single frame, so the separator and the
@@ -369,9 +378,48 @@ func TestRestartStoppedSessionReplaysScrollback(t *testing.T) {
 	}
 }
 
-func restartStatus(t *testing.T, baseURL, id string) int {
+// newTestAuth builds a UserStore/SessionStore pair with one already-logged-in
+// test user, returning the cookie every request in these tests attaches:
+// every route but /api/health and /api/auth/* requires one now (§12b M10),
+// and these tests exercise the terminal/session machinery behind it, not
+// auth itself. The returned userID is what a direct (non-HTTP) call on the
+// Manager needs — sessions created through the cookie above are owned by
+// this same id (§4.5, §10). The returned *serverconfig.Store has
+// allowLocalHost on — these tests create local-shell sessions, which is
+// gated behind it as of §12b M17.
+func newTestAuth(t *testing.T) (*auth.UserStore, *auth.SessionStore, *serverconfig.Store, *http.Cookie, string) {
 	t.Helper()
-	resp, err := http.Post(baseURL+"/api/sessions/"+id+"/restart", "application/json", nil)
+	users, err := auth.OpenUsers(filepath.Join(t.TempDir(), "users.yml"))
+	if err != nil {
+		t.Fatalf("open users.yml: %v", err)
+	}
+	user, err := users.Create("test", "test-password", true)
+	if err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	webSessions := auth.NewSessionStore(time.Hour)
+	t.Cleanup(webSessions.Stop)
+	cookie := &http.Cookie{Name: "sessile_session", Value: webSessions.Create(user.ID)}
+
+	serverCfg, err := serverconfig.Open(filepath.Join(t.TempDir(), "config.yml"))
+	if err != nil {
+		t.Fatalf("open config.yml: %v", err)
+	}
+	if err := serverCfg.Set(serverconfig.Config{AllowLocalHost: true}); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	return users, webSessions, serverCfg, cookie, user.ID
+}
+
+func restartStatus(t *testing.T, baseURL, id string, cookie *http.Cookie) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/sessions/"+id+"/restart", nil)
+	if err != nil {
+		t.Fatalf("build restart request: %v", err)
+	}
+	req.AddCookie(cookie)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("restart session: %v", err)
 	}
@@ -380,9 +428,14 @@ func restartStatus(t *testing.T, baseURL, id string) int {
 	return resp.StatusCode
 }
 
-func sessionClientCount(t *testing.T, baseURL, id string) int {
+func sessionClientCount(t *testing.T, baseURL, id string, cookie *http.Cookie) int {
 	t.Helper()
-	resp, err := http.Get(baseURL + "/api/sessions/" + id)
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/sessions/"+id, nil)
+	if err != nil {
+		t.Fatalf("build get-session request: %v", err)
+	}
+	req.AddCookie(cookie)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
@@ -394,9 +447,15 @@ func sessionClientCount(t *testing.T, baseURL, id string) int {
 	return out.ClientCount
 }
 
-func createSession(t *testing.T, baseURL, body string) string {
+func createSession(t *testing.T, baseURL, body string, cookie *http.Cookie) string {
 	t.Helper()
-	resp, err := http.Post(baseURL+"/api/sessions", "application/json", strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/sessions", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build create-session request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -418,9 +477,10 @@ func createSession(t *testing.T, baseURL, body string) string {
 	return out.ID
 }
 
-func dialWS(t *testing.T, url string) *websocket.Conn {
+func dialWS(t *testing.T, url string, cookie *http.Cookie) *websocket.Conn {
 	t.Helper()
-	c, _, err := websocket.DefaultDialer.Dial(url, nil)
+	header := http.Header{"Cookie": {cookie.String()}}
+	c, _, err := websocket.DefaultDialer.Dial(url, header)
 	if err != nil {
 		t.Fatalf("dial %s: %v", url, err)
 	}

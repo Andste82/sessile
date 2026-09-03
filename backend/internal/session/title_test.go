@@ -142,11 +142,11 @@ func TestClearDerivedDropsTheTitle(t *testing.T) {
 // the live stream, and the sampler carries it to the session list.
 func TestSessionTitleFromARealShell(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.Create("probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _ = mgr.Delete(info.ID) })
+	t.Cleanup(func() { _ = mgr.Delete(info.ID, "test-user") })
 
 	if err := mgr.WriteInput(info.ID, []byte(`printf '\033]0;from the shell\007'`+"\n")); err != nil {
 		t.Fatalf("write: %v", err)

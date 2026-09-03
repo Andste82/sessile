@@ -65,15 +65,20 @@ func (m *Manager) sampleForeground() {
 // sampleSession updates one session and reports whether anything a client can
 // see moved.
 func (m *Manager) sampleSession(s *Session) (Info, bool) {
-	pty := s.runningPTY()
-	if pty == nil {
+	backend := s.runningBackend()
+	if backend == nil {
 		return s.clearDerived()
 	}
 
 	// Outside the lock: this is the slow part, and broadcast must never wait on
 	// a /proc read. Both fields it needs are fixed for a session's lifetime —
 	// a restart builds a new Session rather than re-pointing this one.
-	fg := pty.Foreground()
+	//
+	// Always the zero value for an SSH-backed session (§12b M17) — there is no
+	// way to introspect a remote process's /proc from here, and that zero
+	// value is exactly what "changed" below already treats as nothing to
+	// report.
+	fg := backend.Foreground()
 	command := commandLabel(fg)
 	cwd := relativeToRoot(m.root, fg.Cwd)
 
@@ -84,14 +89,15 @@ func (m *Manager) sampleSession(s *Session) (Info, bool) {
 	return s.infoLocked(), changed
 }
 
-// runningPTY returns the session's PTY, or nil if it is no longer running.
-func (s *Session) runningPTY() *terminal.PTY {
+// runningBackend returns the session's Backend, or nil if it is no longer
+// running.
+func (s *Session) runningBackend() Backend {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.Status != StatusRunning {
 		return nil
 	}
-	return s.pty
+	return s.backend
 }
 
 // clearDerived drops the derived state of a session that has stopped, so a dead

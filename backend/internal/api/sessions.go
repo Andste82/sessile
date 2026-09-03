@@ -6,20 +6,28 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/session"
 )
 
 // The §6 session shape is session.JSON, built by session.ToJSON. It lives in
 // the session package because the event channel serialises it too and ws cannot
 // import api — see the type's own comment.
+//
+// createSessionBody discriminates on target: "local" needs directory+shell,
+// "ssh" needs hostId. Empty target is treated as "local" for compatibility
+// with the pre-M17 body shape.
 type createSessionBody struct {
 	Name      string `json:"name"`
+	Target    string `json:"target"`
 	Directory string `json:"directory"`
 	Shell     string `json:"shell"`
+	HostID    string `json:"hostId"`
 }
 
 func (s *Server) listSessions(c *gin.Context) {
-	infos, err := s.manager.List()
+	userID := c.MustGet(userIDKey).(string)
+	infos, err := s.manager.List(userID)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, CodeInternal, "list sessions failed")
 		return
@@ -32,12 +40,26 @@ func (s *Server) listSessions(c *gin.Context) {
 }
 
 func (s *Server) createSession(c *gin.Context) {
+	userID := c.MustGet(userIDKey).(string)
 	var body createSessionBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, "invalid request body")
 		return
 	}
-	info, err := s.manager.Create(body.Name, body.Directory, body.Shell)
+
+	if body.Target == "ssh" {
+		s.createSSHSession(c, userID, body)
+		return
+	}
+	s.createLocalSession(c, userID, body)
+}
+
+func (s *Server) createLocalSession(c *gin.Context, userID string, body createSessionBody) {
+	if !s.serverConfig.Get().AllowLocalHost {
+		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
+		return
+	}
+	info, err := s.manager.CreateLocal(userID, body.Name, body.Directory, body.Shell)
 	if err != nil {
 		s.respondSessionError(c, err)
 		return
@@ -45,8 +67,31 @@ func (s *Server) createSession(c *gin.Context) {
 	c.JSON(http.StatusCreated, session.ToJSON(info))
 }
 
+func (s *Server) createSSHSession(c *gin.Context, userID string, body createSessionBody) {
+	store, ok := s.hostStore(c)
+	if !ok {
+		return
+	}
+	host, found := store.Get(body.HostID)
+	if !found {
+		respondError(c, http.StatusNotFound, CodeNotFound, hosts.ErrNotFound.Error())
+		return
+	}
+
+	info, err := s.manager.CreateSSH(userID, body.Name, host.ID, host.Name, host.SSHTarget())
+	if err != nil {
+		if s.respondHostKeyError(c, err) {
+			return
+		}
+		s.respondSessionError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, session.ToJSON(info))
+}
+
 func (s *Server) getSession(c *gin.Context) {
-	info, err := s.manager.Get(c.Param("id"))
+	userID := c.MustGet(userIDKey).(string)
+	info, err := s.manager.Get(c.Param("id"), userID)
 	if err != nil {
 		s.respondSessionError(c, err)
 		return
@@ -55,7 +100,8 @@ func (s *Server) getSession(c *gin.Context) {
 }
 
 func (s *Server) deleteSession(c *gin.Context) {
-	if err := s.manager.Delete(c.Param("id")); err != nil {
+	userID := c.MustGet(userIDKey).(string)
+	if err := s.manager.Delete(c.Param("id"), userID); err != nil {
 		s.respondSessionError(c, err)
 		return
 	}
@@ -67,12 +113,13 @@ type renameBody struct {
 }
 
 func (s *Server) renameSession(c *gin.Context) {
+	userID := c.MustGet(userIDKey).(string)
 	var body renameBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, "invalid request body")
 		return
 	}
-	info, err := s.manager.Rename(c.Param("id"), body.Name)
+	info, err := s.manager.Rename(c.Param("id"), userID, body.Name)
 	if err != nil {
 		s.respondSessionError(c, err)
 		return
@@ -83,8 +130,27 @@ func (s *Server) renameSession(c *gin.Context) {
 // restartSession gives a stopped session a new shell under the same id, with
 // its scrollback and command history restored (§8).
 func (s *Server) restartSession(c *gin.Context) {
-	info, err := s.manager.Restart(c.Param("id"))
+	userID := c.MustGet(userIDKey).(string)
+	id := c.Param("id")
+
+	// Mirrors createLocalSession's gate: a local session created while
+	// allowLocalHost was on must not become restartable again once an admin
+	// turns it off. Restart branches on the session's own stored target type
+	// (session/manager.go), never the request, so the gate has to be checked
+	// here rather than inferred from the body. A lookup failure (unknown
+	// session, wrong owner) falls through to Restart below, which reports the
+	// same error it always would.
+	if info, err := s.manager.Get(id, userID); err == nil &&
+		info.TargetType == session.TargetLocal && !s.serverConfig.Get().AllowLocalHost {
+		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
+		return
+	}
+
+	info, err := s.manager.Restart(id, userID)
 	if err != nil {
+		if s.respondHostKeyError(c, err) {
+			return
+		}
 		s.respondSessionError(c, err)
 		return
 	}
@@ -95,6 +161,8 @@ func (s *Server) restartSession(c *gin.Context) {
 func (s *Server) respondSessionError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, session.ErrNotFound):
+		respondError(c, http.StatusNotFound, CodeNotFound, err.Error())
+	case errors.Is(err, session.ErrHostNotFound):
 		respondError(c, http.StatusNotFound, CodeNotFound, err.Error())
 	case errors.Is(err, session.ErrAlreadyRunning):
 		respondError(c, http.StatusConflict, CodeAlreadyRunning, err.Error())
@@ -107,9 +175,9 @@ func (s *Server) respondSessionError(c *gin.Context, err error) {
 	case errors.Is(err, session.ErrShuttingDown):
 		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
 	default:
-		// resolveDir and other validation-style failures surface here as 400;
-		// treat unknown errors as validation to avoid leaking internals, but
-		// log for diagnosis.
+		// resolveDir, sshpty dial failures and other validation-style failures
+		// surface here as 400; treat unknown errors as validation to avoid
+		// leaking internals, but log for diagnosis.
 		s.log.Warn("session request failed", "err", err)
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 	}

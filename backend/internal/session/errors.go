@@ -25,6 +25,10 @@ var (
 	// ErrInvalidShell is returned when a shell is not in the allowlist or is
 	// not installed on PATH.
 	ErrInvalidShell = errors.New("shell not allowed or not installed")
+	// ErrHostNotFound is returned by Restart for an SSH session whose host
+	// has since been deleted (§12b M17) — HostResolver.Resolve returns this,
+	// or Restart does directly if no resolver has been wired at all.
+	ErrHostNotFound = errors.New("host not found")
 )
 
 // Store persists session metadata (implemented by internal/storage).

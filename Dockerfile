@@ -54,7 +54,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          bash ca-certificates tini wget \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /workspace /config
+    && mkdir -p /config /workspace
 # Without this the shells inherit glibc's C locale, which is ASCII-only: bash
 # rejects a typed umlaut with a BEL. C.UTF-8 is built in and needs no locale
 # package. sessile defaults to it too, but set it here so the whole container
@@ -63,6 +63,11 @@ ENV LANG=C.UTF-8
 COPY --from=backend /sessile /usr/local/bin/sessile
 
 EXPOSE 8080
+# Two volumes, so the small, sensitive state in /config (users.yml, hosts.yml
+# with credentials) can be backed up separately from /workspace — only used
+# when an admin turns on allowLocalHost, potentially large, never sensitive on
+# its own. A compose file can still point both at one host directory, e.g.
+# ./data/config:/config and ./data/workspace:/workspace (PROJECT_PLAN.md §9).
 VOLUME ["/config", "/workspace"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
@@ -70,13 +75,13 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 # tini reaps zombies (shells are grandchildren of PID 1).
 ENTRYPOINT ["/usr/bin/tini", "--", "sessile"]
-CMD ["--root=/workspace", "--data-dir=/config", "--shells=bash"]
+CMD ["--data-dir=/config", "--workspace-dir=/workspace", "--shells=bash"]
 
 # --- Stage 3b: alpine runtime (default) ------------------------------------
 # alpine, not scratch: sessions spawn real shells, so bash must be present.
 FROM alpine:3 AS runtime-alpine
 RUN apk add --no-cache bash ca-certificates tini \
-    && mkdir -p /workspace /config
+    && mkdir -p /config /workspace
 # musl treats its C locale as UTF-8, so this is belt-and-braces here — but it
 # keeps both variants identical rather than relying on that difference.
 ENV LANG=C.UTF-8
@@ -90,4 +95,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 # tini reaps zombies (shells are grandchildren of PID 1).
 ENTRYPOINT ["/sbin/tini", "--", "sessile"]
-CMD ["--root=/workspace", "--data-dir=/config", "--shells=bash"]
+CMD ["--data-dir=/config", "--workspace-dir=/workspace", "--shells=bash"]

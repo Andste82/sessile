@@ -4,8 +4,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/Andste82/sessile/backend/internal/terminal"
 )
 
 // Status is a session's lifecycle state.
@@ -14,6 +12,14 @@ type Status string
 const (
 	StatusRunning Status = "running"
 	StatusStopped Status = "stopped"
+)
+
+// TargetType selects what a Session's Backend actually is.
+type TargetType string
+
+const (
+	TargetLocal TargetType = "local"
+	TargetSSH   TargetType = "ssh"
 )
 
 // Default terminal geometry until the first client resize arrives.
@@ -31,10 +37,18 @@ type Session struct {
 	// buffer-replay / live-stream ordering is race-free (§3, §4.4).
 	mu sync.Mutex
 
-	ID           string
-	Name         string
-	Directory    string // relative to root, as supplied by the user
-	Shell        string
+	ID     string
+	Name   string
+	UserID string // owner — every lookup on Manager is scoped to this (§4.5, §10)
+
+	TargetType TargetType // "local" | "ssh"
+	Directory  string     // relative to root, as supplied by the user (local only)
+	Shell      string     // local only
+	HostID     string     // the owning user's host id (ssh only)
+	// HostDisplayName is the host's name, snapshotted at creation time (ssh
+	// only) — survives the host being renamed or deleted after the fact.
+	HostDisplayName string
+
 	Status       Status
 	PID          int
 	Created      time.Time
@@ -42,7 +56,8 @@ type Session struct {
 	Rows, Cols   uint16
 
 	// derived foreground, refreshed by the manager's sampler (§4.7). Both are
-	// empty for a session that is not running.
+	// empty for a session that is not running, and always empty for an SSH
+	// session — there is no way to introspect a remote process's /proc.
 	fgCommand string // foreground program name
 	fgCwd     string // its working directory, relative to root
 
@@ -60,7 +75,7 @@ type Session struct {
 	modes termModes
 
 	// runtime-only
-	pty         *terminal.PTY
+	backend     Backend
 	buffer      *RingBuffer
 	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
@@ -79,16 +94,20 @@ type clientGeom struct {
 // Info is a snapshot of a session's public fields, safe to hand to the API and
 // storage layers without exposing internal pointers.
 type Info struct {
-	ID           string
-	Name         string
-	Directory    string
-	Shell        string
-	Status       Status
-	PID          int
-	Created      time.Time
-	LastActivity time.Time
-	Rows, Cols   uint16
-	ClientCount  int
+	ID              string
+	Name            string
+	UserID          string
+	TargetType      TargetType
+	Directory       string
+	Shell           string
+	HostID          string
+	HostDisplayName string
+	Status          Status
+	PID             int
+	Created         time.Time
+	LastActivity    time.Time
+	Rows, Cols      uint16
+	ClientCount     int
 
 	// Derived, never persisted (§4.7, §4.8). Empty for a stopped session, and
 	// where they cannot be determined.
@@ -106,20 +125,24 @@ func (s *Session) Info() Info {
 
 func (s *Session) infoLocked() Info {
 	return Info{
-		ID:           s.ID,
-		Name:         s.Name,
-		Directory:    s.Directory,
-		Shell:        s.Shell,
-		Status:       s.Status,
-		PID:          s.PID,
-		Created:      s.Created,
-		LastActivity: s.LastActivity,
-		Rows:         s.Rows,
-		Cols:         s.Cols,
-		ClientCount:  len(s.clients),
-		Command:      s.fgCommand,
-		Cwd:          s.fgCwd,
-		Title:        s.title,
+		ID:              s.ID,
+		Name:            s.Name,
+		UserID:          s.UserID,
+		TargetType:      s.TargetType,
+		Directory:       s.Directory,
+		Shell:           s.Shell,
+		HostID:          s.HostID,
+		HostDisplayName: s.HostDisplayName,
+		Status:          s.Status,
+		PID:             s.PID,
+		Created:         s.Created,
+		LastActivity:    s.LastActivity,
+		Rows:            s.Rows,
+		Cols:            s.Cols,
+		ClientCount:     len(s.clients),
+		Command:         s.fgCommand,
+		Cwd:             s.fgCwd,
+		Title:           s.title,
 	}
 }
 
@@ -226,7 +249,7 @@ func (s *Session) applySize(rows, cols uint16) error {
 	if unchanged {
 		return nil
 	}
-	if err := s.pty.Resize(rows, cols); err != nil {
+	if err := s.backend.Resize(rows, cols); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -381,15 +404,15 @@ func (s *Session) closeClients(code int, reason string) {
 // read loop is not leaked, only late: it finishes on its own the moment the last
 // holder of the slave lets go, and runs its usual cleanup then.
 func (s *Session) terminate(grace time.Duration) bool {
-	s.pty.Signal(syscall.SIGHUP)
-	s.pty.Signal(syscall.SIGTERM)
+	s.backend.Signal(syscall.SIGHUP)
+	s.backend.Signal(syscall.SIGTERM)
 	select {
 	case <-s.exited:
 		return true
 	case <-time.After(grace):
 	}
 
-	s.pty.Signal(syscall.SIGKILL)
+	s.backend.Signal(syscall.SIGKILL)
 	select {
 	case <-s.exited:
 		return true
@@ -406,9 +429,9 @@ func (s *Session) terminate(grace time.Duration) bool {
 // user state — so it goes straight to SIGKILL, and this goroutine is the only
 // reaper it will ever have.
 func (s *Session) discard() {
-	s.pty.Signal(syscall.SIGKILL)
-	s.pty.Wait()
-	s.pty.CloseFile()
+	s.backend.Signal(syscall.SIGKILL)
+	s.backend.Wait()
+	s.backend.CloseFile()
 }
 
 // WebSocket close codes (application range).

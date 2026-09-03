@@ -73,7 +73,7 @@ func TestDeleteReturnsWhenAProcessOutlivesTheShell(t *testing.T) {
 	requireSetsid(t)
 	mgr, store, _ := testManager(t)
 
-	info, err := mgr.Create("wedged", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "wedged", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestDeleteReturnsWhenAProcessOutlivesTheShell(t *testing.T) {
 
 	done := make(chan error, 1)
 	start := time.Now()
-	go func() { done <- mgr.Delete(info.ID) }()
+	go func() { done <- mgr.Delete(info.ID, "test-user") }()
 
 	// Two grace periods plus room for scheduling. Without the bound this never
 	// fires at all.
@@ -99,7 +99,7 @@ func TestDeleteReturnsWhenAProcessOutlivesTheShell(t *testing.T) {
 	}
 
 	// The session must really be gone, not merely abandoned mid-delete.
-	if _, err := mgr.Get(info.ID); err == nil {
+	if _, err := mgr.Get(info.ID, "test-user"); err == nil {
 		t.Error("session still listed after delete")
 	}
 	if _, found, err := store.Get(info.ID); err == nil && found {
@@ -117,7 +117,7 @@ func TestDiscardedSessionWritesNoScrollbackWhenItsReadLoopFinishesLate(t *testin
 	requireSetsid(t)
 	mgr, _, dataDir := testManager(t)
 
-	info, err := mgr.Create("wedged", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "wedged", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestDiscardedSessionWritesNoScrollbackWhenItsReadLoopFinishesLate(t *testin
 	}
 	s := mgr.live(info.ID) // captured before Delete removes it from the map
 
-	if err := mgr.Delete(info.ID); err != nil {
+	if err := mgr.Delete(info.ID, "test-user"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestShutdownReturnsWhenAProcessOutlivesTheShell(t *testing.T) {
 	requireSetsid(t)
 	mgr, _, _ := testManager(t)
 
-	info, err := mgr.Create("wedged", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "wedged", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

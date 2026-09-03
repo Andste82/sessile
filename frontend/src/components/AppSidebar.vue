@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router'
-import { HomeIcon, Cog6ToothIcon } from '@heroicons/vue/24/outline'
+import { HomeIcon, ServerIcon, Cog6ToothIcon, UsersIcon } from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
+import { useAuthStore } from '@/stores/auth'
 import StatusDot from './StatusDot.vue'
 
 const store = useSessionsStore()
+const auth = useAuthStore()
 const route = useRoute()
 
 function isTerminal(id: string) {
@@ -40,6 +42,15 @@ function isTerminal(id: string) {
         <span class="hidden lg:inline">Dashboard</span>
       </RouterLink>
       <RouterLink
+        to="/hosts"
+        class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-800"
+        :class="{ 'bg-slate-800 text-slate-100': route.name === 'hosts' }"
+        title="Hosts"
+      >
+        <ServerIcon class="h-5 w-5 shrink-0" />
+        <span class="hidden lg:inline">Hosts</span>
+      </RouterLink>
+      <RouterLink
         to="/settings"
         class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-800"
         :class="{ 'bg-slate-800 text-slate-100': route.name === 'settings' }"
@@ -47,6 +58,16 @@ function isTerminal(id: string) {
       >
         <Cog6ToothIcon class="h-5 w-5 shrink-0" />
         <span class="hidden lg:inline">Settings</span>
+      </RouterLink>
+      <RouterLink
+        v-if="auth.user?.isAdmin"
+        to="/admin/users"
+        class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-800"
+        :class="{ 'bg-slate-800 text-slate-100': route.name === 'admin-users' }"
+        title="Users"
+      >
+        <UsersIcon class="h-5 w-5 shrink-0" />
+        <span class="hidden lg:inline">Users</span>
       </RouterLink>
     </nav>
 

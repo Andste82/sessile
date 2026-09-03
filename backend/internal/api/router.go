@@ -6,18 +6,38 @@ import (
 	"encoding/hex"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/hosts"
+	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/ws"
 )
 
-// maxBodyBytes bounds JSON request bodies (PROJECT_PLAN.md §11).
-const maxBodyBytes = 4 << 10 // 4 KiB
+// .webmanifest isn't in Go's built-in MIME table (unlike .json), and the
+// wrong Content-Type is enough to make some browsers refuse to treat the
+// page as installable — the frontend's PWA manifest (frontend/public/
+// manifest.webmanifest) needs this to serve correctly from the embedded
+// static file server below.
+func init() {
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
+
+// maxBodyBytes bounds JSON request bodies (PROJECT_PLAN.md §11). Shared with
+// host creation/update, which now carries private key material: a minimal
+// create-host body with an unencrypted OPENSSH RSA-4096 key is already
+// ~3.74 KiB on its own, and a passphrase-encrypted key plus a longer name/
+// group/address routinely crosses a tighter cap — indistinguishable from a
+// malformed request once MaxBytesReader cuts it off. 32 KiB comfortably
+// covers realistic key sizes while staying far short of anything that would
+// matter for memory use.
+const maxBodyBytes = 32 << 10 // 32 KiB
 
 // Server holds the dependencies shared by the HTTP handlers.
 type Server struct {
@@ -25,11 +45,28 @@ type Server struct {
 	manager *session.Manager
 	ws      *ws.Handler
 	log     *slog.Logger
+
+	// workspaceRoot is the local-host sandbox root, <data-dir>/workspace
+	// (PROJECT_PLAN.md §4.5, §9) — fixed, not operator-supplied.
+	workspaceRoot string
+	// serverConfig holds config.yml (displayName, allowRegistration,
+	// allowLocalHost). Not yet consumed by any handler beyond auth.go's admin
+	// endpoints — the allowLocalHost gate on session creation/directories
+	// lands with SSH sessions (§12b M17).
+	serverConfig *serverconfig.Store
+
+	users       *auth.UserStore
+	webSessions *auth.SessionStore
+	hosts       *hosts.Registry
 }
 
 // NewServer constructs a Server.
-func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, manager: manager, ws: wsHandler, log: log}
+func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handler, log *slog.Logger, workspaceRoot string, serverCfg *serverconfig.Store, users *auth.UserStore, webSessions *auth.SessionStore, hostsRegistry *hosts.Registry) *Server {
+	return &Server{
+		cfg: cfg, manager: manager, ws: wsHandler, log: log,
+		workspaceRoot: workspaceRoot, serverConfig: serverCfg,
+		users: users, webSessions: webSessions, hosts: hostsRegistry,
+	}
 }
 
 // Router builds the Gin engine with all routes registered.
@@ -40,27 +77,61 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 	r.Use(requestLogger(s.log))
 	r.Use(limitBody(maxBodyBytes))
 
-	apiGroup := r.Group("/api")
+	// Public: no session cookie required. Everything else in /api/* is
+	// gated by requireAuth (§10, §11) — a client-supplied user id is never
+	// trusted, so every authed handler resolves its actor from the cookie,
+	// not from anything in the request body or query string.
+	publicGroup := r.Group("/api")
 	{
-		apiGroup.GET("/health", s.health)
-		apiGroup.GET("/config", s.getConfig)
-		apiGroup.GET("/sessions", s.listSessions)
-		apiGroup.POST("/sessions", s.createSession)
-		apiGroup.GET("/sessions/:id", s.getSession)
-		apiGroup.DELETE("/sessions/:id", s.deleteSession)
-		apiGroup.PATCH("/sessions/:id", s.renameSession)
-		apiGroup.POST("/sessions/:id/restart", s.restartSession)
-		apiGroup.GET("/directories", s.listDirectories)
+		publicGroup.GET("/health", s.health)
+		publicGroup.GET("/auth/status", s.authStatus)
+		publicGroup.POST("/auth/bootstrap", s.authBootstrap)
+		publicGroup.POST("/auth/register", s.authRegister)
+		publicGroup.POST("/auth/login", s.authLogin)
+	}
+
+	authGroup := r.Group("/api")
+	authGroup.Use(s.requireAuth())
+	{
+		authGroup.POST("/auth/logout", s.authLogout)
+		authGroup.GET("/auth/me", s.authMe)
+
+		admin := authGroup.Group("")
+		admin.Use(s.requireAdmin())
+		{
+			admin.GET("/admin/config", s.getAdminConfig)
+			admin.PUT("/admin/config", s.updateAdminConfig)
+			admin.GET("/admin/users", s.listUsers)
+			admin.DELETE("/admin/users/:id", s.deleteUser)
+			admin.PATCH("/admin/users/:id", s.setUserAdmin)
+		}
+
+		authGroup.GET("/config", s.getConfig)
+		authGroup.GET("/hosts", s.listHosts)
+		authGroup.POST("/hosts", s.createHost)
+		authGroup.GET("/hosts/:id", s.getHost)
+		authGroup.PUT("/hosts/:id", s.updateHost)
+		authGroup.DELETE("/hosts/:id", s.deleteHost)
+		authGroup.POST("/hosts/:id/host-key/probe", s.probeHostKey)
+		authGroup.POST("/hosts/:id/host-key/trust", s.trustHostKey)
+		authGroup.POST("/hosts/:id/exchange-keys", s.exchangeHostKeys)
+		authGroup.GET("/sessions", s.listSessions)
+		authGroup.POST("/sessions", s.createSession)
+		authGroup.GET("/sessions/:id", s.getSession)
+		authGroup.DELETE("/sessions/:id", s.deleteSession)
+		authGroup.PATCH("/sessions/:id", s.renameSession)
+		authGroup.POST("/sessions/:id/restart", s.restartSession)
+		authGroup.GET("/directories", s.listDirectories)
 	}
 
 	if s.ws != nil {
-		r.GET("/ws/sessions/:id", func(c *gin.Context) {
-			s.ws.Handle(c.Writer, c.Request, c.Param("id"))
+		r.GET("/ws/sessions/:id", s.requireAuth(), func(c *gin.Context) {
+			s.ws.Handle(c.Writer, c.Request, c.Param("id"), c.MustGet(userIDKey).(string))
 		})
 		// Session list state rather than terminal bytes (§5.1). Separate from
 		// the terminal socket because the dashboard mounts no terminal.
-		r.GET("/ws/events", func(c *gin.Context) {
-			s.ws.HandleEvents(c.Writer, c.Request)
+		r.GET("/ws/events", s.requireAuth(), func(c *gin.Context) {
+			s.ws.HandleEvents(c.Writer, c.Request, c.MustGet(userIDKey).(string))
 		})
 	}
 
