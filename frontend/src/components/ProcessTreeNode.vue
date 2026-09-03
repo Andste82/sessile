@@ -5,9 +5,6 @@ import type { Process } from '@/api/types'
 
 defineProps<{ process: Process; depth: number }>()
 
-// Collapsed by default past the first couple of levels — a real host's
-// tree can be wide and deep, and a fully-expanded dump is harder to scan
-// than the shell-and-its-direct-children view most visits actually want.
 const expanded = ref(true)
 </script>
 

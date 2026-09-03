@@ -7,8 +7,6 @@ import FileExplorerPanel from './FileExplorerPanel.vue'
 defineProps<{ sessionId: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-// Copy/delete/download/upload (§4.10 M25-M26) aren't built yet — Files is
-// browse + move only for now.
 const tab = ref<'processes' | 'files'>('processes')
 const tabCls = (active: boolean) =>
   active
