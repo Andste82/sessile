@@ -17,6 +17,7 @@ import {
 import { api } from '@/api/client'
 import { hostFileDownloadURL } from '@/api/upload'
 import { useTransfersStore } from '@/stores/transfers'
+import { useSessionsStore } from '@/stores/sessions'
 import { copyText } from '@/utils/clipboard'
 import { relativeTo } from '@/utils/path'
 import RowActionsMenu, { type MenuItem } from '@/components/RowActionsMenu.vue'
@@ -40,6 +41,24 @@ const copyTarget = ref('')
 const confirmingDeleteName = ref<string | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const transfers = useTransfersStore()
+const sessions = useSessionsStore()
+
+// The panel outlives the session it browses: a shell can exit while it is
+// open, and be restarted from the terminal beside it. hostops refuses both
+// ways round — Manager.HostOps returns ErrStopped for a session that is not
+// running — so without watching the status the panel either keeps showing a
+// listing it can no longer act on, or keeps showing the error from when the
+// session was down long after it came back.
+const sessionStopped = computed(() => sessions.byId(props.sessionId)?.status === 'stopped')
+
+watch(
+  () => sessions.byId(props.sessionId)?.status,
+  (now, before) => {
+    // Restarted: the listing is reachable again, and nothing else would ask
+    // for it — the panel is already mounted, so onMounted will not run again.
+    if (before === 'stopped' && now === 'running') void load(currentPath.value)
+  },
+)
 
 // Upload and Delete/Copy progress live in the store, not here: this component
 // is unmounted whenever the Processes tab is selected or the panel is closed,
@@ -375,7 +394,7 @@ watch(
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
-          :disabled="!!upload"
+          :disabled="!!upload || sessionStopped"
           title="Upload a file here"
           @click="pickUploadFile"
         >
@@ -384,7 +403,7 @@ watch(
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
-          :disabled="loading"
+          :disabled="loading || sessionStopped"
           title="Refresh"
           @click="load(currentPath)"
         >
@@ -441,7 +460,11 @@ watch(
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto">
-      <p v-if="error" class="p-3 text-xs text-rose-400">{{ error }}</p>
+      <p v-if="sessionStopped" class="p-3 text-xs text-slate-500">
+        The session has stopped — its files are not reachable. Restart it from
+        the terminal to browse again.
+      </p>
+      <p v-else-if="error" class="p-3 text-xs text-rose-400">{{ error }}</p>
       <p v-else-if="!loading && entries.length === 0" class="p-3 text-xs text-slate-500">Empty directory.</p>
       <ul v-else class="divide-y divide-slate-800/60">
         <li v-for="entry in entries" :key="entry.name" class="group px-2 py-1.5">
