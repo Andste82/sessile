@@ -65,6 +65,18 @@ func parseWindowsProcessCSV(output string) ([]flatProcess, error) {
 		if err != nil {
 			continue
 		}
+		// Win32_Process always reports the System Idle Process as pid 0 with
+		// ppid 0, and this script applies no filter, so it is always in the
+		// listing. It is a scheduler placeholder, not a process anyone can
+		// see or act on — and keeping it actively breaks the forest: every
+		// real top-level process has ppid 0, so pid 0's presence makes 0 a
+		// "visible parent" and disqualifies all of them as roots, while pid 0
+		// disqualifies itself the same way. The result was an empty tree for
+		// every Windows target. Dropping it here lets pid 4 and its peers
+		// root normally.
+		if pid == 0 {
+			continue
+		}
 		out = append(out, flatProcess{pid: pid, ppid: ppid, command: rec[2]})
 	}
 	return out, nil

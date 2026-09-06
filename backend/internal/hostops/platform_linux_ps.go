@@ -137,5 +137,20 @@ func buildProcessForest(flat []flatProcess) []Process {
 		seen[p.pid] = true
 		roots = append(roots, Process{PID: p.pid, PPID: p.ppid, Command: p.command, Children: build(p.pid)})
 	}
+
+	// Sweep: anything still unvisited is unreachable from every root found
+	// above — a cycle (100→200→100 disqualifies both as roots and nothing
+	// walks into either), or a process parented by one. Without this they
+	// vanish from the "whole target" view along with their entire subtree,
+	// silently and with no error. Promoting each leftover to its own root
+	// keeps the listing complete, and makes an empty result for a non-empty
+	// listing structurally impossible rather than merely untested.
+	for _, p := range flat {
+		if seen[p.pid] {
+			continue
+		}
+		seen[p.pid] = true
+		roots = append(roots, Process{PID: p.pid, PPID: p.ppid, Command: p.command, Children: build(p.pid)})
+	}
 	return roots
 }
