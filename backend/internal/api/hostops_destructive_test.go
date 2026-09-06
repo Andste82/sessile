@@ -46,9 +46,23 @@ func TestResolveDestructiveHostopsPathRejectsSSHRootPaths(t *testing.T) {
 	s := &Server{}
 	info := session.Info{TargetType: session.TargetSSH}
 
-	for _, userPath := range []string{".", "/", ""} {
+	// Every spelling of "here" and "everything", not just the two canonical
+	// ones: resolveHostopsPath hands an SSH path back unnormalized, so a
+	// literal comparison let "./" and friends through — and they are not
+	// near misses. runDelete builds each victim with path.Join(target, name),
+	// and path.Join("./", name) is byte-identical to path.Join(".", name),
+	// so "./" deleted precisely what "." was blocked from deleting.
+	for _, userPath := range []string{".", "/", "", "./", ".//", "/.", "//", "/./", "./."} {
 		if _, _, err := s.resolveDestructiveHostopsPath(info, userPath); err == nil {
 			t.Errorf("resolveDestructiveHostopsPath(%q) = nil error, want rejection", userPath)
+		}
+	}
+
+	// A relative path that merely starts with "./" is a normal target and
+	// must still be allowed — the guard rejects the root, not the notation.
+	for _, userPath := range []string{"./file.txt", "./dir/sub", "sub/./file"} {
+		if _, _, err := s.resolveDestructiveHostopsPath(info, userPath); err != nil {
+			t.Errorf("resolveDestructiveHostopsPath(%q): unexpected error: %v", userPath, err)
 		}
 	}
 
