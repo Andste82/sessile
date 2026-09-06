@@ -11,6 +11,7 @@ import type {
   HostBody,
   HostKeyErrorDetails,
   HostFilesResponse,
+  HostCwdResponse,
   HostKeyProbeResponse,
   HostopStatus,
   ProcessTreeResponse,
@@ -121,6 +122,7 @@ export const api = {
     request<HostFilesResponse>(
       `/api/sessions/${id}/hostops/files${path ? `?path=${encodeURIComponent(path)}` : ''}`,
     ),
+  sessionCwd: (id: string) => request<HostCwdResponse>(`/api/sessions/${id}/hostops/cwd`),
   moveHostFile: (id: string, src: string, dst: string) =>
     request<void>(`/api/sessions/${id}/hostops/move`, {
       method: 'POST',

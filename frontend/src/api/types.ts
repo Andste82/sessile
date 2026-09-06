@@ -173,7 +173,16 @@ export interface HostDirEntry {
 
 export interface HostFilesResponse {
   path: string
+  // The same directory as `path`, but as the target itself names it. Equal to
+  // `path` for SSH; the real path on the server for a local session, whose
+  // `path` is relative to the workspace root.
+  absolutePath: string
   entries: HostDirEntry[]
+}
+
+/** Where the session's shell currently is, absolute on the target. */
+export interface HostCwdResponse {
+  path: string
 }
 
 // Poll fallback for a Delete/Copy's progress (§5.2) — the same shape the WS

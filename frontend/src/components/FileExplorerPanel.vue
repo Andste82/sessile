@@ -1,24 +1,36 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   FolderIcon,
   DocumentIcon,
   ArrowPathIcon,
   ArrowUpIcon,
+  ArrowUpTrayIcon,
+  ArrowDownTrayIcon,
   PencilIcon,
   DocumentDuplicateIcon,
+  ClipboardIcon,
+  ClipboardDocumentIcon,
   TrashIcon,
-  ArrowDownTrayIcon,
-  ArrowUpTrayIcon,
+  XMarkIcon,
 } from '@heroicons/vue/20/solid'
 import { api } from '@/api/client'
-import { onHostopEvent } from '@/composables/useHostopEvents'
-import { uploadHostFile, hostFileDownloadURL } from '@/api/upload'
+import { hostFileDownloadURL } from '@/api/upload'
+import { useTransfersStore } from '@/stores/transfers'
+import { useSessionsStore } from '@/stores/sessions'
+import { copyText } from '@/utils/clipboard'
+import { relativeTo } from '@/utils/path'
+import RowActionsMenu, { type MenuItem } from '@/components/RowActionsMenu.vue'
 import type { HostDirEntry } from '@/api/types'
 
 const props = defineProps<{ sessionId: string }>()
 
 const currentPath = ref('') // "" means the target's own default root
+// The same directory as currentPath, but as the target names it. For SSH the
+// two are equal; for a local session currentPath is relative to the workspace
+// root and this is the real path on the server. Copying a path has to use this
+// one, so that it means the same thing on both target types.
+const absolutePath = ref('')
 const entries = ref<HostDirEntry[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -28,106 +40,40 @@ const copyingName = ref<string | null>(null)
 const copyTarget = ref('')
 const confirmingDeleteName = ref<string | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
-const upload = ref<{ name: string; loaded: number; total: number; status: 'running' | 'error' } | null>(null)
+const transfers = useTransfersStore()
+const sessions = useSessionsStore()
 
-// One Delete/Copy at a time, tracked from its opId — Delete/Copy are the two
-// hostops that take long enough to need progress (§4.10, §5.2); everything
-// else here is synchronous.
-interface ActiveOp {
-  opId: string
-  kind: 'delete' | 'copy'
-  entryName: string
-  done: number
-  total: number
-  status: 'running' | 'ok' | 'error'
-  message: string
-}
-const activeOp = ref<ActiveOp | null>(null)
-let unsubscribeOp: (() => void) | null = null
+// The panel outlives the session it browses: a shell can exit while it is
+// open, and be restarted from the terminal beside it. hostops refuses both
+// ways round — Manager.HostOps returns ErrStopped for a session that is not
+// running — so without watching the status the panel either keeps showing a
+// listing it can no longer act on, or keeps showing the error from when the
+// session was down long after it came back.
+const sessionStopped = computed(() => sessions.byId(props.sessionId)?.status === 'stopped')
 
-// opGeneration identifies "the op the panel is currently showing". Every
-// async continuation below (an await'd response, a WS event, the poll
-// fallback, an error handler) captures the generation it started in and
-// bails when it no longer matches — because by the time it runs, the user
-// may have started a different op, and without the check a stale
-// continuation writes into, or tears down, a newer op's state.
-let opGeneration = 0
+watch(
+  () => sessions.byId(props.sessionId)?.status,
+  (now, before) => {
+    // Restarted: the listing is reachable again, and nothing else would ask
+    // for it — the panel is already mounted, so onMounted will not run again.
+    if (before === 'stopped' && now === 'running') void load(currentPath.value)
+  },
+)
 
-// startTracking subscribes *before* the request that starts the op is even
-// issued — a fast local Delete/Copy can complete (hostopStarted,
-// hostopProgress, hostopDone all published) before an await on the HTTP
-// response ever resolves, so subscribing only after that await, keyed on
-// the opId the response carries, misses every event for a fast enough op:
-// activeOp stays stuck at "running" forever, and the deleted/copied entry
-// keeps showing until a manual refresh.
-//
-// activeOp.opId starts "" and is adopted from the first hostopStarted seen
-// for this session — that event is itself the authoritative "this op just
-// started, here's its id", arriving no later than the HTTP response and
-// often earlier, so there's no need to already know the opId to start
-// listening for it.
-function startTracking(kind: 'delete' | 'copy', entryName: string): number {
-  unsubscribeOp?.()
-  const gen = ++opGeneration
-  activeOp.value = { opId: '', kind, entryName, done: 0, total: 0, status: 'running', message: '' }
-  unsubscribeOp = onHostopEvent((e) => {
-    if (gen !== opGeneration) return
-    if (e.sessionId !== props.sessionId || !activeOp.value) return
-    if (e.type === 'hostopStarted') {
-      if (!activeOp.value.opId) activeOp.value.opId = e.opId
-      return
-    }
-    if (e.opId !== activeOp.value.opId) return
-    if (e.type === 'hostopProgress') {
-      activeOp.value.done = e.done
-      activeOp.value.total = e.total
-    } else if (e.type === 'hostopDone') {
-      finishTracking(e.status, e.message)
-    }
-  })
-  return gen
-}
+// Upload and Delete/Copy progress live in the store, not here: this component
+// is unmounted whenever the Processes tab is selected or the panel is closed,
+// while the work it was showing carries on. See stores/transfers.ts.
+const upload = computed(() => transfers.uploads[props.sessionId])
+const activeOp = computed(() => transfers.ops[props.sessionId])
 
-function finishTracking(status: 'ok' | 'error', message: string) {
-  if (!activeOp.value) return
-  activeOp.value.status = status
-  activeOp.value.message = message
-  unsubscribeOp?.()
-  unsubscribeOp = null
-  void load(currentPath.value)
-  // Keyed on the generation, not the opId: an op that never received a
-  // hostopStarted still has opId "", and so would a newly started one —
-  // comparing those would let this timer clear the *next* op's banner.
-  const gen = opGeneration
-  setTimeout(() => {
-    if (gen === opGeneration) activeOp.value = null
-  }, 1200)
-}
-
-// Poll fallback for the same reason §5.1's list poll exists: the socket
-// being down (or, degenerately, closed and reopened in the exact window
-// between hostopStarted and hostopDone) shouldn't mean the UI never learns
-// an op finished. api.hostopStatus already existed for this but was never
-// called anywhere. One check, after a short grace period — not a repeating
-// poll loop, since the WS path above is the primary one and already
-// covers the fast-completion case this fixes.
-async function pollOpStatusFallback(gen: number, opId: string) {
-  await new Promise((resolve) => setTimeout(resolve, 1500))
-  if (gen !== opGeneration) return
-  if (!activeOp.value || activeOp.value.opId !== opId || activeOp.value.status !== 'running') return
-  try {
-    const status = await api.hostopStatus(props.sessionId, opId)
-    if (status.status === 'running') return
-    finishTracking(status.status === 'error' ? 'error' : 'ok', status.message ?? '')
-  } catch {
-    // Best-effort: the op may already be retired server-side (§5.2's
-    // hostopRetention window), or this poll itself failed transiently —
-    // either way there's nothing more useful to do than leave activeOp as
-    // it is; the WS path is still the primary source of truth.
-  }
-}
-
-onUnmounted(() => unsubscribeOp?.())
+// Refresh the listing when an operation finishes while we are mounted. If it
+// finishes while we are not, onMounted's load() picks up the result anyway.
+watch(
+  () => activeOp.value?.status,
+  (status, before) => {
+    if (before === 'running' && (status === 'ok' || status === 'error')) void load(currentPath.value)
+  },
+)
 
 // Breadcrumbs are derived from currentPath itself — the server's own
 // canonical form of wherever was last listed (§4.10, §6) — rather than a
@@ -161,6 +107,7 @@ async function load(path: string) {
   try {
     const res = await api.listHostFiles(props.sessionId, path)
     currentPath.value = res.path
+    absolutePath.value = res.absolutePath
     entries.value = [...res.entries].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -234,21 +181,11 @@ async function confirmCopy() {
     return
   }
   cancelCopy()
-  // Subscribed before the request is even sent — see startTracking's own
-  // comment for why that ordering, not "after", is what fixes a fast op's
-  // events arriving before a listener existed to catch them.
-  const gen = startTracking('copy', name)
   try {
-    const { opId } = await api.copyHostFile(props.sessionId, src, dst)
-    if (gen !== opGeneration) return
-    if (activeOp.value && !activeOp.value.opId) activeOp.value.opId = opId
-    void pollOpStatusFallback(gen, opId)
+    await transfers.startOp(props.sessionId, 'copy', name, () =>
+      api.copyHostFile(props.sessionId, src, dst),
+    )
   } catch (e) {
-    if (gen === opGeneration) {
-      activeOp.value = null
-      unsubscribeOp?.()
-      unsubscribeOp = null
-    }
     error.value = e instanceof Error ? e.message : String(e)
   }
 }
@@ -263,18 +200,11 @@ function cancelDelete() {
 
 async function confirmDelete(entry: HostDirEntry) {
   confirmingDeleteName.value = null
-  const gen = startTracking('delete', entry.name)
   try {
-    const { opId } = await api.deleteHostFile(props.sessionId, joinPath(currentPath.value, entry.name))
-    if (gen !== opGeneration) return
-    if (activeOp.value && !activeOp.value.opId) activeOp.value.opId = opId
-    void pollOpStatusFallback(gen, opId)
+    await transfers.startOp(props.sessionId, 'delete', entry.name, () =>
+      api.deleteHostFile(props.sessionId, joinPath(currentPath.value, entry.name)),
+    )
   } catch (e) {
-    if (gen === opGeneration) {
-      activeOp.value = null
-      unsubscribeOp?.()
-      unsubscribeOp = null
-    }
     error.value = e instanceof Error ? e.message : String(e)
   }
 }
@@ -293,27 +223,125 @@ async function onFileSelected(e: Event) {
   input.value = '' // allow re-selecting the same file next time
   if (!file) return
 
-  const name = file.name
-  upload.value = { name, loaded: 0, total: file.size, status: 'running' }
   try {
-    await uploadHostFile(props.sessionId, joinPath(currentPath.value, name), file, (loaded, total) => {
-      if (upload.value?.name === name) {
-        upload.value.loaded = loaded
-        upload.value.total = total
-      }
-    })
-    await load(currentPath.value)
-    upload.value = null
+    const stored = await transfers.startUpload(
+      props.sessionId,
+      joinPath(currentPath.value, file.name),
+      file,
+    )
+    // Cancelled uploads leave nothing behind — the server removes its own
+    // staging file — so there is nothing new to list.
+    if (stored) await load(currentPath.value)
   } catch (err) {
-    if (upload.value?.name === name) upload.value.status = 'error'
     error.value = err instanceof Error ? err.message : String(err)
-    // Auto-clear so the toolbar's Upload button (:disabled="!!upload")
-    // isn't stuck disabled forever — same pattern as finishTracking's
-    // activeOp auto-clear below. error.value stays set independently, so
-    // the failure message is still visible after the banner is gone.
+  }
+}
+
+function cancelUpload() {
+  transfers.cancelUpload(props.sessionId)
+}
+
+// Actions for one row, as menu items rather than a strip of icon buttons —
+// see RowActionsMenu for why.
+//
+// "Copy path" means different things per target type, so the items differ.
+// An SSH session's paths are absolute (the target is unsandboxed, and the
+// server resolves them through SFTP's REALPATH), so both an absolute and a
+// current-directory-relative form are meaningful. A local session's paths are
+// relative to the sandbox root and the absolute path on the server is
+// deliberately never exposed by the API — there, one item is all there is,
+// and offering two that produce identical text would be worse than one.
+function menuItems(entry: HostDirEntry): MenuItem[] {
+  const items: MenuItem[] = []
+  if (!entry.isDir) items.push({ key: 'download', label: 'Download', icon: ArrowDownTrayIcon })
+  items.push({ key: 'move', label: 'Move / rename', icon: PencilIcon })
+  items.push({ key: 'copy', label: 'Copy to…', icon: DocumentDuplicateIcon })
+  items.push({ key: 'copy-path', label: 'Copy path', icon: ClipboardIcon })
+  items.push({ key: 'copy-relative', label: 'Copy relative path', icon: ClipboardDocumentIcon })
+  items.push({ key: 'delete', label: 'Delete', icon: TrashIcon, danger: true })
+  return items
+}
+
+function onMenuSelect(entry: HostDirEntry, key: string) {
+  switch (key) {
+    case 'download':
+      // A menu item can't be an <a download>, so trigger the same native
+      // navigation the link did: same URL, same browser download manager.
+      triggerDownload(downloadURL(entry))
+      break
+    case 'move':
+      startMove(entry)
+      break
+    case 'copy':
+      startCopy(entry)
+      break
+    case 'copy-path':
+      copyToClipboard(absoluteFor(entry), entry.name)
+      break
+    case 'copy-relative':
+      void copyRelativeToCwd(entry)
+      break
+    case 'delete':
+      armDelete(entry)
+      break
+  }
+}
+
+function absoluteFor(entry: HostDirEntry): string {
+  return absolutePath.value ? joinPath(absolutePath.value, entry.name) : entry.name
+}
+
+// "Relative" means relative to where the session's shell actually is, not to
+// whatever directory the browser happens to be showing — the point is a path
+// you can paste straight into that shell. The shell moves independently of
+// the browser, so its cwd is fetched at the moment of copying rather than
+// tracked; that also keeps it off the per-second foreground sampler.
+async function copyRelativeToCwd(entry: HostDirEntry) {
+  const target = absoluteFor(entry)
+  try {
+    const { path } = await api.sessionCwd(props.sessionId)
+    copyToClipboard(relativeTo(path, target), entry.name)
+  } catch {
+    // The target could not say where the shell is — a Windows host has no
+    // /proc, and an SSH session whose pid never resolved has nothing to ask.
+    // Copy the absolute path rather than nothing: it is still correct, just
+    // longer than asked for.
+    copyToClipboard(target, entry.name)
+    error.value = 'Session directory unknown — copied the absolute path instead.'
+  }
+}
+
+function triggerDownload(url: string) {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = ''
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+const copied = ref<string | null>(null)
+const copiedFor = ref<string | null>(null)
+
+// Which row should show "Copied": keyed on the entry name rather than the
+// text, since the relative and absolute forms of the same file differ and
+// either may be what was copied.
+function lastCopiedFor(entry: HostDirEntry): string | null {
+  return copiedFor.value === entry.name ? copied.value : null
+}
+
+function copyToClipboard(text: string, forEntry?: string) {
+  if (copyText(text)) {
+    copied.value = text
+    if (forEntry !== undefined) copiedFor.value = forEntry
     setTimeout(() => {
-      if (upload.value?.name === name && upload.value.status === 'error') upload.value = null
-    }, 1200)
+      if (copied.value === text) {
+        copied.value = null
+        copiedFor.value = null
+      }
+    }, 1500)
+  } else {
+    error.value = 'Could not copy to the clipboard.'
   }
 }
 
@@ -366,7 +394,7 @@ watch(
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
-          :disabled="!!upload"
+          :disabled="!!upload || sessionStopped"
           title="Upload a file here"
           @click="pickUploadFile"
         >
@@ -375,7 +403,7 @@ watch(
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
-          :disabled="loading"
+          :disabled="loading || sessionStopped"
           title="Refresh"
           @click="load(currentPath)"
         >
@@ -385,16 +413,30 @@ watch(
     </div>
 
     <div v-if="upload" class="border-b border-slate-800 px-3 py-2 text-xs">
-      <div class="flex items-center justify-between text-slate-400">
+      <div class="flex items-center justify-between gap-2 text-slate-400">
         <span class="truncate">
-          Uploading {{ upload.name }}<template v-if="upload.status === 'error'"> — failed</template>
+          Uploading {{ upload.name
+          }}<template v-if="upload.status === 'error'"> — failed</template
+          ><template v-else-if="upload.status === 'cancelled'"> — cancelled</template>
         </span>
-        <span v-if="upload.total > 0" class="shrink-0 tabular-nums">{{ formatSize(upload.loaded) }}/{{ formatSize(upload.total) }}</span>
+        <div class="flex shrink-0 items-center gap-1">
+          <span v-if="upload.total > 0" class="tabular-nums">{{ formatSize(upload.loaded) }}/{{ formatSize(upload.total) }}</span>
+          <button
+            v-if="upload.status === 'running'"
+            type="button"
+            class="flex h-8 w-8 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-rose-400"
+            aria-label="Cancel upload"
+            title="Cancel upload"
+            @click="cancelUpload"
+          >
+            <XMarkIcon class="h-4 w-4" />
+          </button>
+        </div>
       </div>
       <div class="mt-1 h-1 overflow-hidden rounded-full bg-slate-800">
         <div
           class="h-full rounded-full transition-all"
-          :class="upload.status === 'error' ? 'bg-rose-500' : 'bg-emerald-500'"
+          :class="upload.status === 'running' ? 'bg-emerald-500' : upload.status === 'error' ? 'bg-rose-500' : 'bg-slate-600'"
           :style="{ width: upload.total > 0 ? `${Math.min(100, (upload.loaded / upload.total) * 100)}%` : '0%' }"
         />
       </div>
@@ -418,7 +460,11 @@ watch(
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto">
-      <p v-if="error" class="p-3 text-xs text-rose-400">{{ error }}</p>
+      <p v-if="sessionStopped" class="p-3 text-xs text-slate-500">
+        The session has stopped — its files are not reachable. Restart it from
+        the terminal to browse again.
+      </p>
+      <p v-else-if="error" class="p-3 text-xs text-rose-400">{{ error }}</p>
       <p v-else-if="!loading && entries.length === 0" class="p-3 text-xs text-slate-500">Empty directory.</p>
       <ul v-else class="divide-y divide-slate-800/60">
         <li v-for="entry in entries" :key="entry.name" class="group px-2 py-1.5">
@@ -437,90 +483,79 @@ watch(
             <span v-if="!entry.isDir" class="shrink-0 text-slate-500">{{ entry.isRegular ? formatSize(entry.size) : 'special file' }}</span>
 
             <template v-if="confirmingDeleteName === entry.name">
-              <button type="button" class="rounded bg-rose-600 px-1.5 py-0.5 text-xs text-white hover:bg-rose-500" @click="confirmDelete(entry)">
-                Confirm?
+              <button
+                type="button"
+                class="flex min-h-[2.75rem] items-center rounded bg-rose-600 px-3 text-xs text-white hover:bg-rose-500"
+                @click="confirmDelete(entry)"
+              >
+                Delete
               </button>
-              <button type="button" class="rounded px-1.5 py-0.5 text-xs text-slate-400 hover:bg-slate-800" @click="cancelDelete">
+              <button
+                type="button"
+                class="flex min-h-[2.75rem] items-center rounded px-3 text-xs text-slate-400 hover:bg-slate-800"
+                @click="cancelDelete"
+              >
                 Cancel
               </button>
             </template>
-            <template v-else>
-              <a
-                v-if="!entry.isDir"
-                :href="downloadURL(entry)"
-                download
-                class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
-                title="Download"
-              >
-                <ArrowDownTrayIcon class="h-3 w-3" />
-              </a>
-              <button
-                type="button"
-                class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
-                title="Move / rename"
-                @click="startMove(entry)"
-              >
-                <PencilIcon class="h-3 w-3" />
-              </button>
-              <button
-                type="button"
-                class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
-                title="Copy"
-                :disabled="!!activeOp"
-                :class="{ 'cursor-not-allowed opacity-40': !!activeOp }"
-                @click="startCopy(entry)"
-              >
-                <DocumentDuplicateIcon class="h-3 w-3" />
-              </button>
-              <button
-                type="button"
-                class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-rose-400 group-hover:opacity-100"
-                title="Delete"
-                :disabled="!!activeOp"
-                :class="{ 'cursor-not-allowed opacity-40': !!activeOp }"
-                @click="armDelete(entry)"
-              >
-                <TrashIcon class="h-3 w-3" />
-              </button>
-            </template>
+            <RowActionsMenu
+              v-else
+              :items="menuItems(entry)"
+              :label="entry.name"
+              @select="onMenuSelect(entry, $event)"
+            />
           </div>
+
+          <p v-if="copied !== null && copied === lastCopiedFor(entry)" class="pl-6 text-[11px] text-emerald-400">
+            Copied to clipboard.
+          </p>
+
           <div v-if="movingName === entry.name" class="mt-1 flex items-center gap-1.5 pl-6">
             <input
               v-model="moveTarget"
               type="text"
-              class="min-w-0 flex-1 rounded border border-slate-600 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-100 outline-none focus:border-emerald-500"
+              class="min-w-0 flex-1 rounded border border-slate-600 bg-slate-950 px-1.5 py-1.5 text-xs text-slate-100 outline-none focus:border-emerald-500"
               placeholder="new/path/for/this"
               @keyup.enter="confirmMove"
               @keyup.escape="cancelMove"
             />
             <button
               type="button"
-              class="rounded bg-emerald-600 px-1.5 py-0.5 text-xs text-white hover:bg-emerald-500"
+              class="flex min-h-[2.75rem] items-center rounded bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-500"
               @click="confirmMove"
             >
               Move
             </button>
-            <button type="button" class="rounded px-1.5 py-0.5 text-xs text-slate-400 hover:bg-slate-800" @click="cancelMove">
+            <button
+              type="button"
+              class="flex min-h-[2.75rem] items-center rounded px-3 text-xs text-slate-400 hover:bg-slate-800"
+              @click="cancelMove"
+            >
               Cancel
             </button>
           </div>
+
           <div v-if="copyingName === entry.name" class="mt-1 flex items-center gap-1.5 pl-6">
             <input
               v-model="copyTarget"
               type="text"
-              class="min-w-0 flex-1 rounded border border-slate-600 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-100 outline-none focus:border-emerald-500"
+              class="min-w-0 flex-1 rounded border border-slate-600 bg-slate-950 px-1.5 py-1.5 text-xs text-slate-100 outline-none focus:border-emerald-500"
               placeholder="path/for/the/copy"
               @keyup.enter="confirmCopy"
               @keyup.escape="cancelCopy"
             />
             <button
               type="button"
-              class="rounded bg-emerald-600 px-1.5 py-0.5 text-xs text-white hover:bg-emerald-500"
+              class="flex min-h-[2.75rem] items-center rounded bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-500"
               @click="confirmCopy"
             >
               Copy
             </button>
-            <button type="button" class="rounded px-1.5 py-0.5 text-xs text-slate-400 hover:bg-slate-800" @click="cancelCopy">
+            <button
+              type="button"
+              class="flex min-h-[2.75rem] items-center rounded px-3 text-xs text-slate-400 hover:bg-slate-800"
+              @click="cancelCopy"
+            >
               Cancel
             </button>
           </div>

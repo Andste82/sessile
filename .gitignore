@@ -17,6 +17,11 @@
 *.db-wal
 *.db-shm
 
+# Machine-specific helper scripts: host paths, container names, fixed IPs.
+# Useful locally, meaningless in the repo — `make docker-ubuntu` and the
+# compose file are the portable equivalents.
+/dev-redeploy.sh
+
 # Local env / editor
 .env
 .env.local

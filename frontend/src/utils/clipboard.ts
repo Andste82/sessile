@@ -92,3 +92,48 @@ export function isApplePlatform(nav: {
 }): boolean {
   return /Mac|iPhone|iPad|iPod/.test(nav.platform || nav.userAgent || '')
 }
+
+// copyText puts text on the clipboard from inside a user gesture, and reports
+// whether it got as far as trying.
+//
+// The async Clipboard API needs a secure context, which a self-hosted
+// deployment reached over plain http on a LAN address is not — the same
+// constraint that makes --insecure-cookies necessary there. So the choice is
+// made synchronously: an async fallback would land outside the user gesture,
+// where the legacy path is itself refused.
+//
+// Unlike useTerminal's copySelection, which stages text in xterm's own focused
+// textarea, this has no element to borrow. It creates one, keeps it off-screen
+// but focusable (display:none or visibility:hidden would make the selection
+// uncopyable), and removes it again.
+export function copyText(text: string): boolean {
+  if (!text) return false
+
+  const clip = window.isSecureContext ? navigator.clipboard : null
+  if (clip?.writeText) {
+    clip.writeText(text).catch(() => {
+      // Permission denied. Nothing useful to do from here — the caller has
+      // already reported the attempt as made, and retrying would need another
+      // gesture anyway.
+    })
+    return true
+  }
+
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  // Off-screen rather than hidden: a textarea that isn't rendered cannot hold
+  // a selection, and execCommand('copy') copies the selection.
+  ta.style.position = 'fixed'
+  ta.style.top = '-1000px'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  try {
+    ta.select()
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    ta.remove()
+  }
+}

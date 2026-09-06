@@ -101,6 +101,45 @@ func (s *Server) getProcessTree(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"rootPid": rootPID, "scoped": scoped, "processes": out})
 }
 
+// getSessionCwd reports where the session's shell currently is, as an
+// absolute path on the target. The file browser uses it to express a file's
+// location relative to the session rather than relative to whatever directory
+// happens to be on screen.
+//
+// The pid differs by target type and only the caller knows which is meant: a
+// local session's shell pid comes from the kernel, an SSH session's from
+// SessionRootPID. 404 when it can't be determined — a Windows target has no
+// /proc, and an SSH session whose pid never resolved has nothing to ask about.
+// "Unknown" is reported as unknown; it is never approximated.
+func (s *Server) getSessionCwd(c *gin.Context) {
+	userID := c.MustGet(userIDKey).(string)
+	ops, info, err := s.manager.HostOps(c.Param("id"), userID)
+	if err != nil {
+		s.respondSessionError(c, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
+	defer cancel()
+
+	pid := info.PID
+	if info.TargetType == session.TargetSSH {
+		resolved, ok := ops.SessionRootPID(ctx)
+		if !ok {
+			respondError(c, http.StatusNotFound, CodeNotFound, "session working directory is unknown")
+			return
+		}
+		pid = resolved
+	}
+
+	cwd, ok := ops.Cwd(ctx, pid)
+	if !ok {
+		respondError(c, http.StatusNotFound, CodeNotFound, "session working directory is unknown")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"path": cwd})
+}
+
 // dirEntryJSON mirrors hostops.DirEntry for the wire (§6, §4.10).
 type dirEntryJSON struct {
 	Name      string `json:"name"`
@@ -223,7 +262,15 @@ func (s *Server) listHostFiles(c *gin.Context) {
 	for _, e := range entries {
 		out = append(out, toDirEntryJSON(e))
 	}
-	c.JSON(http.StatusOK, gin.H{"path": displayPath, "entries": out})
+	// absolutePath is the same directory as "path", but as the target itself
+	// names it. For SSH the two are already identical; for a local session
+	// "path" is relative to the workspace root and this is the real path on
+	// the server. The file browser needs it to offer "copy path" that means
+	// the same thing on both target types — and it discloses nothing, since
+	// a local session's shell is not confined to the workspace either (it is
+	// a starting directory, not a jail: terminal/pty.go sets cmd.Dir and
+	// nothing else).
+	c.JSON(http.StatusOK, gin.H{"path": displayPath, "absolutePath": resolvedPath, "entries": out})
 }
 
 type moveFileBody struct {

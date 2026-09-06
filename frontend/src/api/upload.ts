@@ -2,14 +2,39 @@
 // client.ts's fetch-based request(): fetch has no upload-progress event
 // (only XHR's upload.onprogress does), and a real progress bar for a
 // file upload is the whole point of using this instead of a plain PUT.
+
+/** Thrown when an upload ends because abort() was called, not because it failed. */
+export class UploadAbortedError extends Error {
+  constructor() {
+    super('upload cancelled')
+    this.name = 'UploadAbortedError'
+  }
+}
+
+/**
+ * A started upload. `promise` settles when the transfer does; `abort` stops it.
+ *
+ * Aborting the request *is* the cancel operation — there is no cancel endpoint
+ * and none is needed. When the request body dies mid-transfer the server's
+ * io.Copy fails, its error path removes the `.part` staging file (through a
+ * context.WithoutCancel, so the cleanup survives the cancelled request), and no
+ * partial file is left at the destination.
+ */
+export interface UploadHandle {
+  promise: Promise<void>
+  abort: () => void
+}
+
 export function uploadHostFile(
   sessionId: string,
   path: string,
   file: File | Blob,
   onProgress?: (loaded: number, total: number) => void,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
+): UploadHandle {
+  const xhr = new XMLHttpRequest()
+  let aborted = false
+
+  const promise = new Promise<void>((resolve, reject) => {
     xhr.open('POST', `/api/sessions/${sessionId}/hostops/upload?path=${encodeURIComponent(path)}`)
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress?.(e.loaded, e.total)
@@ -28,9 +53,20 @@ export function uploadHostFile(
       }
       reject(new Error(message))
     }
-    xhr.onerror = () => reject(new Error('upload failed'))
+    // abort() fires this too, so it has to tell the two apart: a cancelled
+    // upload is not a failed one and must not be reported as an error.
+    xhr.onerror = () => reject(aborted ? new UploadAbortedError() : new Error('upload failed'))
+    xhr.onabort = () => reject(new UploadAbortedError())
     xhr.send(file)
   })
+
+  return {
+    promise,
+    abort: () => {
+      aborted = true
+      xhr.abort()
+    },
+  }
 }
 
 /** Build the download URL for one file — a plain same-origin GET the

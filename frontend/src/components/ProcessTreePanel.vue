@@ -1,11 +1,27 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ArrowPathIcon } from '@heroicons/vue/20/solid'
 import { api, isUnsupportedPlatform } from '@/api/client'
 import type { Process } from '@/api/types'
+import { useSessionsStore } from '@/stores/sessions'
 import ProcessTreeNode from './ProcessTreeNode.vue'
 
 const props = defineProps<{ sessionId: string }>()
+
+const sessions = useSessionsStore()
+
+// Same reason as FileExplorerPanel: the panel outlives the session. A shell
+// that exits leaves the tree it last showed on screen, and a restart has to
+// be noticed here — the panel is already mounted, so onMounted will not run
+// again.
+const sessionStopped = computed(() => sessions.byId(props.sessionId)?.status === 'stopped')
+
+watch(
+  () => sessions.byId(props.sessionId)?.status,
+  (now, before) => {
+    if (before === 'stopped' && now === 'running') void load()
+  },
+)
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -73,7 +89,7 @@ watch(() => props.sessionId, load)
         <button
           type="button"
           class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
-          :disabled="loading"
+          :disabled="loading || sessionStopped"
           title="Refresh"
           @click="load"
         >
@@ -90,7 +106,11 @@ watch(() => props.sessionId, load)
     </p>
 
     <div class="min-h-0 flex-1 overflow-y-auto p-2">
-      <p v-if="unsupported" class="p-3 text-xs text-slate-500">
+      <p v-if="sessionStopped" class="p-3 text-xs text-slate-500">
+        The session has stopped — it has no processes. Restart it from the
+        terminal to see them again.
+      </p>
+      <p v-else-if="unsupported" class="p-3 text-xs text-slate-500">
         This target's OS doesn't have process-tree support yet.
       </p>
       <p v-else-if="error" class="p-3 text-xs text-rose-400">{{ error }}</p>
