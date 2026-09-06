@@ -48,10 +48,9 @@ type Config struct {
 	// startup. Zero keeps them forever, which is the default.
 	SessionRetention time.Duration
 	LogLevel         string // slog level: debug|info|warn|error
-	Dev              bool   // dev mode: relaxes WS origin check for the Vite proxy
 	AllowOrigin      string // extra allowed WS origin (e.g. http://localhost:5173)
-	// InsecureCookies drops the session cookie's Secure attribute outside
-	// --dev too. Browsers refuse to store a Secure cookie from a plain
+	// InsecureCookies drops the session cookie's Secure attribute.
+	// Browsers refuse to store a Secure cookie from a plain
 	// http:// origin that isn't localhost, so following the README's own
 	// `docker run -p 8080:8080 ...` example on a LAN box logs in (200) and
 	// then silently never actually logs in — the cookie never lands, and the
@@ -72,6 +71,19 @@ var errRemovedDB = errors.New(
 // the admin account in a multi-user app, and its access is now gated at
 // runtime by config.yml's allowLocalHost (PROJECT_PLAN.md §9) rather than
 // being the server's only mode.
+// errRemovedDev explains where --dev went. It bundled two unrelated
+// relaxations behind one name that described neither precisely: it defaulted
+// --allow-origin to the Vite dev server, and it dropped the session cookie's
+// Secure attribute. The second is the one people reached for --dev to get,
+// and reaching for a flag called "dev mode" to fix a production deployment
+// over plain http is exactly the confusion --insecure-cookies exists to
+// avoid. Both effects remain available, each under the flag that names it.
+var errRemovedDev = errors.New(
+	"--dev was removed: it bundled two settings that are now separate — " +
+		"--insecure-cookies drops the session cookie's Secure attribute, and " +
+		"--allow-origin=http://localhost:5173 accepts the Vite dev server's " +
+		"origin for WebSocket upgrades")
+
 var errRemovedRoot = errors.New(
 	"--root was renamed to --workspace-dir (same meaning: the local-host " +
 		"sandbox directory; access to it is now gated by config.yml's allowLocalHost)")
@@ -109,7 +121,6 @@ func Parse(args []string) (*Config, error) {
 	sessionRetention := fs.String("session-retention", env("TSM_SESSION_RETENTION", "0"),
 		"discard stopped sessions idle longer than this on startup, as a Go duration (e.g. 720h); 0 keeps them forever")
 	logLevel := fs.String("log-level", env("TSM_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
-	dev := fs.Bool("dev", envBool("TSM_DEV", false), "dev mode (relaxes WS origin check)")
 	allowOrigin := fs.String("allow-origin", env("TSM_ALLOW_ORIGIN", ""), "additional allowed WebSocket origin")
 	insecureCookies := fs.Bool("insecure-cookies", envBool("TSM_INSECURE_COOKIES", false),
 		"drop the session cookie's Secure attribute so login works over plain HTTP on a non-localhost address (only for a trusted network without TLS)")
@@ -125,6 +136,9 @@ func Parse(args []string) (*Config, error) {
 	}
 	if removedFlag(args, "root") {
 		return nil, errRemovedRoot
+	}
+	if removedFlag(args, "dev") {
+		return nil, errRemovedDev
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -201,10 +215,6 @@ func Parse(args []string) (*Config, error) {
 		return nil, fmt.Errorf("shell allowlist is empty")
 	}
 
-	if *dev && *allowOrigin == "" {
-		*allowOrigin = "http://localhost:5173"
-	}
-
 	return &Config{
 		Addr:         *addr,
 		DataDir:      dir,
@@ -216,7 +226,6 @@ func Parse(args []string) (*Config, error) {
 		SessionRetention: retention,
 
 		LogLevel:    *logLevel,
-		Dev:         *dev,
 		AllowOrigin: *allowOrigin,
 
 		InsecureCookies: *insecureCookies,

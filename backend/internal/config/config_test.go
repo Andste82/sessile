@@ -125,6 +125,45 @@ func TestRemovedRootFlagExplainsItself(t *testing.T) {
 	}
 }
 
+// --dev bundled two unrelated relaxations under a name that described
+// neither: it defaulted --allow-origin to the Vite dev server, and it
+// dropped the session cookie's Secure attribute. The second is what people
+// actually reached for it to get — including on production deployments over
+// plain http, where "dev mode" is the last flag anyone should have to turn
+// on. Both effects survive under the flags that name them, and the error has
+// to point at both so a script carrying --dev is told exactly what to
+// replace it with.
+func TestRemovedDevFlagExplainsItself(t *testing.T) {
+	for _, args := range [][]string{
+		{"--dev"},
+		{"--dev=true"},
+		{"-dev"},
+	} {
+		_, err := Parse(args)
+		if err == nil {
+			t.Fatalf("Parse(%v) succeeded, want an error", args)
+		}
+		for _, want := range []string{"insecure-cookies", "allow-origin"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("Parse(%v) error = %q, want it to name --%s", args, err, want)
+			}
+		}
+	}
+}
+
+// --allow-origin has to be given explicitly now: it used to be filled in
+// with the Vite dev server's origin whenever --dev was passed, and dropping
+// that flag must not leave a hidden default behind.
+func TestAllowOriginHasNoImplicitDefault(t *testing.T) {
+	cfg, err := Parse([]string{"--data-dir", t.TempDir()})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.AllowOrigin != "" {
+		t.Errorf("AllowOrigin = %q, want empty unless asked for", cfg.AllowOrigin)
+	}
+}
+
 // Retention deletes sessions that can now be restarted with their scrollback
 // and history, so the off switch has to be the default and a typo has to be an
 // error rather than a silently different window.
@@ -210,7 +249,11 @@ func TestHelpListsFlags(t *testing.T) {
 		t.Fatalf("Parse(--help) error = %v, want flag.ErrHelp", err)
 	}
 	usage := buf.String()
-	for _, want := range []string{"-addr", "-data-dir", "-workspace-dir", "-shells", "-version", "sessile"} {
+	for _, want := range []string{
+		"-addr", "-data-dir", "-workspace-dir", "-shells", "-version",
+		"-insecure-cookies", "-allow-origin", "-buffer-size",
+		"-session-retention", "-log-level", "sessile",
+	} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage text missing %q; got:\n%s", want, usage)
 		}

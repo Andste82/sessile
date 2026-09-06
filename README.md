@@ -142,7 +142,7 @@ Go 1.25+ is required.
 Run the backend and the Vite dev server in two terminals:
 
 ```bash
-make dev-backend     # Go backend on :8080, state under ./sandbox/data, --dev
+make dev-backend     # Go backend on :8080, state under ./sandbox/data
 make dev-frontend    # Vite dev server on :5173, proxying /api and /ws to :8080
 ```
 
@@ -251,17 +251,19 @@ Every option is a CLI flag with an environment-variable fallback.
 | `--addr` | `TSM_ADDR` | `:8080` |
 | `--data-dir` | `TSM_DATA_DIR` | `./data` (Docker: `/config`) — `config.yml`, `users.yml`, `users/`, `sessions.db`, `scrollback/`, `history/` |
 | `--workspace-dir` | `TSM_WORKSPACE_DIR` | `<data-dir>/workspace` (Docker: `/workspace`) — the local-host sandbox root, reachable only when `allowLocalHost` is on |
-| `--shells` | `TSM_SHELLS` | `bash,zsh,fish` — local-host shell allowlist only; irrelevant unless `allowLocalHost` is on |
+| `--shells` | `TSM_SHELLS` | `bash,zsh,fish` (Docker: `bash`, the only shell in the image) — local-host shell allowlist only; irrelevant unless `allowLocalHost` is on |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` (bytes) |
 | `--session-retention` | `TSM_SESSION_RETENTION` | `0` (keep forever); a Go duration, e.g. `720h`, not `30d` |
 | `--log-level` | `TSM_LOG_LEVEL` | `info` |
 | `--allow-origin` | `TSM_ALLOW_ORIGIN` | *(none)* — one additional origin accepted for WebSocket upgrades |
-| `--dev` | `TSM_DEV` | `false` — relaxes the WebSocket origin check, for the Vite dev server |
+| `--insecure-cookies` | `TSM_INSECURE_COOKIES` | `false` — drops the session cookie's `Secure` attribute. Needed to log in at all when serving over plain HTTP on anything but `localhost`: browsers silently discard a `Secure` cookie from an `http://` origin, so login returns 200 and the app bounces straight back to the login form with no error. The real fix is HTTPS. |
 
-`--root` has been retired in favor of `--data-dir`/`--workspace-dir` and is
-rejected with a pointer to the replacement flags rather than silently
-ignored. `--version` prints the version and exits; `--help` lists every
-flag.
+`--root`, `--db` and `--dev` have been retired, each rejected with a pointer
+to its replacement rather than silently ignored: `--root` became
+`--workspace-dir`, `--db` became `--data-dir`, and `--dev` split into the two
+flags it used to bundle — `--insecure-cookies` and
+`--allow-origin=http://localhost:5173`. `--version` prints the version and
+exits; `--help` lists every flag.
 
 Everything server- and account-level lives in hand-editable YAML under
 `--data-dir`, not behind a flag:
@@ -389,7 +391,7 @@ every push and pull request — see
 - **Auth:** username + bcrypt-hashed password, server-side session tokens in
   an **in-memory** store with a **sliding 30-day TTL** (renewed on every
   authenticated request), delivered via an `HttpOnly`, `SameSite=Lax` cookie
-  (`Secure` unless `--dev`). A server restart logs everyone out — accepted,
+  (`Secure` unless `--insecure-cookies`). A server restart logs everyone out — accepted,
   since nothing about it is persisted by design.
 - **Every session and host lookup is scoped to the authenticated user** — a
   client-supplied id you don't own is indistinguishable from one that

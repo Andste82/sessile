@@ -28,7 +28,7 @@ echo "== building server + wsclient =="
 
 echo "== starting server (data-dir=$DATA_DIR, workspace-dir=$WORKSPACE_DIR) =="
 /tmp/sessile-wstest-server --data-dir="$DATA_DIR" --workspace-dir="$WORKSPACE_DIR" --addr="$ADDR" \
-  --shells="$SHELL_NAME,bash" --dev >/tmp/sessile-wstest.log 2>&1 &
+  --shells="$SHELL_NAME,bash" --insecure-cookies >/tmp/sessile-wstest.log 2>&1 &
 SRV=$!
 cleanup() { kill "$SRV" 2>/dev/null || true; rm -rf "$DATA_DIR" "$WORKSPACE_DIR" "$COOKIES"; }
 trap cleanup EXIT

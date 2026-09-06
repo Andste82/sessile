@@ -71,7 +71,7 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
 
 ## Commands
 ```bash
-make dev-backend    # go run ./backend/cmd/server --data-dir=./sandbox/data --dev
+make dev-backend    # backend on :8080 (--insecure-cookies --allow-origin=:5173)
 make dev-frontend   # vite dev server on :5173, proxies to :8080
 make test           # go vet + go test ./... + vitest
 make build           # frontend build + embedded single Go binary

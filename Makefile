@@ -33,7 +33,7 @@ help: ## Show this help
 
 dev-backend: ## Run the Go backend against ./sandbox/data in dev mode
 	@mkdir -p $(DATA_DIR)
-	cd backend && go run ./cmd/server --data-dir=$(DATA_DIR) --dev
+	cd backend && go run ./cmd/server --data-dir=$(DATA_DIR) --insecure-cookies --allow-origin=http://localhost:5173
 
 dev-frontend: ## Run the Vite dev server (proxies to :8080)
 	cd frontend && npm run dev
