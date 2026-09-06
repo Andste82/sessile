@@ -251,7 +251,7 @@ Every option is a CLI flag with an environment-variable fallback.
 | `--addr` | `TSM_ADDR` | `:8080` |
 | `--data-dir` | `TSM_DATA_DIR` | `./data` (Docker: `/config`) — `config.yml`, `users.yml`, `users/`, `sessions.db`, `scrollback/`, `history/` |
 | `--workspace-dir` | `TSM_WORKSPACE_DIR` | `<data-dir>/workspace` (Docker: `/workspace`) — the local-host sandbox root, reachable only when `allowLocalHost` is on |
-| `--shells` | `TSM_SHELLS` | `bash,zsh,fish` (Docker: `bash`, the only shell in the image) — local-host shell allowlist only; irrelevant unless `allowLocalHost` is on |
+| `--shells` | `TSM_SHELLS` | `bash,zsh,fish` — local-host shell allowlist only; irrelevant unless `allowLocalHost` is on |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` (bytes) |
 | `--session-retention` | `TSM_SESSION_RETENTION` | `0` (keep forever); a Go duration, e.g. `720h`, not `30d` |
 | `--log-level` | `TSM_LOG_LEVEL` | `info` |
