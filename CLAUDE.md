@@ -1,6 +1,6 @@
 # CLAUDE.md — Terminal Host Session Service
 
-Read `docs/PROJECT_PLAN.md` first. It is the single source of truth. This file is
+Read `docs/dev/PROJECT_PLAN.md` first. It is the single source of truth. This file is
 operational guidance for working in this repo.
 
 ## What this project is

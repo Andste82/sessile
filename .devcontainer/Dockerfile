@@ -95,7 +95,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
 # Chromium driven over CDP produces the trusted kind —
 # `Input.imeSetComposition` and `Input.insertText` are a real composition — and
 # that is how issue #82 was reproduced without a phone. See
-# docs/mobile-checklist.md for the recipe.
+# docs/dev/mobile-checklist.md for the recipe.
 #
 # Installed globally, and deliberately not in frontend/package.json: §2 of the
 # plan rules out an E2E framework as a project dependency, and this is a tool
