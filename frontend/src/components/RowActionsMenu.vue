@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch, type Component } from 'vue'
 import { EllipsisVerticalIcon } from '@heroicons/vue/20/solid'
 import { nextMenuIndex, shouldDropUp } from '@/utils/menu'
 
@@ -14,10 +14,20 @@ import { nextMenuIndex, shouldDropUp } from '@/utils/menu'
 //
 // So the button is deliberately large and always rendered, and choosing an
 // action takes a second, separate tap on a full-width row.
+//
+// Large is about the *hit area*, not the drawing: the glyph is sized to sit
+// quietly next to a text-xs filename, while the button around it keeps its 44
+// px. The negative vertical margin lets that hit area overhang the row instead
+// of setting the row's height — otherwise every row in the list would grow to
+// 44 px to accommodate a control that is only occasionally used.
 
 export interface MenuItem {
   key: string
   label: string
+  /** Leading glyph. The same icons the row used to show inline, kept so the
+   *  actions stay recognisable at a glance rather than becoming a wall of
+   *  text. */
+  icon?: Component
   /** Renders in red. For actions that destroy something. */
   danger?: boolean
   disabled?: boolean
@@ -136,14 +146,14 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
     <button
       ref="trigger"
       type="button"
-      class="flex h-11 w-11 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-emerald-500"
+      class="-my-3 flex h-11 w-11 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-emerald-500"
       :aria-label="`Actions for ${label}`"
       aria-haspopup="menu"
       :aria-expanded="open"
       @click="toggle"
       @keydown="onKeydown"
     >
-      <EllipsisVerticalIcon class="h-5 w-5" />
+      <EllipsisVerticalIcon class="h-3.5 w-3.5" />
     </button>
 
     <div
@@ -160,13 +170,14 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
         type="button"
         role="menuitem"
         :disabled="item.disabled"
-        class="flex min-h-[2.75rem] w-full items-center px-4 text-left text-sm disabled:cursor-default disabled:opacity-40"
+        class="flex min-h-[2.75rem] w-full items-center gap-2.5 px-4 text-left text-sm disabled:cursor-default disabled:opacity-40"
         :class="[
           item.danger ? 'text-rose-400 hover:bg-rose-500/10' : 'text-slate-200 hover:bg-slate-800',
           enabledItems[activeIndex]?.key === item.key ? (item.danger ? 'bg-rose-500/10' : 'bg-slate-800') : '',
         ]"
         @click="choose(item)"
       >
+        <component :is="item.icon" v-if="item.icon" class="h-4 w-4 shrink-0 opacity-70" />
         {{ item.label }}
       </button>
     </div>

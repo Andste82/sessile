@@ -6,6 +6,12 @@ import {
   ArrowPathIcon,
   ArrowUpIcon,
   ArrowUpTrayIcon,
+  ArrowDownTrayIcon,
+  PencilIcon,
+  DocumentDuplicateIcon,
+  ClipboardIcon,
+  ClipboardDocumentIcon,
+  TrashIcon,
   XMarkIcon,
 } from '@heroicons/vue/20/solid'
 import { api } from '@/api/client'
@@ -221,12 +227,18 @@ function cancelUpload() {
 // and offering two that produce identical text would be worse than one.
 function menuItems(entry: HostDirEntry): MenuItem[] {
   const items: MenuItem[] = []
-  if (!entry.isDir) items.push({ key: 'download', label: 'Download' })
-  items.push({ key: 'move', label: 'Move / rename' })
-  items.push({ key: 'copy', label: 'Copy to…' })
-  items.push({ key: 'copy-path', label: isAbsolute.value ? 'Copy absolute path' : 'Copy path' })
-  if (isAbsolute.value) items.push({ key: 'copy-relative', label: 'Copy relative path' })
-  items.push({ key: 'delete', label: 'Delete', danger: true })
+  if (!entry.isDir) items.push({ key: 'download', label: 'Download', icon: ArrowDownTrayIcon })
+  items.push({ key: 'move', label: 'Move / rename', icon: PencilIcon })
+  items.push({ key: 'copy', label: 'Copy to…', icon: DocumentDuplicateIcon })
+  items.push({
+    key: 'copy-path',
+    label: isAbsolute.value ? 'Copy absolute path' : 'Copy path',
+    icon: ClipboardIcon,
+  })
+  if (isAbsolute.value) {
+    items.push({ key: 'copy-relative', label: 'Copy relative path', icon: ClipboardDocumentIcon })
+  }
+  items.push({ key: 'delete', label: 'Delete', icon: TrashIcon, danger: true })
   return items
 }
 
