@@ -170,3 +170,34 @@ func testWrapWithPIDRecordingAgainstRealLoginShell(t *testing.T, loginShell stri
 		t.Fatalf("pid file contents = %q, not a valid pid", pidBytes)
 	}
 }
+
+// TestWrapWithPIDRecordingSkipsWindowsWithoutTargetOS pins the case that
+// gating on targetOS alone reintroduced. hosts.TargetOS is informational,
+// nothing validates it, and the host dialog defaults it to "" — so a
+// Windows host running powershell reaches Start with targetOS "". It must
+// still be recognised as Windows from terminalType, or Win32-OpenSSH gets
+// POSIX shell syntax through cmd.exe and the session never starts.
+func TestWrapWithPIDRecordingSkipsWindowsWithoutTargetOS(t *testing.T) {
+	for _, terminalType := range []string{"cmd", "powershell"} {
+		for _, targetOS := range []string{"", "windows"} {
+			path, wrapped := wrapWithPIDRecording(targetOS, terminalType, "powershell.exe -NoLogo")
+			if path != "" {
+				t.Errorf("targetOS=%q terminalType=%q: pid file %q, want none", targetOS, terminalType, path)
+			}
+			if wrapped != "powershell.exe -NoLogo" {
+				t.Errorf("targetOS=%q terminalType=%q: command rewritten to %q, want it untouched",
+					targetOS, terminalType, wrapped)
+			}
+		}
+	}
+
+	// The complementary half still has to work: a Windows host whose
+	// terminal type says nothing (a CustomCommand) is caught by targetOS.
+	if path, _ := wrapWithPIDRecording("windows", "custom", "powershell.exe -File x.ps1"); path != "" {
+		t.Errorf("windows/custom: pid file %q, want none", path)
+	}
+	// ...and a POSIX target is still wrapped.
+	if path, _ := wrapWithPIDRecording("", "bash", "bash"); path == "" {
+		t.Error("linux/bash: no pid file, want one")
+	}
+}
