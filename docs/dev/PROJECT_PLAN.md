@@ -1734,7 +1734,7 @@ backend → UI shows reconnecting; restart → session shows stopped.
 ### M5 — Tabs, responsive/mobile UI, dark mode polish
 Tab bar, bottom nav <640 px, touch targets, sidebar states, favicon/title.
 ✅ *Verify:* Chrome device-mode iPhone + iPad pass a manual checklist
-(documented in `docs/mobile-checklist.md`).
+(documented in `docs/dev/mobile-checklist.md`).
 
 ### M6 — Docker + release
 Multi-stage Dockerfile, compose file, README (features, screenshots later,
