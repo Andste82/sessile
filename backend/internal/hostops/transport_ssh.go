@@ -40,9 +40,25 @@ type sshTransport struct {
 	// readPIDFile's retry loop) and reusing it avoids repeating that work
 	// on every ProcessTree/Foreground call against a session that's already
 	// been resolved.
-	rootPIDMu    sync.Mutex
-	rootPID      int
-	rootPIDFound bool
+	//
+	// rootPIDMu is held across the whole resolution, not just around the
+	// fields: it makes the lookup single-flight. Two first-time callers
+	// are the normal case, not a rarity — the 1 Hz foreground sampler and
+	// a process-tree request in the session's first second — and letting
+	// both resolve concurrently is how the pidfile came to be deleted out
+	// from under the second one (cleanupPIDFile used to run inside
+	// readPIDFile, before the result was cached).
+	//
+	// rootPIDMissUntil caches the *negative* answer for a while. Only
+	// caching successes meant a target that can never resolve (no
+	// writable /tmp, a failed preamble, a Windows target) re-ran the full
+	// retry loop — pidFileRetries round trips plus ~1s of sleeps — on
+	// every single sampler tick, forever, whether or not anyone was
+	// looking at the panel.
+	rootPIDMu        sync.Mutex
+	rootPID          int
+	rootPIDFound     bool
+	rootPIDMissUntil time.Time
 }
 
 // sshTransport satisfies SessionAware (SessionRootPID + Foreground below),
@@ -320,6 +336,13 @@ func (t *sshFileTransport) Copy(ctx context.Context, src, dst string) error {
 const (
 	pidFileRetries    = 10
 	pidFileRetryDelay = 100 * time.Millisecond
+
+	// rootPIDMissBackoff is how long a failed resolution is remembered
+	// before it is attempted again. Long enough that the 1 Hz sampler
+	// stops paying for it every tick, short enough that a target which
+	// starts resolving later (a slow preamble, a remounted /tmp) is still
+	// picked up within a minute.
+	rootPIDMissBackoff = 60 * time.Second
 )
 
 // SessionRootPID finds this SSH session's own PID on the target, trying
@@ -340,20 +363,26 @@ const (
 //     why (1) exists.
 func (t *sshTransport) SessionRootPID(ctx context.Context) (int, bool) {
 	t.rootPIDMu.Lock()
+	defer t.rootPIDMu.Unlock()
+
 	if t.rootPIDFound {
-		pid := t.rootPID
-		t.rootPIDMu.Unlock()
-		return pid, true
+		return t.rootPID, true
 	}
-	t.rootPIDMu.Unlock()
+	if time.Now().Before(t.rootPIDMissUntil) {
+		return 0, false // resolved unsuccessfully recently — don't retry yet
+	}
 
 	pid, ok := t.resolveSessionRootPID(ctx)
 	if !ok {
+		t.rootPIDMissUntil = time.Now().Add(rootPIDMissBackoff)
 		return 0, false
 	}
-	t.rootPIDMu.Lock()
 	t.rootPID, t.rootPIDFound = pid, true
-	t.rootPIDMu.Unlock()
+
+	// Only now that the answer is cached is the file safe to remove: it is
+	// never read again, and no concurrent caller can still need it (they
+	// are queued on rootPIDMu and will take the cached value).
+	t.cleanupPIDFile()
 	return pid, true
 }
 
@@ -372,7 +401,12 @@ func (t *sshTransport) readPIDFile(ctx context.Context) (int, bool) {
 		res, err := t.Exec(ctx, line)
 		if err == nil && res.ExitCode == 0 {
 			if pid, atoiErr := strconv.Atoi(strings.TrimSpace(string(res.Stdout))); atoiErr == nil && pid > 0 {
-				t.cleanupPIDFile()
+				// Deliberately not cleaning up here: SessionRootPID does it
+				// once the value is cached. Removing it at this point left a
+				// window in which a concurrent first-time caller found the
+				// file already gone and fell through to the ss fallback,
+				// which usually resolves nothing — so that request silently
+				// got the whole host instead of its own session's tree.
 				return pid, true
 			}
 		}
