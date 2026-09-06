@@ -45,6 +45,14 @@ interface ActiveOp {
 const activeOp = ref<ActiveOp | null>(null)
 let unsubscribeOp: (() => void) | null = null
 
+// opGeneration identifies "the op the panel is currently showing". Every
+// async continuation below (an await'd response, a WS event, the poll
+// fallback, an error handler) captures the generation it started in and
+// bails when it no longer matches — because by the time it runs, the user
+// may have started a different op, and without the check a stale
+// continuation writes into, or tears down, a newer op's state.
+let opGeneration = 0
+
 // startTracking subscribes *before* the request that starts the op is even
 // issued — a fast local Delete/Copy can complete (hostopStarted,
 // hostopProgress, hostopDone all published) before an await on the HTTP
@@ -58,10 +66,12 @@ let unsubscribeOp: (() => void) | null = null
 // started, here's its id", arriving no later than the HTTP response and
 // often earlier, so there's no need to already know the opId to start
 // listening for it.
-function startTracking(kind: 'delete' | 'copy', entryName: string) {
+function startTracking(kind: 'delete' | 'copy', entryName: string): number {
   unsubscribeOp?.()
+  const gen = ++opGeneration
   activeOp.value = { opId: '', kind, entryName, done: 0, total: 0, status: 'running', message: '' }
   unsubscribeOp = onHostopEvent((e) => {
+    if (gen !== opGeneration) return
     if (e.sessionId !== props.sessionId || !activeOp.value) return
     if (e.type === 'hostopStarted') {
       if (!activeOp.value.opId) activeOp.value.opId = e.opId
@@ -75,6 +85,7 @@ function startTracking(kind: 'delete' | 'copy', entryName: string) {
       finishTracking(e.status, e.message)
     }
   })
+  return gen
 }
 
 function finishTracking(status: 'ok' | 'error', message: string) {
@@ -84,9 +95,12 @@ function finishTracking(status: 'ok' | 'error', message: string) {
   unsubscribeOp?.()
   unsubscribeOp = null
   void load(currentPath.value)
-  const opId = activeOp.value.opId
+  // Keyed on the generation, not the opId: an op that never received a
+  // hostopStarted still has opId "", and so would a newly started one —
+  // comparing those would let this timer clear the *next* op's banner.
+  const gen = opGeneration
   setTimeout(() => {
-    if (activeOp.value?.opId === opId) activeOp.value = null
+    if (gen === opGeneration) activeOp.value = null
   }, 1200)
 }
 
@@ -97,8 +111,9 @@ function finishTracking(status: 'ok' | 'error', message: string) {
 // called anywhere. One check, after a short grace period — not a repeating
 // poll loop, since the WS path above is the primary one and already
 // covers the fast-completion case this fixes.
-async function pollOpStatusFallback(opId: string) {
+async function pollOpStatusFallback(gen: number, opId: string) {
   await new Promise((resolve) => setTimeout(resolve, 1500))
+  if (gen !== opGeneration) return
   if (!activeOp.value || activeOp.value.opId !== opId || activeOp.value.status !== 'running') return
   try {
     const status = await api.hostopStatus(props.sessionId, opId)
@@ -222,15 +237,18 @@ async function confirmCopy() {
   // Subscribed before the request is even sent — see startTracking's own
   // comment for why that ordering, not "after", is what fixes a fast op's
   // events arriving before a listener existed to catch them.
-  startTracking('copy', name)
+  const gen = startTracking('copy', name)
   try {
     const { opId } = await api.copyHostFile(props.sessionId, src, dst)
+    if (gen !== opGeneration) return
     if (activeOp.value && !activeOp.value.opId) activeOp.value.opId = opId
-    void pollOpStatusFallback(opId)
+    void pollOpStatusFallback(gen, opId)
   } catch (e) {
-    activeOp.value = null
-    unsubscribeOp?.()
-    unsubscribeOp = null
+    if (gen === opGeneration) {
+      activeOp.value = null
+      unsubscribeOp?.()
+      unsubscribeOp = null
+    }
     error.value = e instanceof Error ? e.message : String(e)
   }
 }
@@ -245,15 +263,18 @@ function cancelDelete() {
 
 async function confirmDelete(entry: HostDirEntry) {
   confirmingDeleteName.value = null
-  startTracking('delete', entry.name)
+  const gen = startTracking('delete', entry.name)
   try {
     const { opId } = await api.deleteHostFile(props.sessionId, joinPath(currentPath.value, entry.name))
+    if (gen !== opGeneration) return
     if (activeOp.value && !activeOp.value.opId) activeOp.value.opId = opId
-    void pollOpStatusFallback(opId)
+    void pollOpStatusFallback(gen, opId)
   } catch (e) {
-    activeOp.value = null
-    unsubscribeOp?.()
-    unsubscribeOp = null
+    if (gen === opGeneration) {
+      activeOp.value = null
+      unsubscribeOp?.()
+      unsubscribeOp = null
+    }
     error.value = e instanceof Error ? e.message : String(e)
   }
 }
@@ -445,6 +466,8 @@ watch(
                 type="button"
                 class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100"
                 title="Copy"
+                :disabled="!!activeOp"
+                :class="{ 'cursor-not-allowed opacity-40': !!activeOp }"
                 @click="startCopy(entry)"
               >
                 <DocumentDuplicateIcon class="h-3 w-3" />
@@ -453,6 +476,8 @@ watch(
                 type="button"
                 class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 hover:bg-slate-800 hover:text-rose-400 group-hover:opacity-100"
                 title="Delete"
+                :disabled="!!activeOp"
+                :class="{ 'cursor-not-allowed opacity-40': !!activeOp }"
                 @click="armDelete(entry)"
               >
                 <TrashIcon class="h-3 w-3" />

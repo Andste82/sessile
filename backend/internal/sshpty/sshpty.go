@@ -258,17 +258,21 @@ func authMethods(t Target) ([]ssh.AuthMethod, error) {
 // first place. Those targets get no PID recording; internal/hostops's
 // ss-based fallback is what little there is for them today.
 //
-// Gated on targetOS, not terminalType == "cmd"/"powershell": a host can
-// have TargetOS "windows" and still use TerminalType "custom" (a
-// CustomCommand like "powershell.exe -NoLogo"), and terminalType alone
-// says nothing about that — it only names what the user asked to run, not
-// what's actually on the other end. Checking terminalType instead of
-// targetOS meant a Windows host with a custom command got the POSIX
-// preamble anyway: Win32-OpenSSH runs it through cmd.exe, "echo $$ >
-// /tmp/…" either writes a nonsense file or fails outright, and "exec" is
-// not a cmd.exe builtin — the session fails to start.
+// Both targetOS and terminalType gate this, because either one alone
+// misses a real configuration. targetOS is needed because a host can be
+// Windows and still use TerminalType "custom" (a CustomCommand like
+// "powershell.exe -NoLogo"), which terminalType doesn't reveal.
+// terminalType is needed because targetOS is not a reliable signal on its
+// own: hosts.TargetOS is documented as informational, nothing validates
+// it, and the host dialog defaults it to "" ("Unspecified") — so a
+// Windows host running powershell, and every hosts.yml written before
+// the TargetOS field existed, arrives here with targetOS == "". Gating on
+// targetOS alone sent those the POSIX preamble: Win32-OpenSSH runs it
+// through cmd.exe, "echo $$ > /tmp/…" writes a nonsense file or fails
+// outright, and "exec" is not a cmd.exe builtin — the session fails to
+// start. Either signal saying "Windows" is therefore enough to skip.
 func wrapWithPIDRecording(targetOS, terminalType, cmd string) (pidFilePath, wrapped string) {
-	if targetOS == "windows" {
+	if targetOS == "windows" || terminalType == "cmd" || terminalType == "powershell" {
 		return "", cmd
 	}
 	token := make([]byte, 8)

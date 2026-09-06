@@ -64,3 +64,36 @@ func TestWindowsProcessTreeSurfacesNonZeroExit(t *testing.T) {
 		t.Fatal("ProcessTree returned nil error on non-zero exit")
 	}
 }
+
+// TestParseWindowsProcessCSVDropsIdleProcess covers the real listing shape,
+// not a trimmed one: Get-CimInstance Win32_Process is run unfiltered, so
+// the System Idle Process (pid 0, ppid 0) is always present. Keeping it
+// made buildProcessForest return nothing at all for every Windows target,
+// because it turned pid 0 into a "visible parent" for every real
+// top-level process — and for itself.
+func TestParseWindowsProcessCSVDropsIdleProcess(t *testing.T) {
+	const realistic = "\"ProcessId\",\"ParentProcessId\",\"Name\"\r\n" +
+		"\"0\",\"0\",\"System Idle Process\"\r\n" +
+		"\"4\",\"0\",\"System\"\r\n" +
+		"\"108\",\"4\",\"Registry\"\r\n" +
+		"\"500\",\"4\",\"smss.exe\"\r\n"
+
+	flat, err := parseWindowsProcessCSV(realistic)
+	if err != nil {
+		t.Fatalf("parseWindowsProcessCSV: %v", err)
+	}
+	for _, p := range flat {
+		if p.pid == 0 {
+			t.Fatalf("pid 0 still present in %+v", flat)
+		}
+	}
+	if len(flat) != 3 {
+		t.Fatalf("parsed %d processes, want 3", len(flat))
+	}
+
+	// The point of dropping it: the whole-host view is no longer empty.
+	forest := buildProcessForest(flat)
+	if len(forest) != 1 || forest[0].PID != 4 {
+		t.Fatalf("forest = %+v, want a single root pid=4", forest)
+	}
+}

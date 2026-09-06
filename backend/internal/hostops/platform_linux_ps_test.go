@@ -153,24 +153,65 @@ func TestBuildProcessForestFindsEveryRoot(t *testing.T) {
 
 // TestBuildProcessForestSurvivesACycle: same guarantee as the rooted
 // version, for the no-fixed-root path a Windows target's "whole host" view
-// now uses instead of a hardcoded rootPID (§6 of the review).
+// now uses instead of a hardcoded rootPID (§6 of the review). Terminating
+// is necessary but not sufficient — a cycle must not make its members
+// disappear either, so this also asserts both are still reported.
 func TestBuildProcessForestSurvivesACycle(t *testing.T) {
 	flat := []flatProcess{
 		{pid: 100, ppid: 200, command: "a"},
 		{pid: 200, ppid: 100, command: "b"},
+		{pid: 300, ppid: 100, command: "child-of-the-cycle"},
 	}
 	done := make(chan []Process, 1)
 	go func() { done <- buildProcessForest(flat) }()
 	select {
 	case forest := <-done:
 		// Neither ppid (100, 200) is missing from the pid set, so neither
-		// process qualifies as a root under this listing — an empty forest
-		// is the correct, non-crashing answer for data this malformed.
-		if len(forest) != 0 {
-			t.Fatalf("forest = %+v, want empty (both processes appear to have a listed parent)", forest)
+		// process qualifies as a root by the "no visible parent" rule. They
+		// are still real entries the operator asked to see, though, and the
+		// subtree hanging off them (300) even more so — dropping them
+		// silently is a worse answer than showing them as roots.
+		var walk func([]Process)
+		got := map[int]bool{}
+		walk = func(ps []Process) {
+			for _, p := range ps {
+				got[p.PID] = true
+				walk(p.Children)
+			}
+		}
+		walk(forest)
+		for _, want := range []int{100, 200, 300} {
+			if !got[want] {
+				t.Errorf("pid %d missing from forest %+v", want, forest)
+			}
+		}
+		if len(got) != 3 {
+			t.Errorf("forest reported %d pids, want exactly 3 (no duplicates)", len(got))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("buildProcessForest did not return — cycle guard failed")
+	}
+}
+
+// TestBuildProcessForestWindowsShapedListing pins the failure that made the
+// Windows process tree empty even after "scope=all" stopped hardcoding
+// rootPID 1: Win32_Process reports the System Idle Process as pid 0/ppid 0,
+// and every real top-level process has ppid 0, so its presence in the
+// listing disqualified all of them as roots. parseWindowsProcessCSV now
+// drops it; this asserts the shape that reaches the builder still roots.
+func TestBuildProcessForestWindowsShapedListing(t *testing.T) {
+	flat := []flatProcess{
+		{pid: 4, ppid: 0, command: "System"},
+		{pid: 108, ppid: 4, command: "Registry"},
+		{pid: 500, ppid: 4, command: "smss.exe"},
+		{pid: 612, ppid: 500, command: "csrss.exe"},
+	}
+	forest := buildProcessForest(flat)
+	if len(forest) != 1 || forest[0].PID != 4 {
+		t.Fatalf("forest = %+v, want a single root pid=4", forest)
+	}
+	if len(forest[0].Children) != 2 {
+		t.Errorf("root pid=4 has %d children, want 2", len(forest[0].Children))
 	}
 }
 

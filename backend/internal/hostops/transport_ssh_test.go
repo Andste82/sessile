@@ -617,3 +617,173 @@ func TestGroupChildAmongPicksLowestPIDAmongTies(t *testing.T) {
 		t.Fatalf("groupChildAmong = (%d, %q, %v), want (120, \"earlier\", true)", pid, comm, found)
 	}
 }
+
+// TestSSHSessionRootPIDCachesAMiss covers the case only caching successes
+// left uncovered: a target that cannot resolve at all. sampleForeground
+// calls SessionRootPID once per second per SSH session, so re-running the
+// full readPIDFile retry loop — pidFileRetries round trips plus its sleeps
+// — on every tick was a permanent cost for the whole life of such a
+// session, whether or not anyone had the panel open.
+//
+// The miss is produced by closing the connection: every Exec then fails,
+// so readPIDFile exhausts its retries and the ss fallback cannot resolve
+// either. That is a real shape (a session whose connection died), and
+// unlike an unwritten pidfile it cannot accidentally succeed via ss.
+func TestSSHSessionRootPIDCachesAMiss(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	tr := &sshTransport{client: client, pidFilePath: filepath.Join(t.TempDir(), "never-written")}
+	_ = client.Close()
+
+	ctx := context.Background()
+
+	start := time.Now()
+	if _, ok := tr.SessionRootPID(ctx); ok {
+		t.Fatal("resolved a pid over a closed connection")
+	}
+	firstAttempt := time.Since(start)
+
+	start = time.Now()
+	if _, ok := tr.SessionRootPID(ctx); ok {
+		t.Fatal("second call reported success after the first reported a miss")
+	}
+	secondAttempt := time.Since(start)
+
+	// The first call pays for pidFileRetries attempts and their delays; a
+	// cached miss must not pay for any of them.
+	if secondAttempt > firstAttempt/4 {
+		t.Errorf("second call took %v vs the first %v — the miss was not cached",
+			secondAttempt.Round(time.Millisecond), firstAttempt.Round(time.Millisecond))
+	}
+
+	// And the backoff must expire, so a target that starts resolving later
+	// is not written off for the life of the session.
+	tr.rootPIDMu.Lock()
+	missUntil := tr.rootPIDMissUntil
+	tr.rootPIDMu.Unlock()
+	if missUntil.IsZero() {
+		t.Error("miss was not recorded at all")
+	} else if time.Until(missUntil) > rootPIDMissBackoff {
+		t.Errorf("backoff runs until %v, longer than rootPIDMissBackoff", missUntil)
+	}
+}
+
+// TestSSHSessionRootPIDConcurrentFirstCallers pins the race that removing
+// the pidfile inside readPIDFile created. Two first-time callers is the
+// normal case (the 1 Hz foreground sampler plus a process-tree request in
+// the session's first second), and the loser used to find the file already
+// deleted, fall through to the ss fallback — which usually resolves
+// nothing — and silently report the whole host instead of this session.
+func TestSSHSessionRootPIDConcurrentFirstCallers(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	pidFile := filepath.Join(t.TempDir(), "pidfile")
+	tr := &sshTransport{client: client, pidFilePath: pidFile}
+
+	ctx := context.Background()
+	if _, err := tr.Exec(ctx, fmt.Sprintf("echo $$ > %s 2>/dev/null", pidFile)); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	const callers = 4
+	type result struct {
+		pid int
+		ok  bool
+	}
+	results := make(chan result, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			pid, ok := tr.SessionRootPID(ctx)
+			results <- result{pid, ok}
+		}()
+	}
+
+	var first result
+	for i := 0; i < callers; i++ {
+		got := <-results
+		if !got.ok {
+			t.Errorf("caller %d failed to resolve — the pidfile was removed too early", i)
+			continue
+		}
+		if i == 0 {
+			first = got
+			continue
+		}
+		if got.pid != first.pid {
+			t.Errorf("caller %d resolved pid %d, want %d — callers disagree", i, got.pid, first.pid)
+		}
+	}
+}
+
+// TestSSHCommitLeavesDestinationAloneWhenSourceIsGone pins a data-loss path
+// in Commit's no-extension fallback. It used to run `Remove(newpath)` on the
+// strength of a failed PosixRename alone — but PosixRename also fails when
+// the *source* is missing, and then the removal destroyed a perfectly good
+// destination before the retry failed too. Both the upload and whatever was
+// there before were lost, and the caller only saw an error.
+//
+// A missing stub is not hypothetical: two uploads to the same destination
+// shared one ".part" name, so the second one's commit ran exactly here,
+// after the first had already renamed the stub away.
+func TestSSHCommitLeavesDestinationAloneWhenSourceIsGone(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	tr := &sshTransport{client: client}
+
+	dest := filepath.Join(hs.root, "valuable.txt")
+	if err := os.WriteFile(dest, []byte("KEEP ME"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missingStub := filepath.Join(hs.root, "valuable.txt.part-deadbeef")
+
+	err := tr.Files().Commit(context.Background(), missingStub, dest)
+	if err == nil {
+		t.Fatal("Commit reported success with no source file")
+	}
+
+	got, readErr := os.ReadFile(dest)
+	if readErr != nil {
+		t.Fatalf("destination was deleted by a failed commit: %v", readErr)
+	}
+	if string(got) != "KEEP ME" {
+		t.Errorf("destination = %q, want it untouched", string(got))
+	}
+}
+
+// TestSSHCommitOverwritesAnExistingDestination is the ordinary path: an
+// upload replacing a file that is already there.
+//
+// Note what this test can and cannot prove. Against pkg/sftp's in-process
+// server a plain Rename onto an existing path also succeeds, so this passing
+// says nothing about whether the PosixRename branch is the one doing the
+// work. Real OpenSSH refuses that Rename with SSH_FX_FAILURE — verified by
+// hand against OpenSSH 9.6p1, which is the evidence that Commit must reach
+// for PosixRename first. Treat this as a contract test, not as proof.
+func TestSSHCommitOverwritesAnExistingDestination(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	tr := &sshTransport{client: client}
+
+	dest := filepath.Join(hs.root, "dest.txt")
+	stub := filepath.Join(hs.root, "dest.txt.part-abc123")
+	if err := os.WriteFile(dest, []byte("OLD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stub, []byte("NEW"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.Files().Commit(context.Background(), stub, dest); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("destination missing after commit: %v", err)
+	}
+	if string(got) != "NEW" {
+		t.Errorf("destination = %q, want %q", string(got), "NEW")
+	}
+	if _, err := os.Stat(stub); err == nil {
+		t.Error("stub still present after a successful commit")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -156,15 +157,21 @@ func (s *Server) resolveHostopsPath(info session.Info, userPath string) (resolve
 // — it targeted the sandbox itself).
 //
 // SSH has no sandbox root to compare against, so the same rule is applied
-// to the two paths that unambiguously mean "here" or "everything" if left
-// unresolved: "." and "/".
+// to the two paths that unambiguously mean "here" or "everything": "." and
+// "/". The comparison runs on path.Clean, not on the raw string, because
+// resolveHostopsPath hands an SSH path straight back unnormalized — so a
+// literal comparison caught only those two exact spellings while "./",
+// ".//", "/.", "//" and "/./" all named the very same directory and went
+// through. That is not a near miss: runDelete builds each victim with
+// path.Join(target, name), and path.Join("./", name) is byte-identical to
+// path.Join(".", name), so "./" deleted exactly what "." would have.
 func (s *Server) resolveDestructiveHostopsPath(info session.Info, userPath string) (resolved, display string, err error) {
 	resolved, display, err = s.resolveHostopsPath(info, userPath)
 	if err != nil {
 		return "", "", err
 	}
 	if info.TargetType == session.TargetSSH {
-		if resolved == "." || resolved == "/" {
+		if cleaned := path.Clean(resolved); cleaned == "." || cleaned == "/" {
 			return "", "", fmt.Errorf("refusing to operate on %q", resolved)
 		}
 		return resolved, display, nil
