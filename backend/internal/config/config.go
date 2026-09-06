@@ -48,10 +48,9 @@ type Config struct {
 	// startup. Zero keeps them forever, which is the default.
 	SessionRetention time.Duration
 	LogLevel         string // slog level: debug|info|warn|error
-	Dev              bool   // dev mode: relaxes WS origin check for the Vite proxy
 	AllowOrigin      string // extra allowed WS origin (e.g. http://localhost:5173)
-	// InsecureCookies drops the session cookie's Secure attribute outside
-	// --dev too. Browsers refuse to store a Secure cookie from a plain
+	// InsecureCookies drops the session cookie's Secure attribute.
+	// Browsers refuse to store a Secure cookie from a plain
 	// http:// origin that isn't localhost, so following the README's own
 	// `docker run -p 8080:8080 ...` example on a LAN box logs in (200) and
 	// then silently never actually logs in — the cookie never lands, and the
@@ -59,36 +58,6 @@ type Config struct {
 	// right fix is HTTPS, and this exists for operators who have deliberately
 	// decided a trusted LAN without TLS is good enough for them.
 	InsecureCookies bool
-}
-
-// errRemovedDB explains where --db went. The database is no longer separately
-// addressable: it is one of the things inside --data-dir.
-var errRemovedDB = errors.New(
-	"--db was removed: use --data-dir for the directory holding the database, " +
-		"scrollback and shell history (the database is always <data-dir>/sessions.db)")
-
-// errRemovedRoot explains where --root went. It is now --workspace-dir: same
-// idea (the local-host sandbox directory), renamed because "root" reads as
-// the admin account in a multi-user app, and its access is now gated at
-// runtime by config.yml's allowLocalHost (PROJECT_PLAN.md §9) rather than
-// being the server's only mode.
-var errRemovedRoot = errors.New(
-	"--root was renamed to --workspace-dir (same meaning: the local-host " +
-		"sandbox directory; access to it is now gated by config.yml's allowLocalHost)")
-
-// removedFlag reports whether args mention name (without its leading dashes)
-// in any of the spellings Go's flag package would have accepted.
-func removedFlag(args []string, name string) bool {
-	for _, a := range args {
-		if a == "--" {
-			return false // everything after this is not a flag
-		}
-		got, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
-		if strings.HasPrefix(a, "-") && got == name {
-			return true
-		}
-	}
-	return false
 }
 
 // Parse builds a Config from the given argument list (excluding the program
@@ -109,23 +78,10 @@ func Parse(args []string) (*Config, error) {
 	sessionRetention := fs.String("session-retention", env("TSM_SESSION_RETENTION", "0"),
 		"discard stopped sessions idle longer than this on startup, as a Go duration (e.g. 720h); 0 keeps them forever")
 	logLevel := fs.String("log-level", env("TSM_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
-	dev := fs.Bool("dev", envBool("TSM_DEV", false), "dev mode (relaxes WS origin check)")
 	allowOrigin := fs.String("allow-origin", env("TSM_ALLOW_ORIGIN", ""), "additional allowed WebSocket origin")
 	insecureCookies := fs.Bool("insecure-cookies", envBool("TSM_INSECURE_COOKIES", false),
 		"drop the session cookie's Secure attribute so login works over plain HTTP on a non-localhost address (only for a trusted network without TLS)")
 	showVersion := fs.Bool("version", false, "print version and exit")
-
-	// --db named a file and then silently claimed the directory around it for
-	// scrollback/ and history/. --root was renamed to --workspace-dir. Both
-	// are answered with a helpful error instead of "flag provided but not
-	// defined", which tells an operator a flag is gone but not what replaced
-	// it.
-	if removedFlag(args, "db") {
-		return nil, errRemovedDB
-	}
-	if removedFlag(args, "root") {
-		return nil, errRemovedRoot
-	}
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -201,10 +157,6 @@ func Parse(args []string) (*Config, error) {
 		return nil, fmt.Errorf("shell allowlist is empty")
 	}
 
-	if *dev && *allowOrigin == "" {
-		*allowOrigin = "http://localhost:5173"
-	}
-
 	return &Config{
 		Addr:         *addr,
 		DataDir:      dir,
@@ -216,7 +168,6 @@ func Parse(args []string) (*Config, error) {
 		SessionRetention: retention,
 
 		LogLevel:    *logLevel,
-		Dev:         *dev,
 		AllowOrigin: *allowOrigin,
 
 		InsecureCookies: *insecureCookies,

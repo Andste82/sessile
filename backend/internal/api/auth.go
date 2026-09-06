@@ -185,12 +185,14 @@ func (s *Server) respondAuthError(c *gin.Context, err error) {
 }
 
 // setSessionCookie issues the web-session cookie: HttpOnly always, Secure
-// unless --dev or --insecure-cookies (matching --dev's existing role of
-// relaxing security for the Vite proxy, which runs over plain HTTP; a
-// Secure cookie is silently refused by the browser on any other plain-HTTP
-// origin, which is what --insecure-cookies is for), SameSite=Lax —
-// same-origin fetch/WS plus SameSite is what keeps CSRF risk low without a
-// token (§11).
+// unless --insecure-cookies, SameSite=Lax — same-origin fetch/WS plus
+// SameSite is what keeps CSRF risk low without a token (§11).
+//
+// A browser silently refuses a Secure cookie from a plain-http origin that
+// isn't localhost, so an operator serving this over http on a LAN address
+// gets a 200 from login and no session — which looks like the login form
+// simply reloading. --insecure-cookies is the escape hatch for a
+// deliberately untrusted-transport deployment; HTTPS is the real answer.
 func (s *Server) setSessionCookie(c *gin.Context, token string) {
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(sessionCookieName, token, int(auth.DefaultSessionTTL.Seconds()), "/", "", s.secureCookies(), true)
@@ -203,5 +205,5 @@ func (s *Server) clearSessionCookie(c *gin.Context) {
 }
 
 func (s *Server) secureCookies() bool {
-	return !s.cfg.Dev && !s.cfg.InsecureCookies
+	return !s.cfg.InsecureCookies
 }

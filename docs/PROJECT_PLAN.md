@@ -1451,7 +1451,8 @@ layout and §11 for what they do and don't encrypt.
 
 ## 10. Dev & Build Workflow
 
-- `backend`: `go run ./cmd/server --data-dir=$(pwd)/../sandbox/data --dev`.
+- `backend`: `go run ./cmd/server --data-dir=$(pwd)/../sandbox/data`
+  `--insecure-cookies --allow-origin=http://localhost:5173`.
   First run is "unlocked" — visiting the dev frontend's `/login` shows the
   admin-bootstrap form, not a flag or seeded credential.
 - `frontend`: `npm run dev` with Vite proxy:
@@ -1522,7 +1523,8 @@ layout and §11 for what they do and don't encrypt.
 - **Auth model:** username + bcrypt-hashed password (`internal/auth`),
   server-side random session tokens in an **in-memory** store with a
   **sliding 30-day TTL** (renewed on every authenticated request), delivered
-  via an `HttpOnly`, `SameSite=Lax` cookie (`Secure` unless `--dev`). Not
+  via an `HttpOnly`, `SameSite=Lax` cookie (`Secure` unless
+  `--insecure-cookies`). Not
   JWT — no persistence is needed, and a server restart logging everyone out
   is an accepted simplification. First run is "unlocked": no users exist,
   `GET /api/auth/status` reports `needsSetup`, and the first
@@ -1548,14 +1550,18 @@ layout and §11 for what they do and don't encrypt.
   previously stored password on that host once the exchange succeeds,
   regardless of what the client sends.
 - WebSocket origin check: same-origin by default, `--allow-origin` flag to
-  override (needed for Vite dev — allow `http://localhost:5173` when
-  `--dev` flag set).
+  override (needed for Vite dev — pass `--allow-origin=http://localhost:5173`
+  explicitly; this used to be implied by `--dev`, which has been removed).
 - Body size limits on JSON endpoints (32 KiB — raised from an initial 4 KiB,
   which a pasted private key plus the rest of a host-creation body could
-  exceed). `POST .../hostops/upload` (§4.10, §6) is deliberately **not**
-  under this cap — a real file upload needs its own, much larger ceiling,
-  applied as separate route-group middleware rather than raising the
-  JSON-endpoint cap itself, which stays sized for JSON.
+  exceed). `GET .../hostops/download` and `POST .../hostops/upload` (§4.10,
+  §6) sit in a route group of their own, outside that cap and with **no
+  size limit at all**: both stream, so neither holds a whole file in memory
+  regardless of its size, and the ceiling they used to carry was a
+  consequence of buffering rather than a safety property worth keeping once
+  the buffering was gone. They need a separate group because a
+  `MaxBytesReader` wrap can only ever shrink an already-wrapped body, never
+  raise it.
 - Host operations (§4.10) add no new identity or path-trust model: routes are
   scoped by the same session ownership check as every other
   `/api/sessions/:id/*` route (§4.3, §6), local paths still pass §4.5's

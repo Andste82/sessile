@@ -82,46 +82,16 @@ func TestDatabaseLivesInTheDataDir(t *testing.T) {
 	}
 }
 
-// --db named a file and then claimed the directory around it. Answering it with
-// the flag package's "flag provided but not defined" would say it is gone
-// without saying what replaced it, and the replacement takes a different kind
-// of value — a directory, not a file — so a silent rename would be wrong too.
-func TestRemovedDBFlagExplainsItself(t *testing.T) {
-	for _, args := range [][]string{
-		{"--db", "/tmp/x.db"},
-		{"--db=/tmp/x.db"},
-		{"-db", "/tmp/x.db"},
-	} {
-		_, err := Parse(args)
-		if err == nil {
-			t.Fatalf("Parse(%v) succeeded, want an error", args)
-		}
-		if !strings.Contains(err.Error(), "--data-dir") {
-			t.Errorf("Parse(%v) error = %q, want it to name --data-dir", args, err)
-		}
+// --allow-origin has to be given explicitly now: it used to be filled in
+// with the Vite dev server's origin whenever --dev was passed, and dropping
+// that flag must not leave a hidden default behind.
+func TestAllowOriginHasNoImplicitDefault(t *testing.T) {
+	cfg, err := Parse([]string{"--data-dir", t.TempDir()})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
-
-	// A session directory that happens to be called "db" is not the flag.
-	if _, err := Parse([]string{"--data-dir", t.TempDir(), "--shells", "bash", "--", "db"}); err != nil {
-		t.Errorf("Parse with a positional \"db\": %v", err)
-	}
-}
-
-// --root was renamed to --workspace-dir. The error must say so rather than
-// just "flag provided but not defined".
-func TestRemovedRootFlagExplainsItself(t *testing.T) {
-	for _, args := range [][]string{
-		{"--root", "/tmp/x"},
-		{"--root=/tmp/x"},
-		{"-root", "/tmp/x"},
-	} {
-		_, err := Parse(args)
-		if err == nil {
-			t.Fatalf("Parse(%v) succeeded, want an error", args)
-		}
-		if !strings.Contains(err.Error(), "workspace-dir") {
-			t.Errorf("Parse(%v) error = %q, want it to name --workspace-dir", args, err)
-		}
+	if cfg.AllowOrigin != "" {
+		t.Errorf("AllowOrigin = %q, want empty unless asked for", cfg.AllowOrigin)
 	}
 }
 
@@ -210,7 +180,11 @@ func TestHelpListsFlags(t *testing.T) {
 		t.Fatalf("Parse(--help) error = %v, want flag.ErrHelp", err)
 	}
 	usage := buf.String()
-	for _, want := range []string{"-addr", "-data-dir", "-workspace-dir", "-shells", "-version", "sessile"} {
+	for _, want := range []string{
+		"-addr", "-data-dir", "-workspace-dir", "-shells", "-version",
+		"-insecure-cookies", "-allow-origin", "-buffer-size",
+		"-session-retention", "-log-level", "sessile",
+	} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage text missing %q; got:\n%s", want, usage)
 		}

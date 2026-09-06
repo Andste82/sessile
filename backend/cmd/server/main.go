@@ -74,7 +74,7 @@ func run(args []string) error {
 	log := newLogger(cfg.LogLevel)
 	log.Info("starting sessile",
 		"version", config.Version, "data-dir", cfg.DataDir, "workspace-dir", cfg.WorkspaceDir,
-		"addr", cfg.Addr, "dev", cfg.Dev)
+		"addr", cfg.Addr)
 
 	dist, err := web.Dist()
 	if err != nil {
