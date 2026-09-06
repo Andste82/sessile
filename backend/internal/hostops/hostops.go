@@ -12,7 +12,9 @@ package hostops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -160,6 +162,33 @@ func (h *HostSession) ProcessTree(ctx context.Context, rootPID *int) ([]Process,
 		return nil, ErrUnsupportedPlatform
 	}
 	return h.platform.ProcessTree(ctx, h.transport, rootPID)
+}
+
+// Cwd reports the working directory of pid on this session's target, as an
+// absolute path. The caller supplies the pid because only it knows which one
+// is meant: a local session's shell pid comes from the kernel (§4.7), an SSH
+// session's from SessionRootPID.
+//
+// One fixed command over the session's own Transport, so local and SSH share
+// an implementation — Exec stays internal to this package (§4.10), and this
+// is exactly the kind of specific, named question it exists to answer.
+//
+// ok is false rather than a guess when the target can't answer: a Windows
+// target has no /proc, and a pid that has exited has no cwd. Callers treat
+// that as "unknown", never as "the root".
+func (h *HostSession) Cwd(ctx context.Context, pid int) (string, bool) {
+	if pid <= 0 {
+		return "", false
+	}
+	res, err := h.transport.Exec(ctx, fmt.Sprintf("readlink /proc/%d/cwd", pid))
+	if err != nil || res.ExitCode != 0 {
+		return "", false
+	}
+	cwd := strings.TrimSpace(string(res.Stdout))
+	if cwd == "" || !strings.HasPrefix(cwd, "/") {
+		return "", false
+	}
+	return cwd, true
 }
 
 // Files returns this session's target's file operations (§4.10 M24+).

@@ -18,12 +18,18 @@ import { api } from '@/api/client'
 import { hostFileDownloadURL } from '@/api/upload'
 import { useTransfersStore } from '@/stores/transfers'
 import { copyText } from '@/utils/clipboard'
+import { relativeTo } from '@/utils/path'
 import RowActionsMenu, { type MenuItem } from '@/components/RowActionsMenu.vue'
 import type { HostDirEntry } from '@/api/types'
 
 const props = defineProps<{ sessionId: string }>()
 
 const currentPath = ref('') // "" means the target's own default root
+// The same directory as currentPath, but as the target names it. For SSH the
+// two are equal; for a local session currentPath is relative to the workspace
+// root and this is the real path on the server. Copying a path has to use this
+// one, so that it means the same thing on both target types.
+const absolutePath = ref('')
 const entries = ref<HostDirEntry[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -82,6 +88,7 @@ async function load(path: string) {
   try {
     const res = await api.listHostFiles(props.sessionId, path)
     currentPath.value = res.path
+    absolutePath.value = res.absolutePath
     entries.value = [...res.entries].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -230,14 +237,8 @@ function menuItems(entry: HostDirEntry): MenuItem[] {
   if (!entry.isDir) items.push({ key: 'download', label: 'Download', icon: ArrowDownTrayIcon })
   items.push({ key: 'move', label: 'Move / rename', icon: PencilIcon })
   items.push({ key: 'copy', label: 'Copy to…', icon: DocumentDuplicateIcon })
-  items.push({
-    key: 'copy-path',
-    label: isAbsolute.value ? 'Copy absolute path' : 'Copy path',
-    icon: ClipboardIcon,
-  })
-  if (isAbsolute.value) {
-    items.push({ key: 'copy-relative', label: 'Copy relative path', icon: ClipboardDocumentIcon })
-  }
+  items.push({ key: 'copy-path', label: 'Copy path', icon: ClipboardIcon })
+  items.push({ key: 'copy-relative', label: 'Copy relative path', icon: ClipboardDocumentIcon })
   items.push({ key: 'delete', label: 'Delete', icon: TrashIcon, danger: true })
   return items
 }
@@ -256,14 +257,38 @@ function onMenuSelect(entry: HostDirEntry, key: string) {
       startCopy(entry)
       break
     case 'copy-path':
-      copyToClipboard(joinPath(currentPath.value, entry.name))
+      copyToClipboard(absoluteFor(entry), entry.name)
       break
     case 'copy-relative':
-      copyToClipboard(entry.name)
+      void copyRelativeToCwd(entry)
       break
     case 'delete':
       armDelete(entry)
       break
+  }
+}
+
+function absoluteFor(entry: HostDirEntry): string {
+  return absolutePath.value ? joinPath(absolutePath.value, entry.name) : entry.name
+}
+
+// "Relative" means relative to where the session's shell actually is, not to
+// whatever directory the browser happens to be showing — the point is a path
+// you can paste straight into that shell. The shell moves independently of
+// the browser, so its cwd is fetched at the moment of copying rather than
+// tracked; that also keeps it off the per-second foreground sampler.
+async function copyRelativeToCwd(entry: HostDirEntry) {
+  const target = absoluteFor(entry)
+  try {
+    const { path } = await api.sessionCwd(props.sessionId)
+    copyToClipboard(relativeTo(path, target), entry.name)
+  } catch {
+    // The target could not say where the shell is — a Windows host has no
+    // /proc, and an SSH session whose pid never resolved has nothing to ask.
+    // Copy the absolute path rather than nothing: it is still correct, just
+    // longer than asked for.
+    copyToClipboard(target, entry.name)
+    error.value = 'Session directory unknown — copied the absolute path instead.'
   }
 }
 
@@ -277,12 +302,24 @@ function triggerDownload(url: string) {
 }
 
 const copied = ref<string | null>(null)
+const copiedFor = ref<string | null>(null)
 
-function copyToClipboard(text: string) {
+// Which row should show "Copied": keyed on the entry name rather than the
+// text, since the relative and absolute forms of the same file differ and
+// either may be what was copied.
+function lastCopiedFor(entry: HostDirEntry): string | null {
+  return copiedFor.value === entry.name ? copied.value : null
+}
+
+function copyToClipboard(text: string, forEntry?: string) {
   if (copyText(text)) {
     copied.value = text
+    if (forEntry !== undefined) copiedFor.value = forEntry
     setTimeout(() => {
-      if (copied.value === text) copied.value = null
+      if (copied.value === text) {
+        copied.value = null
+        copiedFor.value = null
+      }
     }, 1500)
   } else {
     error.value = 'Could not copy to the clipboard.'
@@ -446,7 +483,7 @@ watch(
             />
           </div>
 
-          <p v-if="copied === joinPath(currentPath, entry.name) || copied === entry.name" class="pl-6 text-[11px] text-emerald-400">
+          <p v-if="copied !== null && copied === lastCopiedFor(entry)" class="pl-6 text-[11px] text-emerald-400">
             Copied to clipboard.
           </p>
 
