@@ -1554,10 +1554,14 @@ layout and §11 for what they do and don't encrypt.
   explicitly; this used to be implied by `--dev`, which has been removed).
 - Body size limits on JSON endpoints (32 KiB — raised from an initial 4 KiB,
   which a pasted private key plus the rest of a host-creation body could
-  exceed). `POST .../hostops/upload` (§4.10, §6) is deliberately **not**
-  under this cap — a real file upload needs its own, much larger ceiling,
-  applied as separate route-group middleware rather than raising the
-  JSON-endpoint cap itself, which stays sized for JSON.
+  exceed). `GET .../hostops/download` and `POST .../hostops/upload` (§4.10,
+  §6) sit in a route group of their own, outside that cap and with **no
+  size limit at all**: both stream, so neither holds a whole file in memory
+  regardless of its size, and the ceiling they used to carry was a
+  consequence of buffering rather than a safety property worth keeping once
+  the buffering was gone. They need a separate group because a
+  `MaxBytesReader` wrap can only ever shrink an already-wrapped body, never
+  raise it.
 - Host operations (§4.10) add no new identity or path-trust model: routes are
   scoped by the same session ownership check as every other
   `/api/sessions/:id/*` route (§4.3, §6), local paths still pass §4.5's
