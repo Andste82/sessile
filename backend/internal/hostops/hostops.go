@@ -99,8 +99,8 @@ type FileTransport interface {
 
 // DirEntry is one entry from FileTransport.List.
 type DirEntry struct {
-	Name    string
-	IsDir   bool
+	Name  string
+	IsDir bool
 	// IsRegular is required to trust Size as a byte count a read will
 	// actually produce — a special file (a device, a FIFO) can report any
 	// Size at all with no relation to what reading it does. The download
