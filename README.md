@@ -258,17 +258,6 @@ Every option is a CLI flag with an environment-variable fallback.
 | `--allow-origin` | `TSM_ALLOW_ORIGIN` | *(none)* — one additional origin accepted for WebSocket upgrades |
 | `--insecure-cookies` | `TSM_INSECURE_COOKIES` | `false` — drops the session cookie's `Secure` attribute. Needed to log in at all when serving over plain HTTP on anything but `localhost`: browsers silently discard a `Secure` cookie from an `http://` origin, so login returns 200 and the app bounces straight back to the login form with no error. The real fix is HTTPS. |
 
-Three flags from earlier versions are gone. They are no longer recognised at
-all, so a config still carrying one fails to start with the flag package's
-own "flag provided but not defined" — this table is where to look for the
-replacement:
-
-| Removed | Use instead |
-|---|---|
-| `--root` | `--workspace-dir` — same meaning, renamed because "root" reads as the admin account in a multi-user app |
-| `--db` | `--data-dir` — the database is no longer separately addressable; it is always `<data-dir>/sessions.db` |
-| `--dev` | `--insecure-cookies` and `--allow-origin=http://localhost:5173` — it bundled both, under a name that described neither |
-
 `--version` prints the version and exits; `--help` lists every flag.
 
 Everything server- and account-level lives in hand-editable YAML under
