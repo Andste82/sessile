@@ -714,3 +714,76 @@ func TestSSHSessionRootPIDConcurrentFirstCallers(t *testing.T) {
 		}
 	}
 }
+
+// TestSSHCommitLeavesDestinationAloneWhenSourceIsGone pins a data-loss path
+// in Commit's no-extension fallback. It used to run `Remove(newpath)` on the
+// strength of a failed PosixRename alone — but PosixRename also fails when
+// the *source* is missing, and then the removal destroyed a perfectly good
+// destination before the retry failed too. Both the upload and whatever was
+// there before were lost, and the caller only saw an error.
+//
+// A missing stub is not hypothetical: two uploads to the same destination
+// shared one ".part" name, so the second one's commit ran exactly here,
+// after the first had already renamed the stub away.
+func TestSSHCommitLeavesDestinationAloneWhenSourceIsGone(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	tr := &sshTransport{client: client}
+
+	dest := filepath.Join(hs.root, "valuable.txt")
+	if err := os.WriteFile(dest, []byte("KEEP ME"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missingStub := filepath.Join(hs.root, "valuable.txt.part-deadbeef")
+
+	err := tr.Files().Commit(context.Background(), missingStub, dest)
+	if err == nil {
+		t.Fatal("Commit reported success with no source file")
+	}
+
+	got, readErr := os.ReadFile(dest)
+	if readErr != nil {
+		t.Fatalf("destination was deleted by a failed commit: %v", readErr)
+	}
+	if string(got) != "KEEP ME" {
+		t.Errorf("destination = %q, want it untouched", string(got))
+	}
+}
+
+// TestSSHCommitOverwritesAnExistingDestination is the ordinary path: an
+// upload replacing a file that is already there.
+//
+// Note what this test can and cannot prove. Against pkg/sftp's in-process
+// server a plain Rename onto an existing path also succeeds, so this passing
+// says nothing about whether the PosixRename branch is the one doing the
+// work. Real OpenSSH refuses that Rename with SSH_FX_FAILURE — verified by
+// hand against OpenSSH 9.6p1, which is the evidence that Commit must reach
+// for PosixRename first. Treat this as a contract test, not as proof.
+func TestSSHCommitOverwritesAnExistingDestination(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	client := newTestSSHClient(t, hs)
+	tr := &sshTransport{client: client}
+
+	dest := filepath.Join(hs.root, "dest.txt")
+	stub := filepath.Join(hs.root, "dest.txt.part-abc123")
+	if err := os.WriteFile(dest, []byte("OLD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stub, []byte("NEW"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.Files().Commit(context.Background(), stub, dest); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("destination missing after commit: %v", err)
+	}
+	if string(got) != "NEW" {
+		t.Errorf("destination = %q, want %q", string(got), "NEW")
+	}
+	if _, err := os.Stat(stub); err == nil {
+		t.Error("stub still present after a successful commit")
+	}
+}

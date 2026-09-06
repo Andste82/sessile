@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -94,6 +96,29 @@ func (s *Server) downloadHostFile(c *gin.Context) {
 // staging-file-then-commit shape that reasoning inverts. An abort should
 // stop the copy and clean up the stub; atomicity now comes from the commit
 // rename, not from finishing the write no matter what.
+// uploadStubPath names the temporary file an upload streams into before it
+// is committed onto dest. The random suffix is what keeps two uploads to
+// the same destination from colliding: with a fixed ".part" they share one
+// stub, so they interleave into the same file and then the second commit
+// finds the stub already renamed away by the first — which, without the
+// source check in FileTransport.Commit, destroyed the destination as well.
+// Distinct stubs mean concurrent uploads simply race for the destination,
+// and the loser overwrites the winner rather than either one being lost.
+//
+// A failed upload leaves its stub behind under this name. That is
+// deliberate and visible: the user can see and delete it, which is kinder
+// than a hidden file nothing ever cleans up.
+func uploadStubPath(dest string) string {
+	token := make([]byte, 6)
+	if _, err := rand.Read(token); err != nil {
+		// No randomness available — a fixed suffix is still correct for a
+		// single upload, and Commit's source check keeps a collision from
+		// costing the destination.
+		return dest + ".part"
+	}
+	return dest + ".part-" + hex.EncodeToString(token)
+}
+
 func (s *Server) uploadHostFile(c *gin.Context) {
 	userID := c.MustGet(userIDKey).(string)
 	id := c.Param("id")
@@ -115,7 +140,7 @@ func (s *Server) uploadHostFile(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	tmp := resolvedPath + ".part"
+	tmp := uploadStubPath(resolvedPath)
 
 	w, err := ops.Files().Create(ctx, tmp)
 	if err != nil {

@@ -3,6 +3,7 @@ package api
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Andste82/sessile/backend/internal/session"
@@ -68,5 +69,28 @@ func TestResolveDestructiveHostopsPathRejectsSSHRootPaths(t *testing.T) {
 
 	if _, _, err := s.resolveDestructiveHostopsPath(info, "/home/user/file.txt"); err != nil {
 		t.Errorf("resolveDestructiveHostopsPath(/home/user/file.txt): unexpected error: %v", err)
+	}
+}
+
+// TestUploadStubPathIsUniquePerUpload pins the other half of the same
+// data-loss story: with a fixed ".part" suffix, two uploads to one
+// destination stream into the same staging file and the second commit runs
+// against a stub the first already renamed away.
+func TestUploadStubPathIsUniquePerUpload(t *testing.T) {
+	const dest = "/home/user/report.pdf"
+
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		got := uploadStubPath(dest)
+		if !strings.HasPrefix(got, dest+".part") {
+			t.Fatalf("stub %q does not sit next to its destination", got)
+		}
+		if got == dest {
+			t.Fatal("stub path equals the destination")
+		}
+		seen[got] = true
+	}
+	if len(seen) != 50 {
+		t.Errorf("%d distinct stub names out of 50 — concurrent uploads would collide", len(seen))
 	}
 }

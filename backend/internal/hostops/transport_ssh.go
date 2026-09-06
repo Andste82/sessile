@@ -256,7 +256,29 @@ func (t *sshFileTransport) Commit(_ context.Context, oldpath, newpath string) er
 	if err := c.PosixRename(oldpath, newpath); err == nil {
 		return nil
 	}
-	_ = c.Remove(newpath)
+
+	// Fallback for a server that doesn't advertise posix-rename@openssh.com.
+	// A plain Rename already covers the common case: OpenSSH refuses it only
+	// when the destination exists, so a first upload commits here.
+	if err := c.Rename(oldpath, newpath); err == nil {
+		return nil
+	}
+
+	// Something is in the way. Removing the destination is the only way
+	// forward without the extension — but it must never happen on the word
+	// of a failed PosixRename alone, because that fails for reasons that
+	// have nothing to do with the destination. A source that isn't there is
+	// the important one: two uploads racing on the same stub, or a stub
+	// already cleaned up, would otherwise delete the very file the commit
+	// was meant to replace and then fail anyway, losing both the upload and
+	// what was there before. Confirm the source first; if it's gone, the
+	// destination is not ours to touch.
+	if _, err := c.Stat(oldpath); err != nil {
+		return fmt.Errorf("commit %s to %s: source is gone, leaving the destination alone: %w", oldpath, newpath, err)
+	}
+	if err := c.Remove(newpath); err != nil {
+		return fmt.Errorf("commit %s to %s: %w", oldpath, newpath, err)
+	}
 	if err := c.Rename(oldpath, newpath); err != nil {
 		return fmt.Errorf("commit %s to %s: %w", oldpath, newpath, err)
 	}
