@@ -60,49 +60,6 @@ type Config struct {
 	InsecureCookies bool
 }
 
-// errRemovedDB explains where --db went. The database is no longer separately
-// addressable: it is one of the things inside --data-dir.
-var errRemovedDB = errors.New(
-	"--db was removed: use --data-dir for the directory holding the database, " +
-		"scrollback and shell history (the database is always <data-dir>/sessions.db)")
-
-// errRemovedRoot explains where --root went. It is now --workspace-dir: same
-// idea (the local-host sandbox directory), renamed because "root" reads as
-// the admin account in a multi-user app, and its access is now gated at
-// runtime by config.yml's allowLocalHost (PROJECT_PLAN.md §9) rather than
-// being the server's only mode.
-// errRemovedDev explains where --dev went. It bundled two unrelated
-// relaxations behind one name that described neither precisely: it defaulted
-// --allow-origin to the Vite dev server, and it dropped the session cookie's
-// Secure attribute. The second is the one people reached for --dev to get,
-// and reaching for a flag called "dev mode" to fix a production deployment
-// over plain http is exactly the confusion --insecure-cookies exists to
-// avoid. Both effects remain available, each under the flag that names it.
-var errRemovedDev = errors.New(
-	"--dev was removed: it bundled two settings that are now separate — " +
-		"--insecure-cookies drops the session cookie's Secure attribute, and " +
-		"--allow-origin=http://localhost:5173 accepts the Vite dev server's " +
-		"origin for WebSocket upgrades")
-
-var errRemovedRoot = errors.New(
-	"--root was renamed to --workspace-dir (same meaning: the local-host " +
-		"sandbox directory; access to it is now gated by config.yml's allowLocalHost)")
-
-// removedFlag reports whether args mention name (without its leading dashes)
-// in any of the spellings Go's flag package would have accepted.
-func removedFlag(args []string, name string) bool {
-	for _, a := range args {
-		if a == "--" {
-			return false // everything after this is not a flag
-		}
-		got, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
-		if strings.HasPrefix(a, "-") && got == name {
-			return true
-		}
-	}
-	return false
-}
-
 // Parse builds a Config from the given argument list (excluding the program
 // name). Flags fall back to environment variables, then to defaults.
 func Parse(args []string) (*Config, error) {
@@ -125,21 +82,6 @@ func Parse(args []string) (*Config, error) {
 	insecureCookies := fs.Bool("insecure-cookies", envBool("TSM_INSECURE_COOKIES", false),
 		"drop the session cookie's Secure attribute so login works over plain HTTP on a non-localhost address (only for a trusted network without TLS)")
 	showVersion := fs.Bool("version", false, "print version and exit")
-
-	// --db named a file and then silently claimed the directory around it for
-	// scrollback/ and history/. --root was renamed to --workspace-dir. Both
-	// are answered with a helpful error instead of "flag provided but not
-	// defined", which tells an operator a flag is gone but not what replaced
-	// it.
-	if removedFlag(args, "db") {
-		return nil, errRemovedDB
-	}
-	if removedFlag(args, "root") {
-		return nil, errRemovedRoot
-	}
-	if removedFlag(args, "dev") {
-		return nil, errRemovedDev
-	}
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
