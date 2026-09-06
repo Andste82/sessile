@@ -4,6 +4,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Andste82/sessile/backend/internal/hostops"
 )
 
 // Status is a session's lifecycle state.
@@ -56,8 +58,11 @@ type Session struct {
 	Rows, Cols   uint16
 
 	// derived foreground, refreshed by the manager's sampler (§4.7). Both are
-	// empty for a session that is not running, and always empty for an SSH
-	// session — there is no way to introspect a remote process's /proc.
+	// empty for a session that is not running. fgCommand is also available
+	// for a running SSH session (hostops.HostSession.Foreground, §4.10 —
+	// /proc's tpgid read remotely, the same kernel fact TIOCGPGRP gives a
+	// local pty) when it can be determined; fgCwd stays local-only for now,
+	// same as before — there's no equally cheap single remote call for it yet.
 	fgCommand string // foreground program name
 	fgCwd     string // its working directory, relative to root
 
@@ -76,6 +81,7 @@ type Session struct {
 
 	// runtime-only
 	backend     Backend
+	hostOps     *hostops.HostSession // process tree + file browser/transfer (§4.10)
 	buffer      *RingBuffer
 	clients     map[Client]clientGeom
 	lastPersist time.Time     // throttles LastActivity DB writes (§4.6)
@@ -121,6 +127,12 @@ func (s *Session) Info() Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.infoLocked()
+}
+
+// HostOps returns the session's process-tree/file-browser handle (§4.10).
+// Set once at spawn and never reassigned, so this needs no lock.
+func (s *Session) HostOps() *hostops.HostSession {
+	return s.hostOps
 }
 
 func (s *Session) infoLocked() Info {

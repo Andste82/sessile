@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted } from 'vue'
 import { eventsWsURL, parseEvent } from '@/api/events'
 import { useSessionsStore } from '@/stores/sessions'
+import { emitHostopEvent } from '@/composables/useHostopEvents'
 import { backoffSteps } from '@/utils/reconnect'
 
 // How often to poll while the event channel is down. Faster than the 5 s this
@@ -48,7 +49,11 @@ export function useSessionEvents() {
       if (typeof ev.data !== 'string') return // the channel is text-only (§5.1)
       const parsed = parseEvent(ev.data)
       if (!parsed) return
-      store.applyEvent(parsed)
+      if (parsed.type === 'hostopStarted' || parsed.type === 'hostopProgress' || parsed.type === 'hostopDone') {
+        emitHostopEvent(parsed)
+      } else {
+        store.applyEvent(parsed)
+      }
       // Stop polling on the first frame that carried state, not on open: a
       // socket that connects and then says nothing is not yet a working
       // channel, and dropping the fallback at open would leave the list frozen.

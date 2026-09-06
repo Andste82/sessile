@@ -12,10 +12,22 @@ golang.org/x/crypto (ssh, bcrypt) + modernc.org/sqlite + gopkg.in/yaml.v3.
 Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
 
 ## Hard rules
-- **Scope:** SSH-backed sessions and multi-user auth are in scope. Still out of
-  scope: SFTP/file manager, upload/download, Docker/K8s management, host
-  monitoring dashboards, a script execution framework. If a change drifts
-  toward these, stop.
+- **Scope:** SSH-backed sessions and multi-user auth are in scope. Also in
+  scope, as a **fixed, named operation set only** (`internal/hostops`, plan
+  §4.10): a session's process tree; listing, moving, copying, and deleting
+  files on its own target; downloading one file to the browser and
+  uploading one back. Every one of those is a specific typed method
+  (`ProcessTree`, `ListDir`, `Move(src,dst)`, `Copy(src,dst)`,
+  `Delete(path)`, `Download(path)`, `Upload(path,data)`) — never a
+  caller-supplied command line, shell pattern, or a caller-chosen list of
+  targets. Still out of scope: an in-app text editor for those files (the
+  read/write plumbing that download/upload already needs is not the same
+  decision as building an editor UI on top of it — that stays a later,
+  separate call), Docker/K8s management, host monitoring dashboards
+  (CPU/RAM/disk/service), server inventory, RDP/VNC, and — the actual
+  boundary here — any endpoint that takes an arbitrary command string or
+  acts on more than one explicit src/dst/path argument. If a change drifts
+  toward that, stop.
 - **Security posture, by design, not by accident:**
   - Host credentials (SSH password / private key) are stored **inline,
     plaintext** in each user's `hosts.yml` — the operator is the trusted owner
@@ -34,7 +46,9 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
     client-supplied user id is never trusted (mirrors the sandbox-check
     precedent below).
 - **Stack:** Do not add GORM, sqlc, zap, viper, socket.io, or an E2E test
-  framework. `golang.org/x/crypto` (bcrypt, ssh) and `gopkg.in/yaml.v3` are
+  framework. `golang.org/x/crypto` (bcrypt, ssh), `gopkg.in/yaml.v3`, and
+  `github.com/pkg/sftp` (host file operations over the session's existing
+  SSH connection, plan §4.10 — no separate dial, no new trust decision) are
   direct, permitted deps. No CGO (`CGO_ENABLED=0` must build).
   `golang.org/x/crypto/ssh` has a known, unconfigurable per-channel
   throughput ceiling on high-latency links (fixed 2 MiB window) —
@@ -52,8 +66,8 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
   Broadcasts must never block on a slow client. This applies equally to
   SSH-backed sessions — they reuse the same `Manager`/`ws.Client` machinery as
   local sessions, not a parallel implementation.
-- Follow the milestone order in plan §12/§12b. Finish + verify a milestone
-  before starting the next.
+- Follow the milestone order in plan §12/§12b/§12c. Finish + verify a
+  milestone before starting the next.
 
 ## Commands
 ```bash

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { FolderIcon } from '@heroicons/vue/24/outline'
 import TerminalView from '@/components/TerminalView.vue'
 import TabBar from '@/components/TabBar.vue'
 import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
+import FileBrowserPanel from '@/components/FileBrowserPanel.vue'
 import { useSessionsStore } from '@/stores/sessions'
 import { ApiRequestError, api, isAlreadyRunning } from '@/api/client'
 import type { HostKeyErrorDetails, Session } from '@/api/types'
@@ -29,6 +31,11 @@ const pendingHostKey = ref<{ hostId: string; hostName: string; details: HostKeyE
 // Bumping this forces a remount, which is what makes useTerminal open a fresh
 // WebSocket and replay the restored scrollback.
 const reloadNonce = ref(0)
+
+// Belongs to this session's own view, not the sidebar/dashboard — the same
+// reasoning as the foreground/title lines being per-card rather than a
+// standalone page (§4.10's design note).
+const filesPanelOpen = ref(false)
 
 async function restart() {
   if (restarting.value) return
@@ -128,47 +135,61 @@ watch(
   <div class="flex h-full flex-col bg-slate-900">
     <TabBar :conn="conn" />
 
-    <div class="relative min-h-0 flex-1">
-      <p v-if="loadError" class="p-6 text-sm text-rose-400">{{ loadError }}</p>
-      <TerminalView
-        v-else
-        :key="`${id}:${reloadNonce}`"
-        :session-id="id"
-        class="h-full p-2"
-        @status="conn = $event"
-      />
+    <div class="flex min-h-0 flex-1">
+      <div class="relative min-h-0 flex-1">
+        <p v-if="loadError" class="p-6 text-sm text-rose-400">{{ loadError }}</p>
+        <TerminalView
+          v-else
+          :key="`${id}:${reloadNonce}`"
+          :session-id="id"
+          class="h-full p-2"
+          @status="conn = $event"
+        />
 
-      <div
-        v-if="conn === 'exited'"
-        class="absolute inset-x-0 top-0 z-10 flex justify-center p-3"
-      >
-        <div
-          class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 rounded-md bg-slate-800 px-3 py-1.5 text-sm text-slate-300 shadow"
+        <button
+          type="button"
+          class="absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-md bg-slate-800/80 text-slate-300 shadow hover:bg-slate-700 hover:text-slate-100"
+          :class="{ 'text-emerald-400': filesPanelOpen }"
+          title="Files &amp; processes"
+          @click="filesPanelOpen = !filesPanelOpen"
         >
-          <span>Session ended — the shell process has exited.</span>
-          <button
-            type="button"
-            class="rounded bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60"
-            :disabled="restarting"
-            @click="restart"
+          <FolderIcon class="h-4 w-4" />
+        </button>
+
+        <div
+          v-if="conn === 'exited'"
+          class="absolute inset-x-0 top-0 z-10 flex justify-center p-3"
+        >
+          <div
+            class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 rounded-md bg-slate-800 px-3 py-1.5 text-sm text-slate-300 shadow"
           >
-            {{ restarting ? 'Restarting…' : 'Restart session' }}
-          </button>
-          <span v-if="restartError" class="w-full text-center text-xs text-rose-400">{{
-            restartError
-          }}</span>
+            <span>Session ended — the shell process has exited.</span>
+            <button
+              type="button"
+              class="rounded bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60"
+              :disabled="restarting"
+              @click="restart"
+            >
+              {{ restarting ? 'Restarting…' : 'Restart session' }}
+            </button>
+            <span v-if="restartError" class="w-full text-center text-xs text-rose-400">{{
+              restartError
+            }}</span>
+          </div>
+        </div>
+
+        <div
+          v-else-if="conn === 'disconnected'"
+          class="absolute inset-0 z-10 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm"
+        >
+          <div class="flex items-center gap-3 rounded-lg bg-slate-800 px-5 py-3 text-sm text-slate-200 shadow-lg">
+            <span class="h-4 w-4 animate-spin rounded-full border-2 border-slate-500 border-t-emerald-400" />
+            Disconnected — reconnecting…
+          </div>
         </div>
       </div>
 
-      <div
-        v-else-if="conn === 'disconnected'"
-        class="absolute inset-0 z-10 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm"
-      >
-        <div class="flex items-center gap-3 rounded-lg bg-slate-800 px-5 py-3 text-sm text-slate-200 shadow-lg">
-          <span class="h-4 w-4 animate-spin rounded-full border-2 border-slate-500 border-t-emerald-400" />
-          Disconnected — reconnecting…
-        </div>
-      </div>
+      <FileBrowserPanel v-if="filesPanelOpen" :session-id="id" @close="filesPanelOpen = false" />
     </div>
 
     <HostKeyTrustDialog

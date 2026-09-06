@@ -9,9 +9,25 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Andste82/sessile/backend/internal/hostops"
 	"github.com/Andste82/sessile/backend/internal/sshpty"
 	"github.com/Andste82/sessile/backend/internal/terminal"
 )
+
+// platformFor maps a host's declared TargetOS (hosts.TargetOS, carried
+// through sshpty.Target — §4.10) to a hostops.Platform. nil means no
+// ProcessTree support for that target yet — HostSession.ProcessTree returns
+// ErrUnsupportedPlatform rather than guessing.
+func platformFor(targetOS string) hostops.Platform {
+	switch targetOS {
+	case "linux":
+		return hostops.NewLinuxPlatform()
+	case "windows":
+		return hostops.NewWindowsPlatform()
+	default: // "darwin", "other", "" — untested, no Platform yet
+		return nil
+	}
+}
 
 // HostResolver resolves a user's host id to the SSH target to connect with,
 // for Restart (§12b M17) — a fresh Create already has the target handed to
@@ -362,6 +378,7 @@ func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.T
 		Rows:         defaultRows,
 		Cols:         defaultCols,
 		backend:      pty,
+		hostOps:      hostops.NewHostSession(hostops.NewLocal(), hostops.NewLinuxPlatform()),
 		buffer:       NewRingBuffer(m.bufferSize),
 		clients:      make(map[Client]clientGeom),
 		lastPersist:  now,
@@ -402,6 +419,7 @@ func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, tar
 		Rows:            defaultRows,
 		Cols:            defaultCols,
 		backend:         pty,
+		hostOps:         hostops.NewHostSession(hostops.NewSSH(pty.Client(), pty.PIDFilePath()), platformFor(target.TargetOS)),
 		buffer:          NewRingBuffer(m.bufferSize),
 		clients:         make(map[Client]clientGeom),
 		lastPersist:     now,
@@ -621,6 +639,28 @@ func (m *Manager) Get(id, userID string) (Info, error) {
 		}
 	}
 	return Info{}, ErrNotFound
+}
+
+// HostOps returns the session's live process-tree/file-browser handle
+// (§4.10), scoped to userID like Get. A stopped session has neither a live
+// Backend nor a live hostOps — the shell or SSH connection it would
+// introspect is gone — so this returns ErrStopped rather than a HostSession
+// that would just fail on first use.
+func (m *Manager) HostOps(id, userID string) (*hostops.HostSession, Info, error) {
+	m.mu.RLock()
+	s, ok := m.sessions[id]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, Info{}, ErrNotFound
+	}
+	info := s.Info()
+	if info.UserID != userID {
+		return nil, Info{}, ErrNotFound
+	}
+	if info.Status != StatusRunning {
+		return nil, Info{}, ErrStopped
+	}
+	return s.HostOps(), info, nil
 }
 
 // List returns userID's sessions: live ones from memory merged with stopped

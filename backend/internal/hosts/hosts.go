@@ -83,6 +83,7 @@ func (h Host) SSHTarget() sshpty.Target {
 		TerminalType:              h.TerminalType,
 		CustomCommand:             h.CustomCommand,
 		TrustedHostKeyFingerprint: h.TrustedHostKeyFingerprint,
+		TargetOS:                  string(h.TargetOS),
 	}
 }
 

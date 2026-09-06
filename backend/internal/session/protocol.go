@@ -129,3 +129,38 @@ type SessionGoneMsg struct {
 	Type      string `json:"type"` // "sessionGone"
 	SessionID string `json:"sessionId"`
 }
+
+// Hostop progress messages (§4.10, §5.2) — Delete and same-target Copy are
+// the only two hostops that take long enough to need progress reported as
+// they run, rather than just a synchronous response. They ride this same
+// channel: one more message type, not a new socket.
+
+// HostopStartedMsg announces a Delete or Copy has begun.
+type HostopStartedMsg struct {
+	Type      string `json:"type"` // "hostopStarted"
+	SessionID string `json:"sessionId"`
+	OpID      string `json:"opId"`
+	Kind      string `json:"kind"` // "delete" | "copy"
+	Path      string `json:"path"`
+}
+
+// HostopProgressMsg reports how far a Delete or Copy has gotten. Total is 0
+// while still being discovered (Delete counts entries as its walk finds
+// them); Done/Total count files for Delete, bytes for Copy — the two are
+// not the same unit and must not be compared across kinds.
+type HostopProgressMsg struct {
+	Type      string `json:"type"` // "hostopProgress"
+	SessionID string `json:"sessionId"`
+	OpID      string `json:"opId"`
+	Done      int64  `json:"done"`
+	Total     int64  `json:"total"`
+}
+
+// HostopDoneMsg reports a Delete or Copy's terminal state.
+type HostopDoneMsg struct {
+	Type      string `json:"type"` // "hostopDone"
+	SessionID string `json:"sessionId"`
+	OpID      string `json:"opId"`
+	Status    string `json:"status"` // "ok" | "error"
+	Message   string `json:"message"`
+}
