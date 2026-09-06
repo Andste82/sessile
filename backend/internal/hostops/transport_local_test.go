@@ -55,8 +55,8 @@ func TestLocalFilesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name != "a.txt" || entries[0].IsDir || entries[0].Size != 5 {
-		t.Fatalf("List = %+v, want one file a.txt size 5", entries)
+	if len(entries) != 1 || entries[0].Name != "a.txt" || entries[0].IsDir || !entries[0].IsRegular || entries[0].Size != 5 {
+		t.Fatalf("List = %+v, want one regular file a.txt size 5", entries)
 	}
 
 	data, err := files.Read(ctx, filepath.Join(dir, "a.txt"))
@@ -71,8 +71,8 @@ func TestLocalFilesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if stat.Name != "a.txt" || stat.IsDir || stat.Size != 5 {
-		t.Errorf("Stat = %+v, want name=a.txt isDir=false size=5", stat)
+	if stat.Name != "a.txt" || stat.IsDir || !stat.IsRegular || stat.Size != 5 {
+		t.Errorf("Stat = %+v, want name=a.txt isDir=false isRegular=true size=5", stat)
 	}
 
 	if err := files.Copy(ctx, filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt")); err != nil {
@@ -113,6 +113,66 @@ func TestLocalFilesOpenStreamsTheSameContentAsRead(t *testing.T) {
 	}
 	if string(data) != "streamed content" {
 		t.Errorf("Open content = %q, want %q", data, "streamed content")
+	}
+}
+
+func TestLocalFilesCreateStreamsIntoATruncatedFile(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	files := NewLocal().Files()
+	p := filepath.Join(dir, "a.txt")
+
+	if err := files.Write(ctx, p, []byte("this was here before and is longer")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	w, err := files.Create(ctx, p)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := io.WriteString(w, "new"); err != nil {
+		t.Fatalf("write to Create result: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	data, err := files.Read(ctx, p)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("Read after Create = %q, want %q (Create must truncate, not append)", data, "new")
+	}
+}
+
+func TestLocalFilesCommitOverwritesAnExistingDestination(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	files := NewLocal().Files()
+	dest := filepath.Join(dir, "dest.txt")
+	tmp := dest + ".part"
+
+	if err := files.Write(ctx, dest, []byte("old")); err != nil {
+		t.Fatalf("Write dest.txt: %v", err)
+	}
+	if err := files.Write(ctx, tmp, []byte("new")); err != nil {
+		t.Fatalf("Write dest.txt.part: %v", err)
+	}
+
+	if err := files.Commit(ctx, tmp, dest); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	data, err := files.Read(ctx, dest)
+	if err != nil {
+		t.Fatalf("Read dest.txt: %v", err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("dest.txt = %q after Commit, want %q", data, "new")
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Errorf("dest.txt.part still exists after Commit")
 	}
 }
 

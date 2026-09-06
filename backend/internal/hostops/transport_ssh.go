@@ -151,7 +151,7 @@ func (t *sshFileTransport) Stat(_ context.Context, p string) (DirEntry, error) {
 	if err != nil {
 		return DirEntry{}, fmt.Errorf("stat %s: %w", p, err)
 	}
-	return DirEntry{Name: info.Name(), IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime()}, nil
+	return DirEntry{Name: info.Name(), IsDir: info.IsDir(), IsRegular: info.Mode().IsRegular(), Size: info.Size(), ModTime: info.ModTime()}, nil
 }
 
 func (t *sshFileTransport) List(_ context.Context, p string) ([]DirEntry, error) {
@@ -165,7 +165,7 @@ func (t *sshFileTransport) List(_ context.Context, p string) ([]DirEntry, error)
 	}
 	out := make([]DirEntry, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, DirEntry{Name: e.Name(), IsDir: e.IsDir(), Size: e.Size(), ModTime: e.ModTime()})
+		out = append(out, DirEntry{Name: e.Name(), IsDir: e.IsDir(), IsRegular: e.Mode().IsRegular(), Size: e.Size(), ModTime: e.ModTime()})
 	}
 	return out, nil
 }
@@ -202,6 +202,49 @@ func (t *sshFileTransport) Open(_ context.Context, p string) (io.ReadCloser, err
 		return nil, fmt.Errorf("open %s: %w", p, err)
 	}
 	return f, nil
+}
+
+// Create opens p for writing over SFTP, truncating it if it exists — used
+// by the upload handler to stream into a ".part" staging path (see
+// FileTransport.Create's doc comment). The caller closes and checks the
+// error; SFTP's SSH_FXP_WRITE has no separate flush step, so a write
+// failure (e.g. the target rejecting the write) surfaces from Write itself,
+// not uniquely from Close, but Close's own error must still be checked.
+func (t *sshFileTransport) Create(_ context.Context, p string) (io.WriteCloser, error) {
+	c, err := t.transport.sftpClient()
+	if err != nil {
+		return nil, err
+	}
+	f, err := c.Create(p)
+	if err != nil {
+		return nil, fmt.Errorf("create %s: %w", p, err)
+	}
+	return f, nil
+}
+
+// Commit renames oldpath onto newpath, overwriting it — OpenSSH's
+// sftp-server refuses a plain SSH_FXP_RENAME onto an existing target
+// (SSH_FX_FAILURE), unlike pkg/sftp's own in-process test server, which
+// silently allows it (a real, measured divergence: a plain Rename here
+// would pass every test against this package's own test server and then
+// fail against every real OpenSSH target the moment a re-upload lands on
+// an existing file). PosixRename is the posix-rename@openssh.com
+// extension, which OpenSSH advertises and pkg/sftp implements, and is
+// atomic; a target without it falls back to a non-atomic remove-then-
+// rename, the closest available approximation.
+func (t *sshFileTransport) Commit(_ context.Context, oldpath, newpath string) error {
+	c, err := t.transport.sftpClient()
+	if err != nil {
+		return err
+	}
+	if err := c.PosixRename(oldpath, newpath); err == nil {
+		return nil
+	}
+	_ = c.Remove(newpath)
+	if err := c.Rename(oldpath, newpath); err != nil {
+		return fmt.Errorf("commit %s to %s: %w", oldpath, newpath, err)
+	}
+	return nil
 }
 
 func (t *sshFileTransport) Write(_ context.Context, p string, data []byte) error {

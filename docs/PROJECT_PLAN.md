@@ -1014,7 +1014,7 @@ never trusts a client-supplied user id.
 | `DELETE /api/sessions/:id/hostops/files?path=` | Delete a file or directory on the target | 202 `{"opId":"…"}`, progress on §5.2 |
 | `GET /api/sessions/:id/hostops/ops/:opId` | Poll a `delete`/`copy` op | `{"opId":"…","kind":"delete","done":12,"total":47,"status":"running"}`. Poll fallback for §5.2 |
 | `GET /api/sessions/:id/hostops/download?path=` | Download one file from the target | Streamed body, `Content-Disposition: attachment`, `Content-Length` when known |
-| `POST /api/sessions/:id/hostops/upload?path=` | Upload one file to the target | Raw streamed body, not multipart — goes straight into `FileTransport.Write`. Its own, much larger body-size ceiling (§11) — not the 32 KiB JSON-endpoint cap |
+| `POST /api/sessions/:id/hostops/upload?path=` | Upload one file to the target | Raw streamed body, not multipart — staged into `<path>.part` via `FileTransport.Create`, committed onto `path` (overwriting) only once fully written with no error. No size cap — not the 32 KiB JSON-endpoint cap, and no cap of its own either (§11) |
 
 Every `hostops` route resolves the same `mgr.Get(id, userID)` every other
 `/api/sessions/:id/*` route does (§4.3) before reaching the session's
@@ -1578,14 +1578,46 @@ layout and §11 for what they do and don't encrypt.
   Stat, Download) still resolves and allows the root — you can browse or
   read it, just not `DELETE .../hostops/files?path=.` and wipe the whole
   sandbox, or the equivalent on an SSH target's own filesystem root.
-- `GET .../hostops/download` streams (`FileTransport.Open` + `io.Copy` to
-  the response writer) rather than buffering the whole file
-  (`FileTransport.Read`) as it did originally — a target where `Stat`'s
-  reported size doesn't reflect what reading it actually produces (e.g. a
-  device file) could otherwise grow the server's heap without bound. The
-  stream itself is also capped (`hostopsDownloadMaxBytes`, same value as
-  the upload cap) as defense in depth for exactly that case, since `Stat`
-  alone can't be trusted to reject it up front.
+- Download and upload both stream (`FileTransport.Open`/`Create` +
+  `io.Copy`) instead of buffering a whole file, so neither has a size cap —
+  the cap that used to exist on both was a consequence of buffering, not
+  an independent safety property, and streaming means the server's own
+  memory footprint stays flat regardless of file size. Download sets
+  `Content-Length` from `Stat` only when `DirEntry.IsRegular` is true — a
+  special file (e.g. a device) can report any `Size` with no relation to
+  what reading it actually produces, so omitting the header for anything
+  else (rather than trusting a `Stat` that can't be trusted) is the
+  correctness fix, not the cap that used to sit downstream of it. Upload
+  writes into a `<dest>.part` staging file and only `Commit`s it (an
+  atomic overwrite rename) onto the real destination once the whole body
+  is written and closed with no error, so an aborted or failed upload
+  never leaves a partially-written file at the destination — cleanup of
+  the `.part` stub runs with `context.WithoutCancel`, since it must still
+  happen after the same abort that triggered it.
+  `FileTransport.Commit` deliberately isn't `Rename` (the user-facing
+  move, which must keep refusing to clobber): SSH's `Commit` uses the
+  `posix-rename@openssh.com` extension (`PosixRename`, which OpenSSH
+  advertises and `pkg/sftp` implements), because a plain `SSH_FXP_RENAME`
+  onto an existing target is accepted by `pkg/sftp`'s own in-process test
+  server but refused by real OpenSSH's `sftp-server` with
+  `SSH_FX_FAILURE` — verified directly against a real OpenSSH 9.6p1
+  server (this container's own installed `sshd`) with a throwaway system
+  account: a plain `Rename` onto an existing file failed exactly as
+  expected, `PosixRename` overwrote cleanly. A target without the
+  extension falls back to remove-then-rename (non-atomic, but the closest
+  available approximation).
+  A hung remote read (a frozen network mid-transfer, not a client
+  disconnect) has no fix at this layer: neither closing the session's SFTP
+  client nor its SSH channel unblocks it, only tearing down the whole SSH
+  connection does, and that connection also carries the session's
+  terminal — so a stalled download/upload holds one goroutine and one SFTP
+  request until the connection itself goes away (SSH keepalives, a
+  separate and not-yet-built concern, are the actual lever). The case that
+  does need to work — the client aborting a still-producing transfer —
+  already does, with no extra machinery: the next write to the aborted
+  response (download) or the next read of the aborted request body
+  (upload) fails on its own, `io.Copy` returns, and the deferred `Close`
+  runs.
 - Rate limiting: still deferred — not added in this pass either. Login
   brute-forcing is the main gap this leaves open; worth revisiting before a
   wider deployment than "an admin who trusts their own users."

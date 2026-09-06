@@ -413,7 +413,7 @@ watch(
             >
               {{ entry.name }}
             </button>
-            <span v-if="!entry.isDir" class="shrink-0 text-slate-500">{{ formatSize(entry.size) }}</span>
+            <span v-if="!entry.isDir" class="shrink-0 text-slate-500">{{ entry.isRegular ? formatSize(entry.size) : 'special file' }}</span>
 
             <template v-if="confirmingDeleteName === entry.name">
               <button type="button" class="rounded bg-rose-600 px-1.5 py-0.5 text-xs text-white hover:bg-rose-500" @click="confirmDelete(entry)">

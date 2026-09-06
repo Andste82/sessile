@@ -146,13 +146,18 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 	}
 
 	// Download/upload get their own routes outside authGroup's blanket
-	// 32 KiB JSON cap. Download has no request body to limit; upload needs
-	// its own, much larger ceiling (hostopsUploadMaxBytes, hostops_ops.go).
+	// 32 KiB JSON cap — a MaxBytesReader wrap can only ever shrink an
+	// already-wrapped body, never raise it, so a route with a body this
+	// size can't share authGroup. Neither has a size cap of its own: both
+	// stream (hostops_transfer.go), so neither holds a whole file in
+	// memory regardless of size — the size cap that used to exist here
+	// was a consequence of buffering the whole file, not an independent
+	// safety property worth keeping once that stopped being true.
 	authOnly := r.Group("/api")
 	authOnly.Use(s.requireAuth())
 	{
 		authOnly.GET("/sessions/:id/hostops/download", s.downloadHostFile)
-		authOnly.POST("/sessions/:id/hostops/upload", limitBody(hostopsUploadMaxBytes), s.uploadHostFile)
+		authOnly.POST("/sessions/:id/hostops/upload", s.uploadHostFile)
 	}
 
 	if s.ws != nil {

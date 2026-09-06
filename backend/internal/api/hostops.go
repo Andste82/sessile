@@ -102,14 +102,15 @@ func (s *Server) getProcessTree(c *gin.Context) {
 
 // dirEntryJSON mirrors hostops.DirEntry for the wire (§6, §4.10).
 type dirEntryJSON struct {
-	Name    string `json:"name"`
-	IsDir   bool   `json:"isDir"`
-	Size    int64  `json:"size"`
-	ModTime string `json:"modTime"`
+	Name      string `json:"name"`
+	IsDir     bool   `json:"isDir"`
+	IsRegular bool   `json:"isRegular"`
+	Size      int64  `json:"size"`
+	ModTime   string `json:"modTime"`
 }
 
 func toDirEntryJSON(e hostops.DirEntry) dirEntryJSON {
-	return dirEntryJSON{Name: e.Name, IsDir: e.IsDir, Size: e.Size, ModTime: e.ModTime.UTC().Format(time.RFC3339)}
+	return dirEntryJSON{Name: e.Name, IsDir: e.IsDir, IsRegular: e.IsRegular, Size: e.Size, ModTime: e.ModTime.UTC().Format(time.RFC3339)}
 }
 
 // resolveHostopsPath turns a caller-supplied path into what FileTransport

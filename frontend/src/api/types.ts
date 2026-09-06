@@ -163,6 +163,10 @@ export interface ProcessTreeResponse {
 export interface HostDirEntry {
   name: string
   isDir: boolean
+  // False for a special file (a device, a FIFO) — size has no relation to
+  // what reading it actually produces for one of those, unlike a regular
+  // file's.
+  isRegular: boolean
   size: number
   modTime: string // RFC 3339 UTC
 }

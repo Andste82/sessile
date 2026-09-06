@@ -236,8 +236,8 @@ func TestSSHFilesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name != "a.txt" || entries[0].IsDir || entries[0].Size != 5 {
-		t.Fatalf("List = %+v, want one file a.txt size 5", entries)
+	if len(entries) != 1 || entries[0].Name != "a.txt" || entries[0].IsDir || !entries[0].IsRegular || entries[0].Size != 5 {
+		t.Fatalf("List = %+v, want one regular file a.txt size 5", entries)
 	}
 
 	data, err := files.Read(ctx, "a.txt")
@@ -252,8 +252,8 @@ func TestSSHFilesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if stat.Name != "a.txt" || stat.IsDir || stat.Size != 5 {
-		t.Errorf("Stat = %+v, want name=a.txt isDir=false size=5", stat)
+	if stat.Name != "a.txt" || stat.IsDir || !stat.IsRegular || stat.Size != 5 {
+		t.Errorf("Stat = %+v, want name=a.txt isDir=false isRegular=true size=5", stat)
 	}
 
 	if err := files.Copy(ctx, "a.txt", "b.txt"); err != nil {
@@ -301,6 +301,76 @@ func TestSSHFilesOpenStreamsTheSameContentAsRead(t *testing.T) {
 // the sftp-server subsystem request fails once (a real rejection from a
 // real server, not a mocked error) and a later call must retry rather than
 // replaying the same failure for the rest of the session's life.
+func TestSSHFilesCreateStreamsIntoATruncatedFile(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	ctx := context.Background()
+	files := NewSSH(newTestSSHClient(t, hs), "").Files()
+
+	if err := files.Write(ctx, "a.txt.part", []byte("this was here before and is longer")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	w, err := files.Create(ctx, "a.txt.part")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := io.WriteString(w, "new"); err != nil {
+		t.Fatalf("write to Create result: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	data, err := files.Read(ctx, "a.txt.part")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("Read after Create = %q, want %q (Create must truncate, not append)", data, "new")
+	}
+}
+
+// TestSSHFilesCommitOverwritesAnExistingDestination is the upload path's
+// exact shape: stage into ".part", then Commit onto the real destination
+// even though it already exists. This only proves Commit works against
+// pkg/sftp's own in-process server — it is NOT proof that PosixRename is
+// what makes this safe against a real OpenSSH target, since this same
+// server also accepts a *plain* Rename onto an existing target (which real
+// OpenSSH refuses with SSH_FX_FAILURE — the review's Trap 2). That
+// divergence was verified separately against a real OpenSSH 9.6p1 server
+// with a throwaway system account: plain Rename onto an existing file
+// failed exactly as the review predicted, and Commit (via PosixRename)
+// succeeded — see the commit message for this test's own commit. Treat
+// this test as documentation of Commit's contract, not as proof it's safe
+// against a real target; that proof came from the manual run, not from CI.
+func TestSSHFilesCommitOverwritesAnExistingDestination(t *testing.T) {
+	hs := newHostopsTestServer(t)
+	ctx := context.Background()
+	files := NewSSH(newTestSSHClient(t, hs), "").Files()
+
+	if err := files.Write(ctx, "dest.txt", []byte("old")); err != nil {
+		t.Fatalf("Write dest.txt: %v", err)
+	}
+	if err := files.Write(ctx, "dest.txt.part", []byte("new")); err != nil {
+		t.Fatalf("Write dest.txt.part: %v", err)
+	}
+
+	if err := files.Commit(ctx, "dest.txt.part", "dest.txt"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	data, err := files.Read(ctx, "dest.txt")
+	if err != nil {
+		t.Fatalf("Read dest.txt: %v", err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("dest.txt = %q after Commit, want %q", data, "new")
+	}
+	if _, err := os.Stat(filepath.Join(hs.root, "dest.txt.part")); !os.IsNotExist(err) {
+		t.Errorf("dest.txt.part still exists on disk after Commit")
+	}
+}
+
 func TestSftpClientRetriesAfterATransientFailure(t *testing.T) {
 	hs := newHostopsTestServer(t)
 	hs.sftpFailures = 1

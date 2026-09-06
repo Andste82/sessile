@@ -72,6 +72,20 @@ type FileTransport interface {
 	// The caller must Close the returned reader.
 	Open(ctx context.Context, path string) (io.ReadCloser, error)
 	Write(ctx context.Context, path string, data []byte) error
+	// Create opens path for writing, truncating it if it exists — the
+	// upload handler's streaming counterpart to Write, used to write into
+	// a ".part" staging path so a failed or aborted upload never leaves a
+	// partially-written file at the real destination (committed atomically
+	// via Commit once the whole body has been written and closed without
+	// error). The caller must Close the returned writer and check its
+	// error — a full destination surfaces there (ENOSPC/EDQUOT), not from
+	// the write calls that filled the buffer before it.
+	Create(ctx context.Context, path string) (io.WriteCloser, error)
+	// Commit renames oldpath to newpath, overwriting newpath if it already
+	// exists — deliberately not Rename, which is the user-facing "move"
+	// and must keep refusing to clobber. Used only to commit a Create'd
+	// ".part" staging file over its real destination.
+	Commit(ctx context.Context, oldpath, newpath string) error
 	Rename(ctx context.Context, oldpath, newpath string) error // Move
 	// Remove deletes a file, or a directory and everything under it. Neither
 	// SFTP nor a plain syscall has a recursive-delete primitive, so this
@@ -87,8 +101,14 @@ type FileTransport interface {
 type DirEntry struct {
 	Name    string
 	IsDir   bool
-	Size    int64
-	ModTime time.Time
+	// IsRegular is required to trust Size as a byte count a read will
+	// actually produce — a special file (a device, a FIFO) can report any
+	// Size at all with no relation to what reading it does. The download
+	// handler uses this to decide whether Size is safe to publish as an
+	// HTTP Content-Length.
+	IsRegular bool
+	Size      int64
+	ModTime   time.Time
 }
 
 // Platform is the one thing about a target that is genuinely OS-shaped:

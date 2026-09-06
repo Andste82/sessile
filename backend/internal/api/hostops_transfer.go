@@ -2,32 +2,30 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"path"
-	"time"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/Andste82/sessile/backend/internal/hostops"
 )
 
-// hostopsUploadMaxBytes bounds one upload. Generous — files this feature
-// targets, not a bulk-transfer tool (§1) — but it is also the real memory
-// cost of one upload: FileTransport.Write takes the whole body at once
-// (§4.10), no streaming, so this cap is what it sounds like, not just a
-// request-size sanity check.
-const hostopsUploadMaxBytes = 512 << 20 // 512 MiB
-
-// hostopsDownloadMaxBytes bounds one download the same way
-// hostopsUploadMaxBytes bounds one upload — see downloadHostFile.
-const hostopsDownloadMaxBytes = hostopsUploadMaxBytes
-
-// hostopsTransferTimeout bounds one download/upload — longer than
-// hostopsTimeout's quick-metadata budget, since a file read/write can
-// legitimately take longer than a ps call or a directory listing.
-const hostopsTransferTimeout = 5 * time.Minute
-
+// downloadHostFile streams path to the response with no size cap — the
+// only reason a cap ever existed was that the whole file used to be
+// buffered in memory (ops.Files().Read) before the first byte was written;
+// Open below streams instead, so the server's own memory footprint stays
+// constant regardless of the remote file's size. An endless source (a
+// device file on an unsandboxed SSH session, §4.5) streams for as long as
+// the client keeps reading — that's accepted, not guarded against: the
+// abort path that matters is the client disconnecting, which io.Copy
+// detects on its own via a failed write, and a genuinely stalled remote
+// (frozen network mid-read) has no local fix worth building — closing the
+// SFTP client or its SSH channel doesn't unblock a hung SFTP read, only
+// tearing down the whole SSH connection does, and that connection also
+// carries the session's terminal. See PROJECT_PLAN.md §11.
 func (s *Server) downloadHostFile(c *gin.Context) {
 	userID := c.MustGet(userIDKey).(string)
 	id := c.Param("id")
@@ -48,19 +46,15 @@ func (s *Server) downloadHostFile(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTransferTimeout)
-	defer cancel()
+	ctx := c.Request.Context()
 
-	// Stat first so a file whose reported size already exceeds the cap is
-	// rejected before a single byte moves — the common case (a large but
-	// honest regular file). This is a courtesy, not the safety mechanism:
-	// a special file (e.g. /dev/zero) can report a size that has nothing to
-	// do with what reading it actually produces, which is exactly why the
-	// stream below is also capped independently.
-	if stat, err := ops.Files().Stat(ctx, resolvedPath); err == nil && stat.Size > hostopsDownloadMaxBytes {
-		respondError(c, http.StatusRequestEntityTooLarge, CodeValidation, "file exceeds the download size limit")
-		return
-	}
+	// Stat's reported size is only meaningful for a regular file — a
+	// special file (e.g. /dev/zero) can report any size at all with no
+	// relation to what reading it actually produces, so Content-Length is
+	// only set when IsRegular says the size can be trusted. A Stat failure
+	// isn't fatal here: Open below is the real read and reports its own
+	// error if the path genuinely doesn't exist.
+	stat, statErr := ops.Files().Stat(ctx, resolvedPath)
 
 	f, err := ops.Files().Open(ctx, resolvedPath)
 	if err != nil {
@@ -76,17 +70,30 @@ func (s *Server) downloadHostFile(c *gin.Context) {
 	filename := path.Base(resolvedPath)
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	c.Header("Content-Type", "application/octet-stream")
-	// Streamed via io.Copy, not buffered whole (contrast the old
-	// ops.Files().Read + c.Data): the response is written as bytes arrive
-	// over SFTP/disk, so this handler's own memory footprint stays constant
-	// regardless of the remote file's real size. Capped at
-	// hostopsDownloadMaxBytes+1 bytes so a file whose Stat lied (a device
-	// or pseudo-file) can't stream forever either — it's silently truncated
-	// rather than erroring, since headers are already written by this
-	// point and the status code can't change mid-response.
-	_, _ = io.CopyN(c.Writer, f, hostopsDownloadMaxBytes+1)
+	if statErr == nil && stat.IsRegular {
+		c.Header("Content-Length", strconv.FormatInt(stat.Size, 10))
+	}
+	c.Status(http.StatusOK)
+
+	if n, err := io.Copy(c.Writer, f); err != nil {
+		s.log.Warn("download interrupted", "id", id, "written", n, "err", err)
+	}
 }
 
+// uploadHostFile streams the request body into a ".part" staging file next
+// to the real destination and only commits it (atomic overwrite rename)
+// once the whole body has been written and closed with no error — an
+// aborted or failed upload leaves the destination untouched, not a
+// partially-written file. No size cap: Create/Copy stream, so nothing here
+// holds a whole file in memory regardless of size (the same reasoning as
+// downloadHostFile above).
+//
+// The request context (not a detached one) drives every step here: the
+// old buffer-then-write shape used a detached context deliberately, so an
+// aborted upload still finished writing what it already had — but with a
+// staging-file-then-commit shape that reasoning inverts. An abort should
+// stop the copy and clean up the stub; atomicity now comes from the commit
+// rename, not from finishing the write no matter what.
 func (s *Server) uploadHostFile(c *gin.Context) {
 	userID := c.MustGet(userIDKey).(string)
 	id := c.Param("id")
@@ -107,24 +114,45 @@ func (s *Server) uploadHostFile(c *gin.Context) {
 		return
 	}
 
-	data, err := io.ReadAll(c.Request.Body)
+	ctx := c.Request.Context()
+	tmp := resolvedPath + ".part"
+
+	w, err := ops.Files().Create(ctx, tmp)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			respondError(c, http.StatusRequestEntityTooLarge, CodeValidation, "upload exceeds the size limit")
-			return
-		}
-		respondError(c, http.StatusBadRequest, CodeValidation, "failed to read upload body")
+		s.log.Warn("upload failed", "id", id, "err", err)
+		respondError(c, http.StatusInternalServerError, CodeInternal, "upload failed")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), hostopsTransferTimeout)
-	defer cancel()
-
-	if err := ops.Files().Write(ctx, resolvedPath, data); err != nil {
+	if _, err := io.Copy(w, c.Request.Body); err != nil {
+		w.Close()
+		s.cleanupUploadStub(ctx, ops.Files(), tmp)
+		respondError(c, http.StatusBadRequest, CodeValidation, "failed to read upload body")
+		return
+	}
+	// Close is checked separately from Copy: a buffered writer surfaces a
+	// full destination (ENOSPC/EDQUOT) here, not from the writes that
+	// filled the buffer before it.
+	if err := w.Close(); err != nil {
+		s.cleanupUploadStub(ctx, ops.Files(), tmp)
+		s.log.Warn("upload failed", "id", id, "err", err)
+		respondError(c, http.StatusInternalServerError, CodeInternal, "upload failed")
+		return
+	}
+	if err := ops.Files().Commit(ctx, tmp, resolvedPath); err != nil {
+		s.cleanupUploadStub(ctx, ops.Files(), tmp)
 		s.log.Warn("upload failed", "id", id, "err", err)
 		respondError(c, http.StatusInternalServerError, CodeInternal, "upload failed")
 		return
 	}
 	c.Status(http.StatusCreated)
+}
+
+// cleanupUploadStub best-effort removes a ".part" staging file after a
+// failed or aborted upload — derived from ctx via context.WithoutCancel so
+// any request-scoped values still carry through, but stripped of ctx's own
+// cancellation, since cleanup must still happen after the same abort that
+// triggered it, not be cancelled by it.
+func (s *Server) cleanupUploadStub(ctx context.Context, files hostops.FileTransport, tmp string) {
+	_ = files.Remove(context.WithoutCancel(ctx), tmp)
 }

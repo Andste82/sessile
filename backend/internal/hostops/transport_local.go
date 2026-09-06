@@ -55,7 +55,7 @@ func (localFileTransport) Stat(_ context.Context, path string) (DirEntry, error)
 	if err != nil {
 		return DirEntry{}, fmt.Errorf("stat %s: %w", path, err)
 	}
-	return DirEntry{Name: info.Name(), IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime()}, nil
+	return DirEntry{Name: info.Name(), IsDir: info.IsDir(), IsRegular: info.Mode().IsRegular(), Size: info.Size(), ModTime: info.ModTime()}, nil
 }
 
 func (localFileTransport) List(_ context.Context, path string) ([]DirEntry, error) {
@@ -69,7 +69,7 @@ func (localFileTransport) List(_ context.Context, path string) ([]DirEntry, erro
 		if err != nil {
 			return nil, fmt.Errorf("stat %s: %w", filepath.Join(path, e.Name()), err)
 		}
-		out = append(out, DirEntry{Name: e.Name(), IsDir: e.IsDir(), Size: info.Size(), ModTime: info.ModTime()})
+		out = append(out, DirEntry{Name: e.Name(), IsDir: e.IsDir(), IsRegular: info.Mode().IsRegular(), Size: info.Size(), ModTime: info.ModTime()})
 	}
 	return out, nil
 }
@@ -88,6 +88,25 @@ func (localFileTransport) Open(_ context.Context, path string) (io.ReadCloser, e
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	return f, nil
+}
+
+func (localFileTransport) Create(_ context.Context, path string) (io.WriteCloser, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("create %s: %w", path, err)
+	}
+	return f, nil
+}
+
+// Commit renames oldpath onto newpath — os.Rename already overwrites an
+// existing newpath on POSIX, so this is a one-liner unlike SSH's, which
+// needs the posix-rename extension for the same guarantee (see
+// sshFileTransport.Commit).
+func (localFileTransport) Commit(_ context.Context, oldpath, newpath string) error {
+	if err := os.Rename(oldpath, newpath); err != nil {
+		return fmt.Errorf("commit %s to %s: %w", oldpath, newpath, err)
+	}
+	return nil
 }
 
 func (localFileTransport) Write(_ context.Context, path string, data []byte) error {
