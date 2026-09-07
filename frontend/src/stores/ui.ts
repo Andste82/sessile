@@ -164,8 +164,7 @@ export const useUiStore = defineStore('ui', () => {
   // deleted since the page was last loaded.
   const filesPanels = ref<Record<string, FilesPanelState>>({})
 
-  /** panelFor returns the panel state of a session, creating it on first ask. */
-  function panelFor(sessionId: string): FilesPanelState {
+  function ensurePanel(sessionId: string): FilesPanelState {
     const existing = filesPanels.value[sessionId]
     if (existing) return existing
     const fresh = newFilesPanelState()
@@ -173,16 +172,27 @@ export const useUiStore = defineStore('ui', () => {
     return fresh
   }
 
+  /**
+   * panelFor reads a session's panel state. It does not create the entry — it
+   * is called from computed getters during render, and a getter that writes to
+   * reactive state is a side effect Vue is entitled to complain about. A
+   * session with no entry yet reads as the defaults; the setters below are
+   * what puts it in the map.
+   */
+  function panelFor(sessionId: string): FilesPanelState {
+    return filesPanels.value[sessionId] ?? newFilesPanelState()
+  }
+
   function setPanelOpen(sessionId: string, open: boolean) {
-    panelFor(sessionId).open = open
+    ensurePanel(sessionId).open = open
   }
 
   function setPanelTab(sessionId: string, tab: FilesPanelState['tab']) {
-    panelFor(sessionId).tab = tab
+    ensurePanel(sessionId).tab = tab
   }
 
   function setPanelPath(sessionId: string, path: string) {
-    panelFor(sessionId).path = path
+    ensurePanel(sessionId).path = path
   }
 
   /**
