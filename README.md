@@ -41,6 +41,11 @@ specification, the development setup and the project layout live there.
   local or remote alike. Move, copy and delete with progress, download a
   file to the browser, upload one back, or copy a path to paste into the
   shell next to it.
+- **Session groups.** Name a group when creating a session — or pick one
+  already in use — and the dashboard and sidebar list it under a heading you
+  can fold away. There is nothing to manage: a group exists while a session
+  names it and is gone with its last member. Leave the field empty and the
+  list looks exactly as it did before.
 - **Persistent sessions.** Once connected, PTYs are owned by the backend and
   survive browser disconnects, refreshes and closed tabs.
 - **Scrollback restoration.** Each session keeps a ring buffer of its raw
