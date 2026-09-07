@@ -8,6 +8,7 @@ import {
   TransitionChild,
 } from '@headlessui/vue'
 import { useHostsStore } from '@/stores/hosts'
+import PasswordInput from './PasswordInput.vue'
 import ExchangeKeysDialog from './ExchangeKeysDialog.vue'
 import type { AuthMethod, ExchangeKeysResponse, Host, HostBody, TargetOS } from '@/api/types'
 
@@ -256,12 +257,10 @@ const inputCls =
 
               <label v-if="authMethod === 'password'" :class="labelCls">
                 <span class="text-slate-400">Password</span>
-                <input
+                <PasswordInput
                   v-model="password"
-                  type="password"
                   autocomplete="new-password"
                   :placeholder="isEdit && workingHost?.hasPassword ? 'Leave blank to keep the current password' : ''"
-                  :class="inputCls"
                 />
               </label>
 
@@ -277,7 +276,7 @@ const inputCls =
                 </label>
                 <label :class="labelCls">
                   <span class="text-slate-400">Passphrase (optional)</span>
-                  <input v-model="privateKeyPassphrase" type="password" autocomplete="new-password" :class="inputCls" />
+                  <PasswordInput v-model="privateKeyPassphrase" autocomplete="new-password" />
                 </label>
               </template>
 
