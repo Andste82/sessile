@@ -22,6 +22,9 @@ var (
 	ErrShuttingDown = errors.New("server is shutting down")
 	// ErrInvalidName is returned for names outside the 1–64 char range.
 	ErrInvalidName = errors.New("name must be 1-64 characters")
+	// ErrInvalidGroup is returned for a group label longer than 64 characters.
+	// Unlike a name, "" is valid and means "no group" (§4.11).
+	ErrInvalidGroup = errors.New("group must be at most 64 characters")
 	// ErrInvalidShell is returned when a shell is not in the allowlist or is
 	// not installed on PATH.
 	ErrInvalidShell = errors.New("shell not allowed or not installed")

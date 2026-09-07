@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -18,8 +19,11 @@ import (
 // "ssh" needs hostId. Empty target is treated as "local" for compatibility
 // with the pre-M17 body shape.
 type createSessionBody struct {
-	Name      string `json:"name"`
-	Target    string `json:"target"`
+	Name   string `json:"name"`
+	Target string `json:"target"`
+	// Group is optional and free text; "" files the session under no group,
+	// which is what every session created before §4.11 existed carries.
+	Group     string `json:"group"`
 	Directory string `json:"directory"`
 	Shell     string `json:"shell"`
 	HostID    string `json:"hostId"`
@@ -59,7 +63,7 @@ func (s *Server) createLocalSession(c *gin.Context, userID string, body createSe
 		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
 		return
 	}
-	info, err := s.manager.CreateLocal(userID, body.Name, body.Directory, body.Shell)
+	info, err := s.manager.CreateLocal(userID, body.Name, strings.TrimSpace(body.Group), body.Directory, body.Shell)
 	if err != nil {
 		s.respondSessionError(c, err)
 		return
@@ -78,7 +82,7 @@ func (s *Server) createSSHSession(c *gin.Context, userID string, body createSess
 		return
 	}
 
-	info, err := s.manager.CreateSSH(userID, body.Name, host.ID, host.Name, host.SSHTarget())
+	info, err := s.manager.CreateSSH(userID, body.Name, strings.TrimSpace(body.Group), host.ID, host.Name, host.SSHTarget())
 	if err != nil {
 		if s.respondHostKeyError(c, err) {
 			return
@@ -108,18 +112,28 @@ func (s *Server) deleteSession(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-type renameBody struct {
-	Name string `json:"name"`
+// updateBody carries the two metadata fields a session can be edited after
+// creation. Both are pointers so an omitted field means "leave unchanged" and
+// a present one always applies — the same distinction the host update body
+// draws for its secrets (§6). Without it there would be no way to clear a
+// group, since "" is the value that does it.
+type updateBody struct {
+	Name  *string `json:"name"`
+	Group *string `json:"group"`
 }
 
-func (s *Server) renameSession(c *gin.Context) {
+func (s *Server) updateSession(c *gin.Context) {
 	userID := c.MustGet(userIDKey).(string)
-	var body renameBody
+	var body updateBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, "invalid request body")
 		return
 	}
-	info, err := s.manager.Rename(c.Param("id"), userID, body.Name)
+	if body.Group != nil {
+		trimmed := strings.TrimSpace(*body.Group)
+		body.Group = &trimmed
+	}
+	info, err := s.manager.Update(c.Param("id"), userID, body.Name, body.Group)
 	if err != nil {
 		s.respondSessionError(c, err)
 		return
@@ -169,7 +183,8 @@ func (s *Server) respondSessionError(c *gin.Context, err error) {
 	case errors.Is(err, session.ErrStopped),
 		errors.Is(err, session.ErrRestarting):
 		respondError(c, http.StatusConflict, CodeConflict, err.Error())
-	case errors.Is(err, session.ErrInvalidName),
+	case errors.Is(err, session.ErrInvalidGroup),
+		errors.Is(err, session.ErrInvalidName),
 		errors.Is(err, session.ErrInvalidShell):
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 	case errors.Is(err, session.ErrShuttingDown):

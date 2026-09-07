@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ArrowPathIcon, FolderIcon, ServerIcon, TrashIcon, UsersIcon } from '@heroicons/vue/24/outline'
+import {
+  ArrowPathIcon,
+  FolderIcon,
+  PencilIcon,
+  ServerIcon,
+  TrashIcon,
+  UsersIcon,
+} from '@heroicons/vue/24/outline'
 import StatusDot from './StatusDot.vue'
 import type { Session } from '@/api/types'
 import { displayCommand, displayDirectory, displayTitle } from '@/utils/session'
@@ -11,6 +18,7 @@ const props = defineProps<{ session: Session }>()
 const emit = defineEmits<{
   (e: 'delete', id: string): void
   (e: 'restart', id: string): void
+  (e: 'edit', session: Session): void
 }>()
 
 const command = computed(() => displayCommand(props.session))
@@ -41,6 +49,15 @@ const targetBadge = computed(() => (isSSH.value ? 'ssh' : props.session.shell))
       >
         <ArrowPathIcon class="h-4 w-4" />
       </button>
+      <button
+        class="rounded p-1 text-slate-500 opacity-100 transition hover:bg-slate-700 hover:text-slate-200 sm:opacity-0 sm:group-hover:opacity-100"
+        title="Edit name and group"
+        @click.prevent.stop="emit('edit', session)"
+      >
+        <PencilIcon class="h-4 w-4" />
+      </button>
+      <!-- Destructive last, so the button next to the one being aimed for is
+           never the one that deletes. -->
       <button
         class="rounded p-1 text-slate-500 opacity-100 transition hover:bg-slate-700 hover:text-rose-400 sm:opacity-0 sm:group-hover:opacity-100"
         title="Delete session"

@@ -134,7 +134,7 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/sessions", s.createSession)
 		authGroup.GET("/sessions/:id", s.getSession)
 		authGroup.DELETE("/sessions/:id", s.deleteSession)
-		authGroup.PATCH("/sessions/:id", s.renameSession)
+		authGroup.PATCH("/sessions/:id", s.updateSession)
 		authGroup.POST("/sessions/:id/restart", s.restartSession)
 		authGroup.GET("/sessions/:id/hostops/process-tree", s.getProcessTree)
 		authGroup.GET("/sessions/:id/hostops/files", s.listHostFiles)

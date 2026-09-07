@@ -26,7 +26,7 @@ func TestConcurrentSamplingBroadcastAndSubscribers(t *testing.T) {
 	const sessions = 3
 	ids := make([]string, 0, sessions)
 	for range sessions {
-		info, err := mgr.CreateLocal("test-user", "load", ".", "sh")
+		info, err := mgr.CreateLocal("test-user", "load", "", ".", "sh")
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
@@ -132,7 +132,7 @@ func TestConcurrentShutdownDuringSampling(t *testing.T) {
 
 	mgr, _, _ := testManager(t)
 	for range 2 {
-		info, err := mgr.CreateLocal("test-user", "load", ".", "sh")
+		info, err := mgr.CreateLocal("test-user", "load", "", ".", "sh")
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}

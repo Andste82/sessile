@@ -2,8 +2,17 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
 import type { ServerEvent } from '@/api/events'
-import type { AppConfig, CreateSessionBody, Session } from '@/api/types'
+import type { AppConfig, CreateSessionBody, Session, UpdateSessionBody } from '@/api/types'
 import { useUiStore } from './ui'
+
+/**
+ * SessionGroup is one block of the grouped session list. An empty name is the
+ * ungrouped block, which the views render without a heading.
+ */
+export interface SessionGroup {
+  name: string
+  sessions: Session[]
+}
 
 // Session list + config store. The list is kept live by the event channel
 // (§5.1); polling remains as the fallback for while that socket is down.
@@ -27,6 +36,37 @@ export const useSessionsStore = defineStore('sessions', () => {
     // too, so a deleted session is covered by this as well.
     useUiStore().forgetSessionPanel(id)
   }
+
+  // Sessions in display order: the ungrouped ones first and unlabelled, then
+  // each named group alphabetically. Ungrouped goes first and headerless
+  // because "" is the absence of a group, not a group called "Default" — a
+  // user who never touches this feature sees exactly the flat list they saw
+  // before it existed (§4.11).
+  const grouped = computed<SessionGroup[]>(() => {
+    const ungrouped = sessions.value.filter((s) => s.group === '')
+    const named = new Map<string, Session[]>()
+    for (const s of sessions.value) {
+      if (s.group === '') continue
+      const bucket = named.get(s.group)
+      if (bucket) bucket.push(s)
+      else named.set(s.group, [s])
+    }
+    const out: SessionGroup[] = ungrouped.length > 0 ? [{ name: '', sessions: ungrouped }] : []
+    for (const name of [...named.keys()].sort((a, b) => a.localeCompare(b))) {
+      out.push({ name, sessions: named.get(name)! })
+    }
+    return out
+  })
+
+  // Every group name currently in use, sorted. There is no group entity — this
+  // *is* the group list (§4.11), which is why a group vanishes on its own once
+  // its last session is deleted. Used for the create/edit dialogs' suggestions
+  // and by the grouped views.
+  const groupNames = computed(() =>
+    [...new Set(sessions.value.map((s) => s.group).filter((g) => g !== ''))].sort((a, b) =>
+      a.localeCompare(b),
+    ),
+  )
 
   const byId = computed(
     () => (id: string) => sessions.value.find((s) => s.id === id) ?? null,
@@ -137,8 +177,8 @@ export const useSessionsStore = defineStore('sessions', () => {
     removeSession(id)
   }
 
-  async function renameSession(id: string, name: string) {
-    const updated = await api.renameSession(id, name)
+  async function updateSession(id: string, body: UpdateSessionBody) {
+    const updated = await api.updateSession(id, body)
     sessions.value = sessions.value.map((s) => (s.id === id ? updated : s))
     return updated
   }
@@ -185,6 +225,8 @@ export const useSessionsStore = defineStore('sessions', () => {
     loading,
     error,
     byId,
+    grouped,
+    groupNames,
     openTabIds,
     openTab,
     closeTab,
@@ -198,7 +240,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     upsertSession,
     createSession,
     deleteSession,
-    renameSession,
+    updateSession,
     markStopped,
     markAllStopped,
     restartSession,

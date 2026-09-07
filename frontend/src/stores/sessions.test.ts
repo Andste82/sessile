@@ -67,6 +67,7 @@ function session(over: Partial<Session> = {}): Session {
     shell: 'bash',
     hostId: '',
     hostDisplayName: '',
+    group: '',
     status: 'running',
     pid: 42,
     created: '2026-08-03T10:00:00Z',
@@ -252,5 +253,61 @@ describe('applyEvent', () => {
     store.applyEvent({ type: 'sessions', sessions: [session()] })
 
     expect(store.error).toBeNull()
+  })
+})
+
+describe('groupNames', () => {
+  // There is no group entity: this list *is* the set of groups (§4.11), which
+  // is why a group disappears on its own once its last session is gone.
+  it('lists the distinct groups in use, sorted, ignoring ungrouped sessions', () => {
+    const store = useSessionsStore()
+    store.sessions = [
+      session({ id: 'a', group: 'Staging' }),
+      session({ id: 'b', group: 'Production' }),
+      session({ id: 'c', group: 'Production' }),
+      session({ id: 'd', group: '' }),
+    ]
+    expect(store.groupNames).toEqual(['Production', 'Staging'])
+  })
+
+  it('is empty when nothing is grouped', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
+    expect(store.groupNames).toEqual([])
+  })
+})
+
+describe('grouped', () => {
+  // Ungrouped first and nameless, named groups alphabetically after it. The
+  // empty name is what the views read as "render these without a heading".
+  it('puts the ungrouped block first, then named groups in order', () => {
+    const store = useSessionsStore()
+    store.sessions = [
+      session({ id: 'a', group: 'Staging' }),
+      session({ id: 'b', group: '' }),
+      session({ id: 'c', group: 'Production' }),
+      session({ id: 'd', group: 'Staging' }),
+    ]
+    expect(store.grouped.map((g) => [g.name, g.sessions.map((s) => s.id)])).toEqual([
+      ['', ['b']],
+      ['Production', ['c']],
+      ['Staging', ['a', 'd']],
+    ])
+  })
+
+  // Someone who never uses groups must get exactly one block and no heading.
+  it('is a single unnamed block when nothing is grouped', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
+    expect(store.grouped).toHaveLength(1)
+    expect(store.grouped[0].name).toBe('')
+  })
+
+  // No ungrouped block at all when every session is filed somewhere — an
+  // empty first block would render as a gap above the first heading.
+  it('omits the ungrouped block when it would be empty', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a', group: 'Production' })]
+    expect(store.grouped.map((g) => g.name)).toEqual(['Production'])
   })
 })

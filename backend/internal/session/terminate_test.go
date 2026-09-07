@@ -73,7 +73,7 @@ func TestDeleteReturnsWhenAProcessOutlivesTheShell(t *testing.T) {
 	requireSetsid(t)
 	mgr, store, _ := testManager(t)
 
-	info, err := mgr.CreateLocal("test-user", "wedged", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "wedged", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestDiscardedSessionWritesNoScrollbackWhenItsReadLoopFinishesLate(t *testin
 	requireSetsid(t)
 	mgr, _, dataDir := testManager(t)
 
-	info, err := mgr.CreateLocal("test-user", "wedged", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "wedged", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestShutdownReturnsWhenAProcessOutlivesTheShell(t *testing.T) {
 	requireSetsid(t)
 	mgr, _, _ := testManager(t)
 
-	info, err := mgr.CreateLocal("test-user", "wedged", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "wedged", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

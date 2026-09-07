@@ -22,13 +22,17 @@ type JSON struct {
 	// type, which models it as `string | null` only for hostId/hostDisplayName
 	// together via target discrimination, not per-field nullability).
 	HostDisplayName string `json:"hostDisplayName"`
-	Status          string `json:"status"`
-	PID             int    `json:"pid"`
-	Created         string `json:"created"`
-	LastActivity    string `json:"lastActivity"`
-	Rows            uint16 `json:"rows"`
-	Cols            uint16 `json:"cols"`
-	ClientCount     int    `json:"clientCount"`
+	// Group is "" for a session the user filed under no group — the majority
+	// case, and the one the UI renders exactly as it did before groups
+	// existed (§4.11).
+	Group        string `json:"group"`
+	Status       string `json:"status"`
+	PID          int    `json:"pid"`
+	Created      string `json:"created"`
+	LastActivity string `json:"lastActivity"`
+	Rows         uint16 `json:"rows"`
+	Cols         uint16 `json:"cols"`
+	ClientCount  int    `json:"clientCount"`
 
 	// Derived state (§4.7, §4.8). All three are "" for a stopped session,
 	// where they could not be determined, and Command/Cwd are always "" for
@@ -48,6 +52,7 @@ func ToJSON(i Info) JSON {
 		Shell:           i.Shell,
 		HostID:          i.HostID,
 		HostDisplayName: i.HostDisplayName,
+		Group:           i.Group,
 		Status:          string(i.Status),
 		PID:             i.PID,
 		Created:         rfc3339(i.Created),

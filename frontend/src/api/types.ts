@@ -12,6 +12,7 @@ export interface Session {
   shell: string // local only
   hostId: string // ssh only
   hostDisplayName: string // ssh only — snapshotted at creation, survives a host rename/delete
+  group: string // free-text label the user files sessions under, "" for none (§4.11)
   status: Status
   pid: number
   created: string // RFC 3339 UTC
@@ -26,8 +27,15 @@ export interface Session {
 
 // Discriminated on target: "local" needs directory+shell, "ssh" needs hostId.
 export type CreateSessionBody =
-  | { name: string; target: 'local'; directory: string; shell: string }
-  | { name: string; target: 'ssh'; hostId: string }
+  | { name: string; target: 'local'; group?: string; directory: string; shell: string }
+  | { name: string; target: 'ssh'; group?: string; hostId: string }
+
+// Both fields optional, and both meaningful when present: an omitted one is
+// left unchanged, `group: ''` clears the group (§6).
+export interface UpdateSessionBody {
+  name?: string
+  group?: string
+}
 
 export interface AppConfig {
   shells: string[]

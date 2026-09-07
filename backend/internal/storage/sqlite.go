@@ -39,6 +39,11 @@ var migrationColumns = []struct{ name, ddl string }{
 	{"target_type", `ALTER TABLE sessions ADD COLUMN target_type TEXT NOT NULL DEFAULT 'local'`},
 	{"host_id", `ALTER TABLE sessions ADD COLUMN host_id TEXT NOT NULL DEFAULT ''`},
 	{"host_display_name", `ALTER TABLE sessions ADD COLUMN host_display_name TEXT NOT NULL DEFAULT ''`},
+	// group_name, not group: GROUP is a SQL keyword, and a column that has to
+	// be quoted at every use is a trap for the next query written by hand.
+	// Rows written before this migration get '', which is exactly "no group"
+	// (§4.11) — nothing to backfill.
+	{"group_name", `ALTER TABLE sessions ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`},
 }
 
 // migrate applies migrationColumns, skipping any column that already exists.

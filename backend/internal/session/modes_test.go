@@ -370,7 +370,7 @@ func TestSessionModesFromARealShell(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

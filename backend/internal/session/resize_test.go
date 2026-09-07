@@ -14,7 +14,7 @@ func size(t *testing.T, s *Session) (uint16, uint16) {
 // writing for.
 func TestResizeTakesTheSmallestClient(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "resize", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "resize", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestResizeTakesTheSmallestClient(t *testing.T) {
 // has to fit inside both at once.
 func TestResizeTakesEachAxisFromWhicheverClientIsSmaller(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "axes", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "axes", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestResizeTakesEachAxisFromWhicheverClientIsSmaller(t *testing.T) {
 // their space back rather than staying squeezed by a phone that is gone.
 func TestDetachReleasesTheSizeItHeld(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "detach", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "detach", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestDetachReleasesTheSizeItHeld(t *testing.T) {
 // session anywhere — least of all to a default nobody is displaying.
 func TestAttachWithoutResizeDoesNotChangeTheSize(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "silent", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "silent", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestAttachWithoutResizeDoesNotChangeTheSize(t *testing.T) {
 // A resize from a connection that is not attached has no window behind it.
 func TestResizeFromADetachedClientIsIgnored(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "stale", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "stale", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

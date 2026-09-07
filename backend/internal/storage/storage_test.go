@@ -195,6 +195,42 @@ func TestUserAndTargetFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// A group survives the round trip, and survives being cleared again — the
+// upsert has to write "" over an existing value, not skip it (§4.11).
+func TestGroupRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	in := newInfo("grouped", session.StatusStopped)
+	in.Group = "Production"
+	if err := st.Insert(in); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, _, err := st.Get("grouped")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Group != "Production" {
+		t.Fatalf("Group = %q, want %q", got.Group, "Production")
+	}
+
+	in.Group = ""
+	if err := st.Insert(in); err != nil {
+		t.Fatalf("re-insert: %v", err)
+	}
+	got, _, err = st.Get("grouped")
+	if err != nil {
+		t.Fatalf("get after clear: %v", err)
+	}
+	if got.Group != "" {
+		t.Fatalf("Group = %q after clearing, want empty", got.Group)
+	}
+}
+
 // TestMigrationUpgradesPreM17Database is the actual upgrade path: a database
 // created under the original schema (no user_id/target_type/host_id/
 // host_display_name columns, PROJECT_PLAN.md §8 pre-M17) must open cleanly
@@ -251,6 +287,12 @@ func TestMigrationUpgradesPreM17Database(t *testing.T) {
 	}
 	if got.TargetType != session.TargetLocal {
 		t.Errorf("TargetType = %q, want %q for a row written before the migration", got.TargetType, session.TargetLocal)
+	}
+	// The group column arrived later still (§4.11). An old row has no group,
+	// which is a complete answer rather than a missing one: it renders exactly
+	// as it did before groups existed.
+	if got.Group != "" {
+		t.Errorf("Group = %q, want empty for a row written before the migration", got.Group)
 	}
 
 	// The migration must also be idempotent: a second Open (simulating a

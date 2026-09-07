@@ -824,6 +824,35 @@ and `hosts.yml`/session-metadata modeling for "isolated in a container, on
 top of host X" — product decisions, not architecture, and stay open until
 they're actually asked.
 
+### 4.11 Session groups (dynamic, no group entity)
+
+A session carries a free-text `Group` label, `""` for none. That is the whole
+model: there is no group table, no group id, no group CRUD, and no group
+manager. The set of groups is derived — it is whatever the user's sessions
+currently name — so a group comes into being when a session claims it and is
+gone once the last session carrying it is deleted. This mirrors `Host.group`
+(§4.5's hosts.yml, already shipped), which works the same way and is what the
+Hosts page groups by.
+
+The field is persisted (§8), which is what separates *deleted* from *stopped*:
+a stopped session keeps its group, so a server restart does not scatter the
+grouping. Only deleting the last member retires a group.
+
+`""` is not a group named "Default" or "Ungrouped" — it is the absence of one,
+and the UI renders those sessions the way it did before groups existed, with
+no heading at all, and only draws a separator once at least one real group
+exists. Nothing is reserved: a user may name a group "Default" and it behaves
+like any other.
+
+Groups are per user, because sessions are (§4.3). Two users' identical group
+names are unrelated labels on disjoint session sets, never a shared object.
+
+Editing: `PATCH /api/sessions/:id` (§6) carries optional `name` and `group`.
+That endpoint predates groups — it was the rename route — and gains the second
+field rather than a second endpoint, since both are the same kind of change:
+metadata on a session, applied whatever its status, published to every
+attached browser over the event channel (§5.1).
+
 ---
 
 ## 5. WebSocket Protocol (exact spec)
@@ -1003,7 +1032,7 @@ never trusts a client-supplied user id.
 | `POST /api/sessions` | Create | Body below; 201 + session JSON. 409 `host_key_unverified`/`host_key_changed` for SSH targets whose key needs trusting first (§4.5.1) |
 | `GET /api/sessions/:id` | Get one | Owner-scoped |
 | `DELETE /api/sessions/:id` | Kill + remove permanently | 204; also drops the session's scrollback snapshot and history file (§8) |
-| `PATCH /api/sessions/:id` | Rename (`{"name":"…"}`) | |
+| `PATCH /api/sessions/:id` | Edit a session's metadata (`{"name":"…","group":"…"}`) | Both fields optional; an omitted one is left unchanged, a present one always applies — `"group":""` is how a session leaves its group (§4.11). Name 1–64 chars, group ≤64. 400 `validation` otherwise |
 | `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (local), 404 `host_not_found` or 409 host-key responses (SSH) |
 | `GET /api/directories` | Browse dirs under the local-host workspace; optional `?path=` (relative, validated by §4.5) navigates into subdirs | 403 if `allowLocalHost` is off. `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
 | `GET /api/config` | Display name, available shells, `allowLocalHost`, version | Shells = allowlist ∩ installed |
@@ -1025,10 +1054,11 @@ everywhere else. `DirEntry` is `{"name":"…","isDir":bool,"size":123,"modTime":
 
 Create-session body is a discriminator on `target`:
 ```json
-{"name":"Backend","target":"local","directory":"project-a","shell":"bash"}
+{"name":"Backend","target":"local","group":"Production","directory":"project-a","shell":"bash"}
 {"name":"prod-db","target":"ssh","hostId":"…"}
 ```
-Validation: name 1–64 chars; `target:"local"` requires `allowLocalHost` on,
+Validation: name 1–64 chars; `group` optional, ≤64 chars, trimmed, `""` (or
+absent) means no group (§4.11); `target:"local"` requires `allowLocalHost` on,
 directory passes §4.5, shell in allowlist; `target:"ssh"` requires `hostId`
 to resolve to one of the caller's own hosts.
 
@@ -1037,7 +1067,7 @@ Session JSON shape (single source of truth — mirror in TS types):
 {
   "id":"…","name":"Backend",
   "targetType":"local","directory":"project-a","shell":"bash",
-  "hostId":null,"hostDisplayName":null,
+  "hostId":null,"hostDisplayName":null,"group":"Production",
   "status":"running","pid":12345,
   "created":"2026-07-16T12:00:00Z","lastActivity":"2026-07-16T12:34:56Z",
   "rows":32,"cols":120,"clientCount":2,
@@ -1285,9 +1315,13 @@ of it ever written into SQLite:
 ```
 
 Sessions table schema (run as an embedded migration on startup; `M17`/§12b
-added the last four columns to the v0.1–v0.2 table via
+added the four auth/target columns to the v0.1–v0.2 table via
 `ALTER TABLE ... ADD COLUMN`, guarded by a `PRAGMA table_info` check since
-this was the project's first real schema migration):
+this was the project's first real schema migration; `M27`/§12d added
+`group_name` the same way). The column is `group_name`, not `group`: `GROUP`
+is a SQL keyword, and a column that has to be quoted at every use is a trap
+for the next hand-written query. A row that predates it carries `''`, which is
+"no group" (§4.11) — nothing to backfill:
 
 ```sql
 CREATE TABLE IF NOT EXISTS sessions (
@@ -1297,6 +1331,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   target_type       TEXT NOT NULL DEFAULT 'local',
   host_id           TEXT NOT NULL DEFAULT '',
   host_display_name TEXT NOT NULL DEFAULT '',
+  group_name        TEXT NOT NULL DEFAULT '',
   directory         TEXT NOT NULL,
   shell             TEXT NOT NULL,
   status            TEXT NOT NULL DEFAULT 'running',
@@ -1916,6 +1951,45 @@ ceiling, §11), browser-native transfer progress in `FileBrowserPanel.vue`.
 ✅ *Verify:* download a file, checksum matches the source; upload a file
 larger than the JSON-endpoint body cap and confirm it is not rejected by
 that cap.
+
+---
+
+## 12d. Milestones — Session Groups (v0.6)
+
+Dynamic grouping of sessions (§4.11). One user-visible feature, sliced so the
+first milestone is complete and verifiable without any UI for it.
+
+### M27 — `group` on the session
+`Group` on `Session`/`Info`/`JSON`, the `group_name` migration column (§8),
+`group` accepted by the create body, and `PATCH /api/sessions/:id` widened
+from rename to name-and-group with omitted-means-unchanged semantics (§6).
+Restart carries the group over; the event channel publishes it like any other
+metadata change.
+✅ *Verify:* create a session with a group and one without, restart both, and
+confirm the group survives; `PATCH` a name without touching the group and a
+group without touching the name; open a pre-M27 `sessions.db` and confirm its
+rows come back with no group and no error.
+
+### M28 — Choosing and changing a group
+Group field with an existing-groups `datalist` in `NewSessionDialog`; a pencil
+beside the delete button on the dashboard card opening a small edit dialog for
+name and group (which is also the first UI the rename endpoint has ever had).
+✅ *Verify:* create two sessions into the same new group by picking it from the
+list the second time; rename a session without disturbing its group; move a
+session out of a group and watch the group disappear with its last member.
+
+### M29 — Showing the groups
+Derived `grouped` getter (ungrouped first and unheaded, named groups
+alphabetically), collapsible group headers in the dashboard grid and the
+sidebar session list, collapse state in `stores/ui.ts` and `localStorage`,
+tracked **per list**: the dashboard is where sessions are managed and folding
+a finished group away is tidying, while the sidebar is a navigation strip
+whose job is reaching anything quickly. One shared set would make tidying the
+dashboard silently rearrange the strip.
+✅ *Verify:* collapse a group and reload — it stays collapsed, in that list and
+in a second tab, and the other list is untouched; the session currently open
+stays visible in the sidebar even when its group is collapsed; a user with no
+groups sees exactly the layout they saw before this feature.
 
 ---
 
