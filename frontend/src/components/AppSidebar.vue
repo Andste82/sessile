@@ -3,14 +3,26 @@ import { RouterLink, useRoute } from 'vue-router'
 import { HomeIcon, ServerIcon, Cog6ToothIcon, UsersIcon } from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
 import { useAuthStore } from '@/stores/auth'
+import { useUiStore } from '@/stores/ui'
 import StatusDot from './StatusDot.vue'
+import GroupHeader from './GroupHeader.vue'
 
 const store = useSessionsStore()
 const auth = useAuthStore()
+const ui = useUiStore()
 const route = useRoute()
 
 function isTerminal(id: string) {
   return route.name === 'terminal' && route.params.id === id
+}
+
+// A collapsed group still shows the session currently on screen. Hiding it
+// would take the one entry that is actively in use out of the list while its
+// terminal is right there — the count in the header says the rest are folded
+// away, and this keeps the sidebar agreeing with what the user is looking at.
+function visible(group: { name: string; sessions: typeof store.sessions }) {
+  if (!group.name || !ui.isGroupCollapsed(group.name)) return group.sessions
+  return group.sessions.filter((s) => isTerminal(s.id))
 }
 </script>
 
@@ -76,16 +88,26 @@ function isTerminal(id: string) {
       <p class="px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-500">
         Sessions
       </p>
-      <RouterLink
-        v-for="s in store.sessions"
-        :key="s.id"
-        :to="`/sessions/${s.id}`"
-        class="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
-        :class="{ 'bg-slate-800 text-slate-100': isTerminal(s.id) }"
-      >
-        <StatusDot :status="s.status" />
-        <span class="truncate">{{ s.name }}</span>
-      </RouterLink>
+      <template v-for="g in store.grouped" :key="g.name">
+        <GroupHeader
+          v-if="g.name"
+          dense
+          :name="g.name"
+          :count="g.sessions.length"
+          :collapsed="ui.isGroupCollapsed(g.name)"
+          @toggle="ui.toggleGroup(g.name)"
+        />
+        <RouterLink
+          v-for="s in visible(g)"
+          :key="s.id"
+          :to="`/sessions/${s.id}`"
+          class="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
+          :class="{ 'bg-slate-800 text-slate-100': isTerminal(s.id) }"
+        >
+          <StatusDot :status="s.status" />
+          <span class="truncate">{{ s.name }}</span>
+        </RouterLink>
+      </template>
       <p
         v-if="store.sessions.length === 0"
         class="px-3 py-2 text-sm text-slate-600"

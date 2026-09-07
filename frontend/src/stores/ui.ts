@@ -73,6 +73,37 @@ function readCopyOnSelect(): boolean {
   }
 }
 
+// Which session groups (§4.11) are collapsed. Persisted, because a group that
+// springs back open on every reload is not really collapsed — and shared by
+// the dashboard and the sidebar, because "this group is collapsed" is a
+// statement about the group, not about one of the two places showing it.
+const collapsedGroupsKey = 'sessile.collapsedGroups'
+
+/**
+ * parseCollapsedGroups reads a stored (or cross-tab) value as a list of group
+ * names. Anything that is not the array of strings we write — a corrupted
+ * entry, a cleared one, a value from a future version — reads as "nothing
+ * collapsed", which errs towards showing sessions rather than hiding them.
+ */
+export function parseCollapsedGroups(value: unknown): string[] {
+  if (typeof value !== 'string') return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((g): g is string => typeof g === 'string')
+  } catch {
+    return []
+  }
+}
+
+function readCollapsedGroups(): string[] {
+  try {
+    return parseCollapsedGroups(localStorage.getItem(collapsedGroupsKey))
+  } catch {
+    return []
+  }
+}
+
 // The files & processes panel belongs to a session, not to the page showing
 // one. TerminalPage is a single component instance the router reuses across
 // every open tab, so a panel whose open/closed state, selected tab and current
@@ -148,15 +179,41 @@ export const useUiStore = defineStore('ui', () => {
     if (e.key === null) {
       terminalFontSize.value = defaultFontSize
       copyOnSelect.value = defaultCopyOnSelect
+      collapsedGroups.value = []
       return
     }
     if (e.key === fontSizeKey) terminalFontSize.value = clampFontSize(e.newValue)
     else if (e.key === copyOnSelectKey) copyOnSelect.value = parseCopyOnSelect(e.newValue)
+    else if (e.key === collapsedGroupsKey) collapsedGroups.value = parseCollapsedGroups(e.newValue)
   }
 
   // Never removed: the store lives exactly as long as the page it listens for.
   // Guarded because the store is also built in tests, where there is no window.
   if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
+
+  // Names, not ids: a group has no identity beyond its name (§4.11). A group
+  // that loses its last session and is later re-created under the same name
+  // therefore comes back collapsed, which is the same answer the user gave
+  // last time they saw it.
+  const collapsedGroups = ref<string[]>(readCollapsedGroups())
+
+  function isGroupCollapsed(name: string): boolean {
+    return collapsedGroups.value.includes(name)
+  }
+
+  function toggleGroup(name: string) {
+    collapsedGroups.value = isGroupCollapsed(name)
+      ? collapsedGroups.value.filter((g) => g !== name)
+      : [...collapsedGroups.value, name]
+  }
+
+  watch(collapsedGroups, (groups) => {
+    try {
+      localStorage.setItem(collapsedGroupsKey, JSON.stringify(groups))
+    } catch {
+      // Unwritable storage: the choice still applies for this page's lifetime.
+    }
+  })
 
   // Deliberately in memory only, unlike the font size and copy-on-select
   // above: a remembered directory is worth keeping while the app is open and
@@ -211,6 +268,9 @@ export const useUiStore = defineStore('ui', () => {
     setTerminalFontSize,
     copyOnSelect,
     setCopyOnSelect,
+    collapsedGroups,
+    isGroupCollapsed,
+    toggleGroup,
     filesPanels,
     panelFor,
     setPanelOpen,

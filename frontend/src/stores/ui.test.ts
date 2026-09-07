@@ -7,6 +7,7 @@ import {
   maxFontSize,
   minFontSize,
   defaultFilesPanelTab,
+  parseCollapsedGroups,
   parseCopyOnSelect,
   useUiStore,
 } from './ui'
@@ -317,5 +318,74 @@ describe('files & processes panel state', () => {
     expect(ui.panelFor('b').path).toBe('/two')
     // Asking again after forgetting is a fresh start, not the old directory.
     expect(ui.panelFor('a').path).toBeUndefined()
+  })
+})
+
+describe('parseCollapsedGroups', () => {
+  it('reads back what the store writes', () => {
+    expect(parseCollapsedGroups(JSON.stringify(['Production', 'Staging']))).toEqual([
+      'Production',
+      'Staging',
+    ])
+  })
+
+  // Anything unreadable errs towards showing sessions rather than hiding them.
+  it.each([null, undefined, '', 'not json', '{"a":1}', '[1,2]', '"Production"'])(
+    'falls back to nothing collapsed for %o',
+    (input) => {
+      expect(parseCollapsedGroups(input)).toEqual([])
+    },
+  )
+
+  it('keeps only the strings out of a mixed array', () => {
+    expect(parseCollapsedGroups('["Production",7,null,"Staging"]')).toEqual([
+      'Production',
+      'Staging',
+    ])
+  })
+})
+
+describe('collapsed groups', () => {
+  it('toggles a group on and off', () => {
+    withStorage(fakeStorage())
+    const ui = useUiStore()
+    expect(ui.isGroupCollapsed('Production')).toBe(false)
+
+    ui.toggleGroup('Production')
+    expect(ui.isGroupCollapsed('Production')).toBe(true)
+    expect(ui.isGroupCollapsed('Staging')).toBe(false)
+
+    ui.toggleGroup('Production')
+    expect(ui.isGroupCollapsed('Production')).toBe(false)
+  })
+
+  it('persists the collapsed set', async () => {
+    const storage = fakeStorage()
+    withStorage(storage)
+    const ui = useUiStore()
+
+    ui.toggleGroup('Production')
+    await Promise.resolve()
+
+    expect(storage.data['sessile.collapsedGroups']).toBe(JSON.stringify(['Production']))
+  })
+
+  it('starts from what another session of this browser stored', () => {
+    withStorage(fakeStorage({ 'sessile.collapsedGroups': JSON.stringify(['Staging']) }))
+    expect(useUiStore().isGroupCollapsed('Staging')).toBe(true)
+  })
+
+  // Two tabs are a normal way to use this app: collapsing in one has to reach
+  // the other, or the same group reads as both open and closed.
+  it('follows another tab', () => {
+    withStorage(fakeStorage())
+    const win = withWindow()
+    const ui = useUiStore()
+
+    win.storage('sessile.collapsedGroups', JSON.stringify(['Production']))
+    expect(ui.isGroupCollapsed('Production')).toBe(true)
+
+    win.storage(null, null) // a clear() takes every preference with it
+    expect(ui.isGroupCollapsed('Production')).toBe(false)
   })
 })

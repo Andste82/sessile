@@ -3,15 +3,18 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { PlusIcon } from '@heroicons/vue/24/solid'
 import { useSessionsStore } from '@/stores/sessions'
+import { useUiStore } from '@/stores/ui'
 import { useHostsStore } from '@/stores/hosts'
 import { ApiRequestError, isAlreadyRunning } from '@/api/client'
 import SessionListItem from '@/components/SessionListItem.vue'
 import NewSessionDialog from '@/components/NewSessionDialog.vue'
 import EditSessionDialog from '@/components/EditSessionDialog.vue'
+import GroupHeader from '@/components/GroupHeader.vue'
 import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
 import type { HostKeyErrorDetails, Session } from '@/api/types'
 
 const store = useSessionsStore()
+const ui = useUiStore()
 const hostsStore = useHostsStore()
 const router = useRouter()
 const dialogOpen = ref(false)
@@ -133,15 +136,31 @@ function retryRestartAfterTrust() {
         </template>
       </div>
 
+      <!--
+        One grid for every group, with the headers as full-width rows in it,
+        rather than a grid per group: that keeps the cards on a single set of
+        columns, so they stay the same width and keep lining up across a group
+        boundary.
+      -->
       <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <SessionListItem
-          v-for="s in store.sessions"
-          :key="s.id"
-          :session="s"
-          @delete="onDelete"
-          @restart="onRestart"
-          @edit="editing = $event"
-        />
+        <template v-for="g in store.grouped" :key="g.name">
+          <GroupHeader
+            v-if="g.name"
+            class="col-span-full"
+            :name="g.name"
+            :count="g.sessions.length"
+            :collapsed="ui.isGroupCollapsed(g.name)"
+            @toggle="ui.toggleGroup(g.name)"
+          />
+          <SessionListItem
+            v-for="s in ui.isGroupCollapsed(g.name) ? [] : g.sessions"
+            :key="s.id"
+            :session="s"
+            @delete="onDelete"
+            @restart="onRestart"
+            @edit="editing = $event"
+          />
+        </template>
       </div>
     </main>
 
