@@ -321,12 +321,35 @@ WS layer — branches on target type; only `Manager.CreateLocal` /
   the client on overflow.
 - PTY writes from multiple clients are serialized by a mutex on the PTY.
 
-### 4.5 Directory sandbox (security-critical)
+### 4.5 Workspace path validation (security-critical)
 Root is the local-host workspace, `--workspace-dir` (default
 `<data-dir>/workspace`, §9), only reachable when an admin has enabled
 `allowLocalHost` in `config.yml` (§9, §10). It is **one shared root for
 every permitted user** — not a per-user root — matching the pre-multi-user
-behavior exactly. For any user-supplied directory:
+behavior exactly.
+
+**What this bounds, and what it does not.** It bounds *paths that arrive over
+the API* — a session's starting directory, the directory browser, and every
+local file operation in §4.10. It does not confine the session: `terminal/pty`
+sets `cmd.Dir` and nothing else — no chroot, no namespaces — so the shell is
+an ordinary process that can `cd` anywhere its user can reach. The foreground
+sampler (§4.7) already treats that as the normal case: it reads the shell's
+real working directory and reports `""` when it resolves outside the root,
+rather than preventing it.
+
+That makes this an input check on a public surface, not a jail — and it is
+security-critical precisely as an input check. The API is reachable by any
+client, not only this app's browser, so dropping it would let a caller read
+and write anywhere the server process can. Its being unable to hold the shell
+is not a gap to close here; confining the shell is a different mechanism
+(containers, namespaces) and a separate decision.
+
+An SSH session is outside this entirely: its paths are the user's own on the
+user's own host, deliberately passed through unvalidated, bounded by nothing
+but that host's own permissions and this app's per-user ownership scoping
+(§4.10's trust boundary).
+
+For any user-supplied directory:
 1. Reject empty, absolute paths, and any path containing `..` segments.
 2. `full := filepath.Join(root, filepath.Clean(userPath))`
 3. `resolved, err := filepath.EvalSymlinks(full)` — must succeed.
@@ -442,7 +465,7 @@ file out of the runtime poller and switches it to blocking mode, which would
 quietly break the read loop and `CloseFile()`.
 
 `cwd` is a path the user did not supply but the UI displays, so it goes through
-the §4.5 sandbox like any other: made relative to root, dropped if it resolves
+§4.5's path validation like any other: made relative to root, dropped if it resolves
 outside. A session whose shell has `cd`-ed out of root shows its stored
 `directory` instead.
 
@@ -768,10 +791,10 @@ manager shows the transfer; `Upload` is one `XMLHttpRequest` (not `fetch` —
 does) reading real byte counts as the body streams out. Either way, nothing
 server-side needs to compute or push a number the browser already has.
 
-**Trust boundary.** Local paths still go through §4.5's sandbox — nothing
+**Trust boundary.** Local paths still go through §4.5's validation — nothing
 here loosens that. Remote (SSH) paths do not: the user already has a full
 interactive shell on that host through the terminal this `HostSession`
-belongs to, so there is no meaningful sandbox left to add beyond the
+belongs to, so there is no meaningful path boundary left to add beyond the
 existing per-user host ownership check (§4.3, §4.5) that gates which
 session's `HostSession` a request can even reach.
 
@@ -1309,7 +1332,7 @@ of it ever written into SQLite:
 
 <workspace-dir>/           # --workspace-dir; /workspace in Docker; defaults to
                             # <data-dir>/workspace when unset (§9) — the shared
-                            # local-host sandbox root (§4.5), only used when
+                            # local-host workspace root (§4.5), only used when
                             # allowLocalHost is on. Kept separate from --data-dir
                             # so the two can be backed up independently.
 ```
@@ -1364,7 +1387,7 @@ session worth reopening:
 The directory is `--data-dir`, resolved to an absolute path, and is
 deliberately **a separate directory from `--workspace-dir`** (§4.5, §9): a
 local-host shell that could read or rewrite its own history file inside the
-sandbox would make the restored history worthless, and a relative path would
+workspace would make the restored history worthless, and a relative path would
 resolve against the *session's* directory once it reaches a shell's
 environment. SSH sessions have no `HISTFILE` injected — the remote shell's
 own history config applies,
@@ -1414,7 +1437,7 @@ on the replay only — live output keeps its queries, or a running program would
 wait forever for an answer that was deleted.
 
 `POST /api/sessions/:id/restart` (§6) spawns a new shell under the same id,
-name, directory and shell, re-running the §4.5 sandbox and allowlist checks.
+name, directory and shell, re-running the §4.5 path and allowlist checks.
 The new ring buffer is pre-seeded with the snapshot followed by a separator
 that leaves the alternate screen and resets attributes, cursor and autowrap —
 without it a session that stopped inside a full-screen program would leave the
@@ -1439,7 +1462,7 @@ introduces.
 ## 9. Configuration
 
 `--root` is gone, renamed to `--workspace-dir` — same meaning (the
-local-host sandbox directory), but now optional and access-gated at runtime
+local-host workspace directory), but now optional and access-gated at runtime
 by `config.yml`'s `allowLocalHost` rather than being the server's only mode.
 Everything else the server keeps — session DB, scrollback, history,
 `config.yml`, `users.yml`, per-user `hosts.yml` — lives under
@@ -1453,7 +1476,7 @@ never sensitive on its own.
 |---|---|---|
 | `--addr` | `TSM_ADDR` | `:8080` |
 | `--data-dir` | `TSM_DATA_DIR` | `./data` → in Docker: `/config`. Holds `config.yml`, `users.yml`, `users/`, `sessions.db`, `scrollback/`, `history/` |
-| `--workspace-dir` | `TSM_WORKSPACE_DIR` | `<data-dir>/workspace` → in Docker: `/workspace`. The local-host sandbox root, only reachable when `allowLocalHost` is on |
+| `--workspace-dir` | `TSM_WORKSPACE_DIR` | `<data-dir>/workspace` → in Docker: `/workspace`. The local-host workspace root, only reachable when `allowLocalHost` is on |
 | `--shells` | `TSM_SHELLS` | `bash,zsh,fish` (local-host allowlist only — irrelevant unless `allowLocalHost` is on) |
 | `--buffer-size` | `TSM_BUFFER_SIZE` | `524288` (bytes) |
 | `--session-retention` | `TSM_SESSION_RETENTION` | `0` (keep forever); Go duration, e.g. `720h` |
@@ -1526,7 +1549,7 @@ layout and §11 for what they do and don't encrypt.
    shells. Single binary copied in.
    `EXPOSE 8080`; **two volumes**, `/config` (holds `config.yml`,
    `users.yml`, `users/`, `sessions.db`, `scrollback/`, `history/` — §8/§9)
-   and `/workspace` (the local-host sandbox, only used when `allowLocalHost`
+   and `/workspace` (the local-host workspace, only used when `allowLocalHost`
    is on);
    `HEALTHCHECK` hitting `/api/health`;
    `ENTRYPOINT ["tini", "--", "sessile"]`;
@@ -1549,7 +1572,7 @@ layout and §11 for what they do and don't encrypt.
 
 ## 11. Security (v0.4 baseline)
 
-- Directory sandbox per §4.5 (tested), now paired with per-user ownership
+- Workspace path validation per §4.5 (tested), now paired with per-user ownership
   scoping for sessions and hosts (§4.5, §4.3, §6) — the same "never trust
   the caller" discipline applied to identity, not just paths.
 - Shell allowlist — never exec a user-supplied path (local-host sessions
@@ -1600,25 +1623,25 @@ layout and §11 for what they do and don't encrypt.
 - Host operations (§4.10) add no new identity or path-trust model: routes are
   scoped by the same session ownership check as every other
   `/api/sessions/:id/*` route (§4.3, §6), local paths still pass §4.5's
-  sandbox, and a remote (SSH) path is not sandboxed beyond that ownership
+  validation, and a remote (SSH) path is not bounded beyond that ownership
   check — the user already has an interactive shell on that host through
   the session the operation belongs to, so there is no narrower boundary to
-  enforce than "this is your own session." Since there's no sandbox to stay
+  enforce than "this is your own session." Since there's no root to stay
   inside, `listHostFiles` canonicalizes an SSH path to the target's own real
   absolute form (`FileTransport.Resolve`, via SFTP's `REALPATH`) rather than
   a synthetic relative starting point with nowhere "above" it — the file
   browser can navigate anywhere the login already can, siblings and parents
   included, same as a real shell on that host would let them. A local
-  session's path stays relative to the sandbox root (§4.5) — there being
-  nothing above that root to show is the point of the sandbox, not a gap.
+  session's path stays relative to the workspace root (§4.5) — there being
+  nothing above that root to show is the point of that root, not a gap.
 - Destructive host operations (Delete, and Copy/Move's destination) go
   through `resolveDestructiveHostopsPath`, not the plain path-resolution
   helper every other hostops route uses — it rejects a resolved path that
-  *is* the operation's own root: the local sandbox root (§4.5) for a local
-  session, `.`/`/` for an unsandboxed SSH session. A read-only route (List,
+  *is* the operation's own root: the local workspace root (§4.5) for a local
+  session, `.`/`/` for an unbounded SSH session. A read-only route (List,
   Stat, Download) still resolves and allows the root — you can browse or
   read it, just not `DELETE .../hostops/files?path=.` and wipe the whole
-  sandbox, or the equivalent on an SSH target's own filesystem root.
+  workspace, or the equivalent on an SSH target's own filesystem root.
 - Download and upload both stream (`FileTransport.Open`/`Create` +
   `io.Copy`) instead of buffering a whole file, so neither has a size cap —
   the cap that used to exist on both was a consequence of buffering, not
@@ -1742,7 +1765,7 @@ shows the placeholder and proxies `/api/health`.
 
 ### M1 — PTY sessions + WebSocket (backend only, the core)
 SessionManager, Session, RingBuffer, PTY start, WS protocol (§5),
-in-memory only (no SQLite yet). Unit tests for RingBuffer and path sandbox.
+in-memory only (no SQLite yet). Unit tests for RingBuffer and path validation.
 ✅ *Verify with a script* (`scripts/wstest.sh` using `websocat` or a tiny Go
 test client): create session via curl → connect WS → send `ls\n` as binary →
 receive output → disconnect → run `echo hi` via a second connection → confirm
@@ -1823,7 +1846,7 @@ built, not the v0.1 one; no lingering "no SSH/no auth" language.
 ./...`; a fresh checkout with no flags starts and creates
 `./data/config.yml` with hand-editable defaults; `--data-dir`/
 `--workspace-dir` set to separate paths keep credentials and the
-local-host sandbox on disjoint directories.
+local-host workspace on disjoint directories.
 
 ### M10 — Auth backend
 `internal/auth` (users.yml store, bcrypt, sliding-TTL session store);
@@ -1995,8 +2018,8 @@ groups sees exactly the layout they saw before this feature.
 
 ## 13. Testing Strategy
 
-- **Unit (Go):** RingBuffer (wraparound, exact-boundary), path sandbox
-  (§4.5 cases), shell allowlist, session state transitions, the replay filter
+- **Unit (Go):** RingBuffer (wraparound, exact-boundary), workspace path
+  validation (§4.5 cases), shell allowlist, session state transitions, the replay filter
   and the alternate-screen check (§8 — sequences split across chunk boundaries
   and BEL as an OSC terminator are the two cases a naive scan gets wrong), the
   foreground chain's label (§4.7), the title scanner (§4.8 — a sequence split
@@ -2038,9 +2061,12 @@ groups sees exactly the layout they saw before this feature.
    still holds for SSH-backed sessions — they reuse `Manager`'s existing
    `readLoop`/`ws.Client` machinery through the `Backend` interface (§4.2),
    not a parallel implementation.
-4. Every user-supplied path goes through the sandbox function. No exceptions.
+4. Every path an API caller supplies for the local host goes through §4.5's
+   validation. No exceptions. An SSH session's paths are excluded by design,
+   not by oversight — they are the user's own on the user's own host (§4.10's
+   trust boundary), and ownership scoping is what bounds them.
 5. Every session/host lookup is scoped to the authenticated user; a
-   client-supplied user id is never trusted. This is §4's path-sandbox
+   client-supplied user id is never trusted. This is §4's path-validation
    principle applied to identity: `Manager`'s `userID`-scoped methods (§4.3)
    and `internal/hosts.Store` being opened strictly by the session's own
    user id (§6) are its two instances. An unauthorized id probe must be
