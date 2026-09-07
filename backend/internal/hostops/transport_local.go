@@ -45,7 +45,7 @@ func (localTransport) Files() FileTransport { return localFileTransport{} }
 type localFileTransport struct{}
 
 // Resolve is a no-op for local: the API layer's session.ResolvePath (§4.5)
-// already produced an absolute, sandboxed path before this is ever called.
+// already produced an absolute, workspace-validated path before this is ever called.
 func (localFileTransport) Resolve(_ context.Context, path string) (string, error) {
 	return path, nil
 }

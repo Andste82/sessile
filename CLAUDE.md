@@ -43,7 +43,7 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
     persist the password it's given — it is used for exactly one SSH dial and
     discarded.
   - Every session/host lookup must be scoped to the authenticated user; a
-    client-supplied user id is never trusted (mirrors the sandbox-check
+    client-supplied user id is never trusted (mirrors the path-validation
     precedent below).
 - **Stack:** Do not add GORM, sqlc, zap, viper, socket.io, or an E2E test
   framework. `golang.org/x/crypto` (bcrypt, ssh), `gopkg.in/yaml.v3`, and
@@ -58,10 +58,24 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
 - **Protocol:** Binary WS frames = terminal bytes; text frames = JSON control
   messages exactly as specified in PROJECT_PLAN.md §5. Never change the wire
   format without updating the plan.
-- **Security:** Every user-supplied path must pass the sandbox check in
-  `internal/session` (plan §4.5). Shells only from the allowlist (local-host
-  sessions only). Host keys are pinned per-host; changes require explicit user
-  confirmation (see above).
+- **Security:** Every path an API caller supplies **for the local host** must
+  pass the workspace validation in `internal/session/workspace.go` (plan §4.5)
+  — a session's starting directory, the directory browser, every local file
+  operation. **An SSH session's paths are exempt by design**, not by
+  oversight: they are the user's own on the user's own host, and what bounds
+  them is the per-user ownership check on the session (plan §4.10's trust
+  boundary), not a root to stay inside. Do not add one, and do not "fix" the
+  local check by applying it remotely.
+  What that validation is: an input check on a public surface — it stops an
+  API caller from reading or writing outside `--workspace-dir`. It is **not**
+  confinement of the session. `terminal/pty` sets `cmd.Dir` and nothing else;
+  the shell is an ordinary process and `cd /` leaves the workspace. That is
+  known and accepted (the foreground sampler already reports `""` for a path
+  outside the root), so neither the naming nor the comments may suggest a
+  jail — and the check is security-critical all the same, as the thing that
+  bounds the API.
+  Shells only from the allowlist (local-host sessions only). Host keys are
+  pinned per-host; changes require explicit user confirmation (see above).
 - **Concurrency:** Exactly one writer goroutine per WebSocket connection.
   Broadcasts must never block on a slow client. This applies equally to
   SSH-backed sessions — they reuse the same `Manager`/`ws.Client` machinery as

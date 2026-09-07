@@ -65,7 +65,7 @@ func TestSampleForegroundReportsARealSession(t *testing.T) {
 // "bash" and said nothing about the program the user was actually waiting on.
 func TestSampleForegroundNamesTheProgramInsideAScript(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	// Outside the sandbox root on purpose: the path is one the user typed, and
+	// Outside the workspace root on purpose: the path is one the user typed, and
 	// §4.5 governs where a session may be *created*, not what it may run.
 	script := filepath.Join(t.TempDir(), "work.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 20\n:\n"), 0o755); err != nil {

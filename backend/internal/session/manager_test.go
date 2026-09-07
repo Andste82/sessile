@@ -89,7 +89,7 @@ func (s *memStore) DeleteStoppedBefore(cutoff time.Time) ([]string, error) {
 	return ids, nil
 }
 
-// testManager builds a Manager backed by a temp sandbox and data directory.
+// testManager builds a Manager backed by a temp workspace and data directory.
 func testManager(t *testing.T) (*Manager, *memStore, string) {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
@@ -462,7 +462,7 @@ func TestDeleteDuringRestartIsRefused(t *testing.T) {
 	}
 }
 
-// A restart re-runs the sandbox check, so a directory that has since been
+// A restart re-runs the workspace check, so a directory that has since been
 // removed must fail cleanly rather than at PTY start.
 func TestRestartRejectsVanishedDirectory(t *testing.T) {
 	mgr, _, _ := testManager(t)

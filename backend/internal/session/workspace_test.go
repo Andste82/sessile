@@ -149,7 +149,7 @@ func TestListDirs(t *testing.T) {
 		t.Fatalf("ListDirs(project-a) = %v, want %v", nested, want)
 	}
 
-	// Traversal and missing paths are rejected by the sandbox check.
+	// Traversal and missing paths are rejected by the workspace check.
 	if _, err := ListDirs(root, "../.."); err == nil {
 		t.Fatal("ListDirs(../..) expected error")
 	}
@@ -180,7 +180,7 @@ func mustMkdir(t *testing.T, path string) {
 // The working directory comes from the kernel rather than from the user, but it
 // is on its way to a browser, so it passes the same containment rule (§4.5). A
 // session whose shell has cd-ed past the root shows nothing rather than a path
-// outside the sandbox.
+// outside the workspace.
 func TestRelativeToRoot(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, "project-a", "backend"))

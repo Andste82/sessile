@@ -10,9 +10,9 @@ import (
 )
 
 // listDirectories returns the immediate subdirectories of a path under the
-// sandbox root (§6). The optional `path` query navigates into subdirectories
+// workspace root (§6). The optional `path` query navigates into subdirectories
 // (relative to root; empty or "." is the root). The path is validated by the
-// sandbox check, so traversal or symlink escapes are rejected.
+// workspace check, so traversal or symlink escapes are rejected.
 func (s *Server) listDirectories(c *gin.Context) {
 	if !s.serverConfig.Get().AllowLocalHost {
 		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")

@@ -8,10 +8,18 @@ import (
 	"strings"
 )
 
-// resolveDir validates a user-supplied directory against the sandbox root and
-// returns the absolute, symlink-resolved path to use as the shell's working
-// directory. This is security-critical — every user-supplied path must pass
-// through here (PROJECT_PLAN.md §4.5).
+// resolveDir validates a user-supplied directory against the workspace root
+// and returns the absolute, symlink-resolved path to use as the shell's
+// working directory. Security-critical: every local path an API caller
+// supplies must pass through here (PROJECT_PLAN.md §4.5).
+//
+// This file bounds *paths that arrive over the API*. It does not confine the
+// session it starts a shell in: terminal/pty sets cmd.Dir and nothing else —
+// no chroot, no namespaces — so the shell can cd anywhere its user can reach,
+// and relativeToRoot below exists precisely because it does. What this
+// protects is the API surface, which is reachable by clients other than this
+// app's browser: without it, a caller could read and write anywhere the
+// server process can.
 //
 // Rules:
 //  1. Reject empty, absolute, or ".."-containing paths.
@@ -47,7 +55,7 @@ func resolveDir(root, userPath string) (string, error) {
 
 	if resolved != rootResolved &&
 		!strings.HasPrefix(resolved, rootResolved+string(os.PathSeparator)) {
-		return "", fmt.Errorf("directory escapes sandbox root")
+		return "", fmt.Errorf("directory escapes workspace root")
 	}
 
 	fi, err := os.Stat(resolved)
@@ -61,7 +69,7 @@ func resolveDir(root, userPath string) (string, error) {
 }
 
 // ResolvePath validates a user-supplied file or directory path against the
-// sandbox root (§4.5) and returns its absolute, symlink-resolved form.
+// workspace root (§4.5) and returns its absolute, symlink-resolved form.
 // Unlike resolveDir, the target need not exist yet — internal/hostops
 // (§4.10) uses this for local-session file operations, including ones that
 // create a new path (a write, or a rename's destination) — but its parent
@@ -95,7 +103,7 @@ func ResolvePath(root, userPath string) (string, error) {
 		return "", fmt.Errorf("resolve parent directory: %w", err)
 	}
 	if dirResolved != rootResolved && !strings.HasPrefix(dirResolved, rootResolved+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path escapes sandbox root")
+		return "", fmt.Errorf("path escapes workspace root")
 	}
 
 	resolved := filepath.Join(dirResolved, filepath.Base(full))
@@ -105,21 +113,21 @@ func ResolvePath(root, userPath string) (string, error) {
 	if target, err := filepath.EvalSymlinks(resolved); err == nil {
 		resolved = target
 		if resolved != rootResolved && !strings.HasPrefix(resolved, rootResolved+string(os.PathSeparator)) {
-			return "", fmt.Errorf("path escapes sandbox root")
+			return "", fmt.Errorf("path escapes workspace root")
 		}
 	}
 	return resolved, nil
 }
 
-// relativeToRoot expresses an absolute path as one relative to the sandbox
+// relativeToRoot expresses an absolute path as one relative to the workspace
 // root, or returns "" when it lies outside. The root itself is ".", matching
 // how the directory listing names it (§6).
 //
-// This runs the §4.5 containment rule in the other direction. The path here
-// does not come from the user but from the kernel (/proc/<pid>/cwd), and it is
-// on its way out to a browser rather than into a shell — but a session whose
-// shell has cd-ed past the root must not have that path displayed either, and
-// "inside the sandbox" deserves one definition rather than two.
+// This runs the §4.5 rule in the other direction, and is the clearest
+// evidence that the root is not a jail: the path here comes from the kernel
+// (/proc/<pid>/cwd), not from the user, and a shell that has cd-ed past the
+// root is expected — it is reported as "" rather than prevented. "Inside the
+// workspace" deserves one definition rather than two.
 //
 // No EvalSymlinks on abs: the kernel already hands back a fully resolved path.
 // The root still needs resolving, because it is the one the caller configured.
@@ -141,9 +149,9 @@ func relativeToRoot(root, abs string) string {
 	return filepath.ToSlash(strings.TrimPrefix(abs, prefix))
 }
 
-// ListDirs returns the names of the immediate subdirectories of a sandboxed
+// ListDirs returns the names of the immediate subdirectories of a validated
 // path. userPath is relative to root ("" or "." means the root) and is
-// validated through the same sandbox check as session creation (§4.5), so
+// validated through the same workspace check as session creation (§4.5), so
 // callers may pass user input directly. Hidden entries (including the internal
 // state dir) are omitted; results are sorted.
 func ListDirs(root, userPath string) ([]string, error) {

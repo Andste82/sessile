@@ -80,11 +80,11 @@ watch(
 // Breadcrumbs are derived from currentPath itself — the server's own
 // canonical form of wherever was last listed (§4.10, §6) — rather than a
 // separately-tracked client-side stack. For an SSH target that's a real
-// absolute path (the target has no sandbox, so it's resolved via SFTP's
+// absolute path (the target has no workspace root, so it's resolved via SFTP's
 // own REALPATH, not a synthetic starting point), which is what makes
 // navigating to any ancestor segment — and from there into any sibling,
 // not just back into where the panel first opened — actually work. A
-// local target stays relative to the sandbox root (§4.5) — "." at the
+// local target stays relative to the workspace root (§4.5) — "." at the
 // top, never absolute — since there's nothing above that root to show.
 const isAbsolute = computed(() => currentPath.value.startsWith('/'))
 const segments = computed(() => currentPath.value.split('/').filter(Boolean))
@@ -253,10 +253,10 @@ function cancelUpload() {
 // see RowActionsMenu for why.
 //
 // "Copy path" means different things per target type, so the items differ.
-// An SSH session's paths are absolute (the target is unsandboxed, and the
+// An SSH session's paths are absolute (the target has no such root, and the
 // server resolves them through SFTP's REALPATH), so both an absolute and a
 // current-directory-relative form are meaningful. A local session's paths are
-// relative to the sandbox root and the absolute path on the server is
+// relative to the workspace root and the absolute path on the server is
 // deliberately never exposed by the API — there, one item is all there is,
 // and offering two that produce identical text would be worse than one.
 function menuItems(entry: HostDirEntry): MenuItem[] {

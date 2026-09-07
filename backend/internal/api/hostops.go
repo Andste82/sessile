@@ -156,11 +156,11 @@ func toDirEntryJSON(e hostops.DirEntry) dirEntryJSON {
 // resolveHostopsPath turns a caller-supplied path into what FileTransport
 // should actually use, plus the display form the response echoes back.
 //
-// Local sessions are sandboxed exactly like /api/directories (§4.5): the
+// Local sessions are validated exactly like /api/directories (§4.5): the
 // path is relative to the workspace root, "" and "." both mean the root,
 // and anything escaping it is rejected before it ever reaches hostops.
 //
-// SSH sessions are not sandboxed beyond the session ownership check that
+// SSH sessions are not bounded beyond the session ownership check that
 // already gated reaching this handler (§4.10's design note, §11) — the
 // user already has a full interactive shell on that host through this same
 // session, so there is no narrower boundary to enforce. "" means the
@@ -183,7 +183,7 @@ func (s *Server) resolveHostopsPath(info session.Info, userPath string) (resolve
 // the one path listing legitimately needs to resolve but a destructive
 // operation must never accept: the target's own root.
 //
-// session.ResolvePath correctly returns the sandbox root itself for
+// session.ResolvePath correctly returns the workspace root itself for
 // path="." or "" (so listHostFiles can list it) — but Delete/Move/Copy
 // calling resolveHostopsPath directly inherited that same resolution with
 // no guard against it, so path="." reached FileTransport.Remove/Rename/
@@ -191,11 +191,11 @@ func (s *Server) resolveHostopsPath(info session.Info, userPath string) (resolve
 // listed every entry under it, removed each one, then removed the root
 // directory itself — os.RemoveAll on the shared local-host workspace,
 // reachable by any authenticated user who owns any local session, not
-// just the resolveDir/ResolvePath escape-the-sandbox class of bug the
-// existing sandbox tests already cover (this path never left the sandbox
-// — it targeted the sandbox itself).
+// just the resolveDir/ResolvePath escape-the-workspace class of bug the
+// existing workspace tests already cover (this path never left the
+// workspace — it targeted the workspace itself).
 //
-// SSH has no sandbox root to compare against, so the same rule is applied
+// SSH has no workspace root to compare against, so the same rule is applied
 // to the two paths that unambiguously mean "here" or "everything": "." and
 // "/". The comparison runs on path.Clean, not on the raw string, because
 // resolveHostopsPath hands an SSH path straight back unnormalized — so a
@@ -238,11 +238,12 @@ func (s *Server) listHostFiles(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), hostopsTimeout)
 	defer cancel()
 
-	// SSH isn't sandboxed (§4.5 only applies to local), so unlike the local
-	// branch's normalizeRel, "path" here is worth canonicalizing to the
-	// target's own real absolute form (via the SFTP protocol's own
-	// REALPATH) — a synthetic relative starting point with no way "above"
-	// it would defeat the point of having no sandbox to begin with: the
+	// An SSH path is not validated against a root (§4.5 only applies to
+	// local), so unlike the local branch's normalizeRel, "path" here is
+	// worth canonicalizing to the target's own real absolute form (via the
+	// SFTP protocol's own REALPATH) — a synthetic relative starting point
+	// with no way "above" it would defeat the point of having no root to
+	// begin with: the
 	// user can navigate anywhere their login already can, siblings and
 	// parents included, exactly like a real shell would let them.
 	if info.TargetType == session.TargetSSH {

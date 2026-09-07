@@ -20,7 +20,7 @@ import (
 // buffered in memory (ops.Files().Read) before the first byte was written;
 // Open below streams instead, so the server's own memory footprint stays
 // constant regardless of the remote file's size. An endless source (a
-// device file on an unsandboxed SSH session, §4.5) streams for as long as
+// device file on an unvalidated SSH session path, §4.5) streams for as long as
 // the client keeps reading — that's accepted, not guarded against: the
 // abort path that matters is the client disconnecting, which io.Copy
 // detects on its own via a failed write, and a genuinely stalled remote

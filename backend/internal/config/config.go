@@ -34,7 +34,7 @@ type Config struct {
 	DataDir string // directory holding config.yml, users.yml, users/, the
 	// database, scrollback snapshots and shell history
 	DB string // SQLite database file, always <DataDir>/sessions.db
-	// WorkspaceDir is the local-host sandbox root (only reachable when
+	// WorkspaceDir is the local-host workspace root (only reachable when
 	// config.yml's allowLocalHost is on). Defaults to <DataDir>/workspace,
 	// but is a separate flag/volume so an operator can mount it apart from
 	// DataDir — e.g. Docker's default /config + /workspace split, so the
@@ -71,7 +71,7 @@ func Parse(args []string) (*Config, error) {
 		"directory for server state: config.yml, users.yml, per-user hosts.yml, "+
 			"the database, scrollback snapshots and shell history")
 	workspaceDir := fs.String("workspace-dir", env("TSM_WORKSPACE_DIR", ""),
-		"local-host sandbox directory, only reachable when config.yml's allowLocalHost is on "+
+		"local-host workspace directory, only reachable when config.yml's allowLocalHost is on "+
 			"(default <data-dir>/workspace)")
 	shells := fs.String("shells", env("TSM_SHELLS", "bash,zsh,fish"), "comma-separated shell allowlist")
 	bufferSize := fs.String("buffer-size", env("TSM_BUFFER_SIZE", "524288"), "per-session ring buffer size in bytes")
@@ -113,7 +113,7 @@ func Parse(args []string) (*Config, error) {
 	}
 	dbPath := filepath.Join(dir, "sessions.db")
 
-	// The local-host sandbox is a separate directory on purpose — separate
+	// The local-host workspace is a separate directory on purpose — separate
 	// enough to be its own Docker volume — so it can be excluded from a
 	// backup of the small, sensitive state in --data-dir (users.yml,
 	// hosts.yml with credentials) without a second thought. Left unset, it
