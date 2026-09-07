@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { api } from '@/api/client'
 import type { ServerEvent } from '@/api/events'
 import type { AppConfig, CreateSessionBody, Session } from '@/api/types'
+import { useUiStore } from './ui'
 
 // Session list + config store. The list is kept live by the event channel
 // (§5.1); polling remains as the fallback for while that socket is down.
@@ -21,6 +22,10 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   function closeTab(id: string) {
     openTabIds.value = openTabIds.value.filter((t) => t !== id)
+    // The files & processes panel is keyed by session id and would otherwise
+    // outlive every tab that ever opened one. removeSession() closes the tab
+    // too, so a deleted session is covered by this as well.
+    useUiStore().forgetSessionPanel(id)
   }
 
   const byId = computed(

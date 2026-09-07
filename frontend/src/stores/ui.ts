@@ -73,6 +73,29 @@ function readCopyOnSelect(): boolean {
   }
 }
 
+// The files & processes panel belongs to a session, not to the page showing
+// one. TerminalPage is a single component instance the router reuses across
+// every open tab, so a panel whose open/closed state, selected tab and current
+// directory lived in that component would be one panel shared by every session
+// — opening it on one tab would open it on all of them, and stepping into a
+// directory on one would move the others too.
+export interface FilesPanelState {
+  open: boolean
+  tab: 'files' | 'processes'
+  // Where the file explorer last was. undefined means "has not been opened
+  // yet", which is what makes it start at the session root exactly once; ''
+  // is a real path (the target's own default root) and not the same thing.
+  path?: string
+}
+
+// Files first, and first by default: browsing a session's files is the reason
+// this panel gets opened; the process tree is the occasional look.
+export const defaultFilesPanelTab = 'files' as const
+
+function newFilesPanelState(): FilesPanelState {
+  return { open: false, tab: defaultFilesPanelTab }
+}
+
 // Small store for cross-component UI state that isn't tied to session data.
 export const useUiStore = defineStore('ui', () => {
   // Whether the on-screen special-key bar is shown on the terminal (issue #10).
@@ -135,6 +158,42 @@ export const useUiStore = defineStore('ui', () => {
   // Guarded because the store is also built in tests, where there is no window.
   if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
 
+  // Deliberately in memory only, unlike the font size and copy-on-select
+  // above: a remembered directory is worth keeping while the app is open and
+  // not worth restoring into a session that may have been restarted, moved or
+  // deleted since the page was last loaded.
+  const filesPanels = ref<Record<string, FilesPanelState>>({})
+
+  /** panelFor returns the panel state of a session, creating it on first ask. */
+  function panelFor(sessionId: string): FilesPanelState {
+    const existing = filesPanels.value[sessionId]
+    if (existing) return existing
+    const fresh = newFilesPanelState()
+    filesPanels.value[sessionId] = fresh
+    return fresh
+  }
+
+  function setPanelOpen(sessionId: string, open: boolean) {
+    panelFor(sessionId).open = open
+  }
+
+  function setPanelTab(sessionId: string, tab: FilesPanelState['tab']) {
+    panelFor(sessionId).tab = tab
+  }
+
+  function setPanelPath(sessionId: string, path: string) {
+    panelFor(sessionId).path = path
+  }
+
+  /**
+   * forgetSessionPanel drops a session's panel state. Called when its tab is
+   * closed — reopening that session later is a fresh start, and without this
+   * the map would keep an entry for every session ever opened.
+   */
+  function forgetSessionPanel(sessionId: string) {
+    delete filesPanels.value[sessionId]
+  }
+
   return {
     keyBarOpen,
     toggleKeyBar,
@@ -142,5 +201,11 @@ export const useUiStore = defineStore('ui', () => {
     setTerminalFontSize,
     copyOnSelect,
     setCopyOnSelect,
+    filesPanels,
+    panelFor,
+    setPanelOpen,
+    setPanelTab,
+    setPanelPath,
+    forgetSessionPanel,
   }
 })

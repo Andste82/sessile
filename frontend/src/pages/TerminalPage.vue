@@ -7,12 +7,14 @@ import TabBar from '@/components/TabBar.vue'
 import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
 import FileBrowserPanel from '@/components/FileBrowserPanel.vue'
 import { useSessionsStore } from '@/stores/sessions'
+import { useUiStore } from '@/stores/ui'
 import { ApiRequestError, api, isAlreadyRunning } from '@/api/client'
 import type { HostKeyErrorDetails, Session } from '@/api/types'
 import type { ConnStatus } from '@/composables/useTerminal'
 
 const route = useRoute()
 const store = useSessionsStore()
+const ui = useUiStore()
 
 const id = computed(() => String(route.params.id))
 const session = ref<Session | null>(null)
@@ -34,8 +36,13 @@ const reloadNonce = ref(0)
 
 // Belongs to this session's own view, not the sidebar/dashboard — the same
 // reasoning as the foreground/title lines being per-card rather than a
-// standalone page (§4.10's design note).
-const filesPanelOpen = ref(false)
+// standalone page (§4.10's design note). Kept in the ui store rather than
+// here because the router reuses this one component for every open tab: a ref
+// on the page would be one panel shared by all of them.
+const filesPanelOpen = computed({
+  get: () => ui.panelFor(id.value).open,
+  set: (open: boolean) => ui.setPanelOpen(id.value, open),
+})
 
 async function restart() {
   if (restarting.value) return

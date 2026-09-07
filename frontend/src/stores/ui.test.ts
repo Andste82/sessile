@@ -6,6 +6,7 @@ import {
   defaultFontSize,
   maxFontSize,
   minFontSize,
+  defaultFilesPanelTab,
   parseCopyOnSelect,
   useUiStore,
 } from './ui'
@@ -274,5 +275,47 @@ describe('terminal font size', () => {
     await Promise.resolve()
 
     expect(ui.terminalFontSize).toBe(17)
+  })
+})
+
+describe('files & processes panel state', () => {
+  // The panel is one component instance serving every terminal tab, so the
+  // state that decides what it shows has to be keyed by session.
+  it('keeps open, tab and path separate per session', () => {
+    const ui = useUiStore()
+
+    ui.setPanelOpen('a', true)
+    ui.setPanelTab('a', 'processes')
+    ui.setPanelPath('a', '/srv/app')
+
+    expect(ui.panelFor('a')).toMatchObject({ open: true, tab: 'processes', path: '/srv/app' })
+    expect(ui.panelFor('b')).toMatchObject({ open: false, tab: defaultFilesPanelTab })
+    expect(ui.panelFor('b').path).toBeUndefined()
+  })
+
+  it('starts on the Files tab', () => {
+    expect(useUiStore().panelFor('a').tab).toBe('files')
+  })
+
+  // undefined is what makes the explorer open at the session root exactly
+  // once; '' is a real path — the target's own default root — and storing it
+  // has to count as "has been here".
+  it('treats a stored empty path as a visited directory', () => {
+    const ui = useUiStore()
+    ui.setPanelPath('a', '')
+    expect(ui.panelFor('a').path).toBe('')
+  })
+
+  it('forgets a session, leaving its neighbours alone', () => {
+    const ui = useUiStore()
+    ui.setPanelPath('a', '/one')
+    ui.setPanelPath('b', '/two')
+
+    ui.forgetSessionPanel('a')
+
+    expect(ui.filesPanels.a).toBeUndefined()
+    expect(ui.panelFor('b').path).toBe('/two')
+    // Asking again after forgetting is a fresh start, not the old directory.
+    expect(ui.panelFor('a').path).toBeUndefined()
   })
 })
