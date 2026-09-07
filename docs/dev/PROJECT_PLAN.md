@@ -1981,11 +1981,15 @@ session out of a group and watch the group disappear with its last member.
 ### M29 — Showing the groups
 Derived `grouped` getter (ungrouped first and unheaded, named groups
 alphabetically), collapsible group headers in the dashboard grid and the
-sidebar session list, collapse state in `stores/ui.ts` and `localStorage`.
-✅ *Verify:* collapse a group and reload — it stays collapsed, in both places
-and in a second tab; the session currently open stays visible in the sidebar
-even when its group is collapsed; a user with no groups sees exactly the
-layout they saw before this feature.
+sidebar session list, collapse state in `stores/ui.ts` and `localStorage`,
+tracked **per list**: the dashboard is where sessions are managed and folding
+a finished group away is tidying, while the sidebar is a navigation strip
+whose job is reaching anything quickly. One shared set would make tidying the
+dashboard silently rearrange the strip.
+✅ *Verify:* collapse a group and reload — it stays collapsed, in that list and
+in a second tab, and the other list is untouched; the session currently open
+stays visible in the sidebar even when its group is collapsed; a user with no
+groups sees exactly the layout they saw before this feature.
 
 ---
 

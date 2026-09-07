@@ -21,7 +21,7 @@ function isTerminal(id: string) {
 // terminal is right there — the count in the header says the rest are folded
 // away, and this keeps the sidebar agreeing with what the user is looking at.
 function visible(group: { name: string; sessions: typeof store.sessions }) {
-  if (!group.name || !ui.isGroupCollapsed(group.name)) return group.sessions
+  if (!group.name || !ui.isGroupCollapsed('sidebar', group.name)) return group.sessions
   return group.sessions.filter((s) => isTerminal(s.id))
 }
 </script>
@@ -94,8 +94,8 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
           dense
           :name="g.name"
           :count="g.sessions.length"
-          :collapsed="ui.isGroupCollapsed(g.name)"
-          @toggle="ui.toggleGroup(g.name)"
+          :collapsed="ui.isGroupCollapsed('sidebar', g.name)"
+          @toggle="ui.toggleGroup('sidebar', g.name)"
         />
         <RouterLink
           v-for="s in visible(g)"

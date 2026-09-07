@@ -73,34 +73,59 @@ function readCopyOnSelect(): boolean {
   }
 }
 
-// Which session groups (§4.11) are collapsed. Persisted, because a group that
-// springs back open on every reload is not really collapsed — and shared by
-// the dashboard and the sidebar, because "this group is collapsed" is a
-// statement about the group, not about one of the two places showing it.
+// Which session groups (§4.11) are collapsed, per list that shows them.
+// Persisted, because a group that springs back open on every reload is not
+// really collapsed.
+//
+// Kept apart for the two lists rather than shared. The two are different
+// views, not two windows onto one: the dashboard is where sessions are
+// managed and folding a finished group away is tidying, while the sidebar is
+// a navigation strip whose whole job is being able to jump anywhere. Tying
+// them together means tidying the dashboard silently rearranges the strip
+// you navigate with.
 const collapsedGroupsKey = 'sessile.collapsedGroups'
 
+// The two lists that render groups. Named rather than boolean so a third one
+// (a future mobile list, say) is an added key and not a rewrite.
+export type SessionListView = 'dashboard' | 'sidebar'
+
+export type CollapsedGroups = Record<SessionListView, string[]>
+
+function noCollapsedGroups(): CollapsedGroups {
+  return { dashboard: [], sidebar: [] }
+}
+
+function stringsOf(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((g): g is string => typeof g === 'string')
+}
+
 /**
- * parseCollapsedGroups reads a stored (or cross-tab) value as a list of group
- * names. Anything that is not the array of strings we write — a corrupted
- * entry, a cleared one, a value from a future version — reads as "nothing
- * collapsed", which errs towards showing sessions rather than hiding them.
+ * parseCollapsedGroups reads a stored (or cross-tab) value as the per-view
+ * collapsed sets. Anything that is not the object we write — a corrupted
+ * entry, a cleared one, the flat array an earlier build stored — reads as
+ * "nothing collapsed", which errs towards showing sessions rather than
+ * hiding them.
  */
-export function parseCollapsedGroups(value: unknown): string[] {
-  if (typeof value !== 'string') return []
+export function parseCollapsedGroups(value: unknown): CollapsedGroups {
+  if (typeof value !== 'string') return noCollapsedGroups()
   try {
     const parsed: unknown = JSON.parse(value)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((g): g is string => typeof g === 'string')
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return noCollapsedGroups()
+    }
+    const record = parsed as Record<string, unknown>
+    return { dashboard: stringsOf(record.dashboard), sidebar: stringsOf(record.sidebar) }
   } catch {
-    return []
+    return noCollapsedGroups()
   }
 }
 
-function readCollapsedGroups(): string[] {
+function readCollapsedGroups(): CollapsedGroups {
   try {
     return parseCollapsedGroups(localStorage.getItem(collapsedGroupsKey))
   } catch {
-    return []
+    return noCollapsedGroups()
   }
 }
 
@@ -179,7 +204,7 @@ export const useUiStore = defineStore('ui', () => {
     if (e.key === null) {
       terminalFontSize.value = defaultFontSize
       copyOnSelect.value = defaultCopyOnSelect
-      collapsedGroups.value = []
+      collapsedGroups.value = noCollapsedGroups()
       return
     }
     if (e.key === fontSizeKey) terminalFontSize.value = clampFontSize(e.newValue)
@@ -195,16 +220,17 @@ export const useUiStore = defineStore('ui', () => {
   // that loses its last session and is later re-created under the same name
   // therefore comes back collapsed, which is the same answer the user gave
   // last time they saw it.
-  const collapsedGroups = ref<string[]>(readCollapsedGroups())
+  const collapsedGroups = ref<CollapsedGroups>(readCollapsedGroups())
 
-  function isGroupCollapsed(name: string): boolean {
-    return collapsedGroups.value.includes(name)
+  function isGroupCollapsed(view: SessionListView, name: string): boolean {
+    return collapsedGroups.value[view].includes(name)
   }
 
-  function toggleGroup(name: string) {
-    collapsedGroups.value = isGroupCollapsed(name)
-      ? collapsedGroups.value.filter((g) => g !== name)
-      : [...collapsedGroups.value, name]
+  function toggleGroup(view: SessionListView, name: string) {
+    const next = isGroupCollapsed(view, name)
+      ? collapsedGroups.value[view].filter((g) => g !== name)
+      : [...collapsedGroups.value[view], name]
+    collapsedGroups.value = { ...collapsedGroups.value, [view]: next }
   }
 
   watch(collapsedGroups, (groups) => {

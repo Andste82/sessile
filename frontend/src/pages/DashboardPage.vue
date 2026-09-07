@@ -149,11 +149,11 @@ function retryRestartAfterTrust() {
             class="col-span-full"
             :name="g.name"
             :count="g.sessions.length"
-            :collapsed="ui.isGroupCollapsed(g.name)"
-            @toggle="ui.toggleGroup(g.name)"
+            :collapsed="ui.isGroupCollapsed('dashboard', g.name)"
+            @toggle="ui.toggleGroup('dashboard', g.name)"
           />
           <SessionListItem
-            v-for="s in ui.isGroupCollapsed(g.name) ? [] : g.sessions"
+            v-for="s in ui.isGroupCollapsed('dashboard', g.name) ? [] : g.sessions"
             :key="s.id"
             :session="s"
             @delete="onDelete"

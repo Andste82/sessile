@@ -321,27 +321,33 @@ describe('files & processes panel state', () => {
   })
 })
 
+const nothingCollapsed = { dashboard: [], sidebar: [] }
+
 describe('parseCollapsedGroups', () => {
   it('reads back what the store writes', () => {
-    expect(parseCollapsedGroups(JSON.stringify(['Production', 'Staging']))).toEqual([
-      'Production',
-      'Staging',
-    ])
+    const stored = JSON.stringify({ dashboard: ['Production'], sidebar: ['Staging'] })
+    expect(parseCollapsedGroups(stored)).toEqual({
+      dashboard: ['Production'],
+      sidebar: ['Staging'],
+    })
   })
 
   // Anything unreadable errs towards showing sessions rather than hiding them.
-  it.each([null, undefined, '', 'not json', '{"a":1}', '[1,2]', '"Production"'])(
+  // The bare array is what an earlier build wrote, when both lists shared one
+  // set — it has no per-view answer in it, so it reads as nothing collapsed
+  // rather than being applied to both.
+  it.each([null, undefined, '', 'not json', '"Production"', '["Production"]', '7'])(
     'falls back to nothing collapsed for %o',
     (input) => {
-      expect(parseCollapsedGroups(input)).toEqual([])
+      expect(parseCollapsedGroups(input)).toEqual(nothingCollapsed)
     },
   )
 
-  it('keeps only the strings out of a mixed array', () => {
-    expect(parseCollapsedGroups('["Production",7,null,"Staging"]')).toEqual([
-      'Production',
-      'Staging',
-    ])
+  it('keeps only the strings, and fills in a missing view', () => {
+    expect(parseCollapsedGroups('{"dashboard":["Production",7,null,"Staging"]}')).toEqual({
+      dashboard: ['Production', 'Staging'],
+      sidebar: [],
+    })
   })
 })
 
@@ -349,43 +355,72 @@ describe('collapsed groups', () => {
   it('toggles a group on and off', () => {
     withStorage(fakeStorage())
     const ui = useUiStore()
-    expect(ui.isGroupCollapsed('Production')).toBe(false)
+    expect(ui.isGroupCollapsed('dashboard', 'Production')).toBe(false)
 
-    ui.toggleGroup('Production')
-    expect(ui.isGroupCollapsed('Production')).toBe(true)
-    expect(ui.isGroupCollapsed('Staging')).toBe(false)
+    ui.toggleGroup('dashboard', 'Production')
+    expect(ui.isGroupCollapsed('dashboard', 'Production')).toBe(true)
+    expect(ui.isGroupCollapsed('dashboard', 'Staging')).toBe(false)
 
-    ui.toggleGroup('Production')
-    expect(ui.isGroupCollapsed('Production')).toBe(false)
+    ui.toggleGroup('dashboard', 'Production')
+    expect(ui.isGroupCollapsed('dashboard', 'Production')).toBe(false)
   })
 
-  it('persists the collapsed set', async () => {
+  // The two lists are different views, not two windows onto one: folding a
+  // group away on the dashboard must leave the navigation strip alone.
+  it('keeps the two lists apart', () => {
+    withStorage(fakeStorage())
+    const ui = useUiStore()
+
+    ui.toggleGroup('dashboard', 'Production')
+
+    expect(ui.isGroupCollapsed('dashboard', 'Production')).toBe(true)
+    expect(ui.isGroupCollapsed('sidebar', 'Production')).toBe(false)
+
+    ui.toggleGroup('sidebar', 'Production')
+    ui.toggleGroup('dashboard', 'Production')
+
+    expect(ui.isGroupCollapsed('dashboard', 'Production')).toBe(false)
+    expect(ui.isGroupCollapsed('sidebar', 'Production')).toBe(true)
+  })
+
+  it('persists both views', async () => {
     const storage = fakeStorage()
     withStorage(storage)
     const ui = useUiStore()
 
-    ui.toggleGroup('Production')
+    ui.toggleGroup('sidebar', 'Production')
     await Promise.resolve()
 
-    expect(storage.data['sessile.collapsedGroups']).toBe(JSON.stringify(['Production']))
+    expect(storage.data['sessile.collapsedGroups']).toBe(
+      JSON.stringify({ dashboard: [], sidebar: ['Production'] }),
+    )
   })
 
   it('starts from what another session of this browser stored', () => {
-    withStorage(fakeStorage({ 'sessile.collapsedGroups': JSON.stringify(['Staging']) }))
-    expect(useUiStore().isGroupCollapsed('Staging')).toBe(true)
+    withStorage(
+      fakeStorage({
+        'sessile.collapsedGroups': JSON.stringify({ dashboard: [], sidebar: ['Staging'] }),
+      }),
+    )
+    const ui = useUiStore()
+    expect(ui.isGroupCollapsed('sidebar', 'Staging')).toBe(true)
+    expect(ui.isGroupCollapsed('dashboard', 'Staging')).toBe(false)
   })
 
   // Two tabs are a normal way to use this app: collapsing in one has to reach
-  // the other, or the same group reads as both open and closed.
+  // the other, or the same list reads as both open and closed.
   it('follows another tab', () => {
     withStorage(fakeStorage())
     const win = withWindow()
     const ui = useUiStore()
 
-    win.storage('sessile.collapsedGroups', JSON.stringify(['Production']))
-    expect(ui.isGroupCollapsed('Production')).toBe(true)
+    win.storage(
+      'sessile.collapsedGroups',
+      JSON.stringify({ dashboard: ['Production'], sidebar: [] }),
+    )
+    expect(ui.isGroupCollapsed('dashboard', 'Production')).toBe(true)
 
     win.storage(null, null) // a clear() takes every preference with it
-    expect(ui.isGroupCollapsed('Production')).toBe(false)
+    expect(ui.isGroupCollapsed('dashboard', 'Production')).toBe(false)
   })
 })
