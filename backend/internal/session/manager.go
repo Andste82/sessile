@@ -827,6 +827,12 @@ func (m *Manager) discardState(id string) {
 // stopped session under a group is exactly when one wants to, and the
 // published Info reaches every attached browser over the event channel (§5.1)
 // without either side polling for it.
+//
+// That includes a session that exists only as a stopped row: the map holds
+// live sessions, and a stopped one is dropped from it when the server
+// restarts (§4.3, the same reason Get and Restart read through to the store).
+// Editing has to reach those too, or every session would become uneditable
+// the moment the server was restarted under it.
 func (m *Manager) Update(id, userID string, name, group *string) (Info, error) {
 	if name != nil {
 		if l := len(*name); l < 1 || l > 64 {
@@ -840,7 +846,7 @@ func (m *Manager) Update(id, userID string, name, group *string) (Info, error) {
 	s, ok := m.sessions[id]
 	m.mu.RUnlock()
 	if !ok {
-		return Info{}, ErrNotFound
+		return m.updateStoredOnly(id, userID, name, group)
 	}
 	s.mu.Lock()
 	if s.UserID != userID {
@@ -859,6 +865,37 @@ func (m *Manager) Update(id, userID string, name, group *string) (Info, error) {
 		if err := m.store.Insert(info); err != nil { // upsert
 			return Info{}, err
 		}
+	}
+	m.publishSession(info)
+	return info, nil
+}
+
+// updateStoredOnly applies an Update to a session that has no live object —
+// a stopped row the server has reloaded from disk but not restarted (§8).
+// The row is the whole session at this point, so the store is both where the
+// change is read from and where it lands.
+//
+// A row owned by someone else is reported exactly like one that does not
+// exist, the same as everywhere else (§4.5, §10).
+func (m *Manager) updateStoredOnly(id, userID string, name, group *string) (Info, error) {
+	if m.store == nil {
+		return Info{}, ErrNotFound
+	}
+	info, found, err := m.store.Get(id)
+	if err != nil {
+		return Info{}, err
+	}
+	if !found || info.UserID != userID {
+		return Info{}, ErrNotFound
+	}
+	if name != nil {
+		info.Name = *name
+	}
+	if group != nil {
+		info.Group = *group
+	}
+	if err := m.store.Insert(info); err != nil { // upsert
+		return Info{}, err
 	}
 	m.publishSession(info)
 	return info, nil

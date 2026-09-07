@@ -1011,3 +1011,52 @@ func TestUpdateAppliesOnlyTheFieldsGiven(t *testing.T) {
 		t.Errorf("update as another user: err = %v, want ErrNotFound", err)
 	}
 }
+
+// A session that only survives as a stopped row — the state after the server
+// has been restarted under it — must still be editable. The map holds live
+// sessions, so without a read through to the store every session in the list
+// would become uneditable the moment the backend was restarted.
+func TestUpdateReachesASessionThatOnlyExistsAsAStoppedRow(t *testing.T) {
+	mgr, store, _ := testManager(t)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	row := Info{
+		ID:           "orphan",
+		Name:         "old-name",
+		UserID:       "test-user",
+		TargetType:   TargetLocal,
+		Directory:    ".",
+		Shell:        "sh",
+		Status:       StatusStopped,
+		Created:      now,
+		LastActivity: now,
+	}
+	if err := store.Insert(row); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+
+	info, err := mgr.Update("orphan", "test-user", ptr("new-name"), ptr("Production"))
+	if err != nil {
+		t.Fatalf("update a stopped row: %v", err)
+	}
+	if info.Name != "new-name" || info.Group != "Production" {
+		t.Fatalf("returned info = (%q, %q), want (%q, %q)",
+			info.Name, info.Group, "new-name", "Production")
+	}
+	stored, found, err := store.Get("orphan")
+	if err != nil || !found {
+		t.Fatalf("re-read row: found=%v err=%v", found, err)
+	}
+	if stored.Name != "new-name" || stored.Group != "Production" {
+		t.Errorf("stored row = (%q, %q), want the update persisted", stored.Name, stored.Group)
+	}
+	// The rest of the row has to survive an edit that names neither field.
+	if stored.Status != StatusStopped || stored.Shell != "sh" || stored.Directory != "." {
+		t.Errorf("stored row lost fields it was not asked to change: %+v", stored)
+	}
+
+	// And it stays as invisible to another user as a session object would be.
+	if _, err := mgr.Update("orphan", "other-user", ptr("hijack"), nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("update as another user: err = %v, want ErrNotFound", err)
+	}
+}
