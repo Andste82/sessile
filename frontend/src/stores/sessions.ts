@@ -28,6 +28,16 @@ export const useSessionsStore = defineStore('sessions', () => {
     useUiStore().forgetSessionPanel(id)
   }
 
+  // Every group name currently in use, sorted. There is no group entity — this
+  // *is* the group list (§4.11), which is why a group vanishes on its own once
+  // its last session is deleted. Used for the create/edit dialogs' suggestions
+  // and by the grouped views.
+  const groupNames = computed(() =>
+    [...new Set(sessions.value.map((s) => s.group).filter((g) => g !== ''))].sort((a, b) =>
+      a.localeCompare(b),
+    ),
+  )
+
   const byId = computed(
     () => (id: string) => sessions.value.find((s) => s.id === id) ?? null,
   )
@@ -185,6 +195,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     loading,
     error,
     byId,
+    groupNames,
     openTabIds,
     openTab,
     closeTab,

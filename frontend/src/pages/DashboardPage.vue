@@ -7,6 +7,7 @@ import { useHostsStore } from '@/stores/hosts'
 import { ApiRequestError, isAlreadyRunning } from '@/api/client'
 import SessionListItem from '@/components/SessionListItem.vue'
 import NewSessionDialog from '@/components/NewSessionDialog.vue'
+import EditSessionDialog from '@/components/EditSessionDialog.vue'
 import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
 import type { HostKeyErrorDetails, Session } from '@/api/types'
 
@@ -14,6 +15,8 @@ const store = useSessionsStore()
 const hostsStore = useHostsStore()
 const router = useRouter()
 const dialogOpen = ref(false)
+// The session being edited, and the dialog's open state in one: null is closed.
+const editing = ref<Session | null>(null)
 
 // Set only while a restart is blocked on an unrecognized/changed host key —
 // the backend maps that the same way session creation does (respondHostKeyError,
@@ -137,9 +140,16 @@ function retryRestartAfterTrust() {
           :session="s"
           @delete="onDelete"
           @restart="onRestart"
+          @edit="editing = $event"
         />
       </div>
     </main>
+
+    <EditSessionDialog
+      :open="editing !== null"
+      :session="editing"
+      @close="editing = null"
+    />
 
     <NewSessionDialog
       :open="dialogOpen"

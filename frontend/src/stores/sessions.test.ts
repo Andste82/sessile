@@ -255,3 +255,24 @@ describe('applyEvent', () => {
     expect(store.error).toBeNull()
   })
 })
+
+describe('groupNames', () => {
+  // There is no group entity: this list *is* the set of groups (§4.11), which
+  // is why a group disappears on its own once its last session is gone.
+  it('lists the distinct groups in use, sorted, ignoring ungrouped sessions', () => {
+    const store = useSessionsStore()
+    store.sessions = [
+      session({ id: 'a', group: 'Staging' }),
+      session({ id: 'b', group: 'Production' }),
+      session({ id: 'c', group: 'Production' }),
+      session({ id: 'd', group: '' }),
+    ]
+    expect(store.groupNames).toEqual(['Production', 'Staging'])
+  })
+
+  it('is empty when nothing is grouped', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a' }), session({ id: 'b' })]
+    expect(store.groupNames).toEqual([])
+  })
+})

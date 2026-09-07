@@ -11,6 +11,7 @@ import { useSessionsStore } from '@/stores/sessions'
 import { useHostsStore } from '@/stores/hosts'
 import { ApiRequestError } from '@/api/client'
 import DirectoryBrowser from './DirectoryBrowser.vue'
+import GroupInput from './GroupInput.vue'
 import HostKeyTrustDialog from './HostKeyTrustDialog.vue'
 import type { CreateSessionBody, HostKeyErrorDetails, Session } from '@/api/types'
 
@@ -34,6 +35,7 @@ const target = computed<'ssh' | 'local'>(() => (selection.value === localValue ?
 const hostId = computed(() => (target.value === 'ssh' ? selection.value : ''))
 
 const name = ref('')
+const group = ref('')
 const directory = ref('.')
 const shell = ref('')
 const submitting = ref(false)
@@ -66,6 +68,10 @@ watch(
     pendingHostKey.value = null
     pendingBody.value = null
     name.value = ''
+    // Deliberately not carried over from the last session created: a field
+    // that quietly remembers is a field that files a session somewhere the
+    // user did not look at.
+    group.value = ''
     directory.value = '.'
     shell.value = shells.value[0] ?? ''
     selection.value = ''
@@ -74,10 +80,11 @@ watch(
 )
 
 function bodyFromForm(): CreateSessionBody {
+  const common = { name: name.value.trim(), group: group.value.trim() }
   if (target.value === 'ssh') {
-    return { name: name.value.trim(), target: 'ssh', hostId: hostId.value }
+    return { ...common, target: 'ssh', hostId: hostId.value }
   }
-  return { name: name.value.trim(), target: 'local', directory: directory.value, shell: shell.value }
+  return { ...common, target: 'local', directory: directory.value, shell: shell.value }
 }
 
 async function attemptCreate(body: CreateSessionBody) {
@@ -161,6 +168,11 @@ function retryAfterTrust() {
                   placeholder="Backend"
                   class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
                 />
+              </label>
+
+              <label class="flex flex-col gap-1 text-sm">
+                <span class="text-slate-400">Group <span class="text-slate-500">(optional)</span></span>
+                <GroupInput v-model="group" />
               </label>
 
               <label class="flex flex-col gap-1 text-sm">
