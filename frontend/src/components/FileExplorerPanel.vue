@@ -18,6 +18,7 @@ import { api } from '@/api/client'
 import { hostFileDownloadURL } from '@/api/upload'
 import { useTransfersStore } from '@/stores/transfers'
 import { useSessionsStore } from '@/stores/sessions'
+import { useUiStore } from '@/stores/ui'
 import { copyText } from '@/utils/clipboard'
 import { relativeTo } from '@/utils/path'
 import RowActionsMenu, { type MenuItem } from '@/components/RowActionsMenu.vue'
@@ -42,6 +43,7 @@ const confirmingDeleteName = ref<string | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const transfers = useTransfersStore()
 const sessions = useSessionsStore()
+const ui = useUiStore()
 
 // The panel outlives the session it browses: a shell can exit while it is
 // open, and be restarted from the terminal beside it. hostops refuses both
@@ -108,6 +110,12 @@ async function load(path: string) {
     const res = await api.listHostFiles(props.sessionId, path)
     currentPath.value = res.path
     absolutePath.value = res.absolutePath
+    // Remember it for this session: the panel is unmounted whenever it is
+    // closed or the Processes tab is selected, and coming back to the root
+    // every time is not where the user was working. The server's own answer is
+    // stored rather than the requested path, so what comes back is a directory
+    // that existed and listed.
+    ui.setPanelPath(props.sessionId, res.path)
     entries.value = [...res.entries].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -357,10 +365,36 @@ function formatSize(bytes: number): string {
   return `${value.toFixed(1)} ${units[i]}`
 }
 
-onMounted(() => load(''))
+/**
+ * sessionRoot is the directory the session was created with — its own root,
+ * not wherever its shell has since cd'd to. An SSH session has no configured
+ * directory (§6: `directory` is local only) and starts its shell in the login
+ * home, which is exactly where '' lands the listing; the same fallback covers
+ * a session record that has not been fetched yet.
+ */
+function sessionRoot(): string {
+  const s = sessions.byId(props.sessionId)
+  if (!s || s.targetType !== 'local') return ''
+  return s.directory
+}
+
+/**
+ * startPath is where the panel opens: back where this session left it, or the
+ * session root the first time it is opened. undefined is the distinction — ''
+ * is a directory that was visited (the target's own root), not the absence of
+ * one.
+ */
+function startPath(): string {
+  const remembered = ui.panelFor(props.sessionId).path
+  return remembered === undefined ? sessionRoot() : remembered
+}
+
+onMounted(() => load(startPath()))
+// The panel is handed a new session rather than remounted when the user
+// switches terminal tabs, so this is the same first-open decision again.
 watch(
   () => props.sessionId,
-  () => load(''),
+  () => load(startPath()),
 )
 </script>
 

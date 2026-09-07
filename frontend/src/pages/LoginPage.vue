@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ApiRequestError } from '@/api/client'
+import PasswordInput from '@/components/PasswordInput.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -95,11 +96,9 @@ async function submit() {
 
             <label class="flex flex-col gap-1 text-sm">
               <span class="text-slate-400">Password</span>
-              <input
+              <PasswordInput
                 v-model="password"
-                type="password"
                 :autocomplete="needsSetup || mode === 'register' ? 'new-password' : 'current-password'"
-                class="rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-emerald-500"
               />
             </label>
 

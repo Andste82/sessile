@@ -9,6 +9,7 @@ import {
 } from '@headlessui/vue'
 import { useHostsStore } from '@/stores/hosts'
 import { ApiRequestError } from '@/api/client'
+import PasswordInput from './PasswordInput.vue'
 import HostKeyTrustDialog from './HostKeyTrustDialog.vue'
 import type { ExchangeKeysResponse, Host, HostKeyErrorDetails } from '@/api/types'
 
@@ -151,12 +152,7 @@ const inputCls =
 
               <label class="flex flex-col gap-1 text-sm">
                 <span class="text-slate-400">Password</span>
-                <input
-                  v-model="password"
-                  type="password"
-                  autocomplete="off"
-                  :class="inputCls"
-                />
+                <PasswordInput v-model="password" autocomplete="off" />
               </label>
 
               <p v-if="error" class="text-sm text-rose-400">{{ error }}</p>

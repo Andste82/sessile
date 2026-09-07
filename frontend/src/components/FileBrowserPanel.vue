@@ -1,13 +1,23 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed } from 'vue'
 import { XMarkIcon } from '@heroicons/vue/20/solid'
 import ProcessTreePanel from './ProcessTreePanel.vue'
 import FileExplorerPanel from './FileExplorerPanel.vue'
+import { useUiStore } from '@/stores/ui'
+import type { FilesPanelState } from '@/stores/ui'
 
-defineProps<{ sessionId: string }>()
+const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-const tab = ref<'processes' | 'files'>('processes')
+const ui = useUiStore()
+
+// Which tab is selected belongs to the session, not to this component: the
+// panel is unmounted every time it is closed, and the same instance is handed
+// a different sessionId when the user switches terminal tabs.
+const tab = computed({
+  get: () => ui.panelFor(props.sessionId).tab,
+  set: (t: FilesPanelState['tab']) => ui.setPanelTab(props.sessionId, t),
+})
 const tabCls = (active: boolean) =>
   active
     ? 'border-emerald-400 text-emerald-400'
@@ -21,18 +31,18 @@ const tabCls = (active: boolean) =>
         <button
           type="button"
           class="border-b-2 px-3 py-2 text-xs font-medium"
-          :class="tabCls(tab === 'processes')"
-          @click="tab = 'processes'"
-        >
-          Processes
-        </button>
-        <button
-          type="button"
-          class="border-b-2 px-3 py-2 text-xs font-medium"
           :class="tabCls(tab === 'files')"
           @click="tab = 'files'"
         >
           Files
+        </button>
+        <button
+          type="button"
+          class="border-b-2 px-3 py-2 text-xs font-medium"
+          :class="tabCls(tab === 'processes')"
+          @click="tab = 'processes'"
+        >
+          Processes
         </button>
       </div>
       <button
@@ -45,7 +55,7 @@ const tabCls = (active: boolean) =>
       </button>
     </div>
 
-    <ProcessTreePanel v-if="tab === 'processes'" :session-id="sessionId" class="min-h-0 flex-1" />
-    <FileExplorerPanel v-else :session-id="sessionId" class="min-h-0 flex-1" />
+    <FileExplorerPanel v-if="tab === 'files'" :session-id="sessionId" class="min-h-0 flex-1" />
+    <ProcessTreePanel v-else :session-id="sessionId" class="min-h-0 flex-1" />
   </div>
 </template>
