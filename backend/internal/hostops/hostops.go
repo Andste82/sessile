@@ -57,7 +57,7 @@ type Result struct {
 type FileTransport interface {
 	// Resolve returns path in its canonical absolute form — for SSH, the
 	// target's own filesystem root ("/", not this app's concept of one);
-	// for local, the sandboxed absolute host path §4.5 already resolved
+	// for local, the validated absolute host path §4.5 already resolved
 	// to. Used so the file browser can show and navigate real absolute
 	// paths for an SSH target (§4.10) rather than a synthetic starting
 	// point with no way above it.

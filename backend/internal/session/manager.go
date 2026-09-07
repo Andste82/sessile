@@ -341,7 +341,7 @@ func (m *Manager) restartable(id, userID string) (Info, error) {
 // spawnLocal validates the inputs, starts a local PTY-backed shell and
 // returns the resulting Session without registering it. Shared by
 // CreateLocal and Restart so a restart runs through exactly the same
-// allowlist and sandbox checks (§4.5) — a directory that has since been
+// allowlist and workspace checks (§4.5) — a directory that has since been
 // deleted, or a shell dropped from the allowlist, must fail here rather
 // than at PTY start.
 func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.Time) (*Session, error) {

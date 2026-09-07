@@ -9,12 +9,12 @@ import (
 	"github.com/Andste82/sessile/backend/internal/session"
 )
 
-// TestResolveDestructiveHostopsPathRejectsTheSandboxRoot reproduces the
+// TestResolveDestructiveHostopsPathRejectsTheWorkspaceRoot reproduces the
 // review's exact finding: DELETE .../hostops/files?path=. resolves to the
 // workspace root itself (session.ResolvePath correctly returns it, since
 // listHostFiles needs that), and resolveHostopsPath alone had no guard
 // against a destructive caller accepting that same resolution.
-func TestResolveDestructiveHostopsPathRejectsTheSandboxRoot(t *testing.T) {
+func TestResolveDestructiveHostopsPathRejectsTheWorkspaceRoot(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "proj"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -29,7 +29,7 @@ func TestResolveDestructiveHostopsPathRejectsTheSandboxRoot(t *testing.T) {
 	}
 
 	// A real subdirectory must still resolve normally — this isn't a
-	// blanket rejection of the whole sandbox, only its root.
+	// blanket rejection of the whole workspace, only its root.
 	resolved, _, err := s.resolveDestructiveHostopsPath(info, "proj")
 	if err != nil {
 		t.Fatalf("resolveDestructiveHostopsPath(proj): unexpected error: %v", err)
@@ -41,7 +41,7 @@ func TestResolveDestructiveHostopsPathRejectsTheSandboxRoot(t *testing.T) {
 }
 
 // TestResolveDestructiveHostopsPathRejectsSSHRootPaths covers the
-// unsandboxed SSH case: "." and "/" are the two paths that unambiguously
+// unvalidated SSH case: "." and "/" are the two paths that unambiguously
 // mean "here" or "everything" if left unresolved.
 func TestResolveDestructiveHostopsPathRejectsSSHRootPaths(t *testing.T) {
 	s := &Server{}

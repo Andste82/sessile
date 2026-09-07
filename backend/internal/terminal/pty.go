@@ -38,7 +38,7 @@ type PTY struct {
 type Foreground struct {
 	PID  int
 	Name string // the process group leader, e.g. "claude", "htop", "bash"
-	Cwd  string // absolute working directory, still to be sandbox-checked
+	Cwd  string // absolute working directory — anywhere the shell has cd-ed to
 	// Chain is the group leader followed by the processes running under it that
 	// stayed in its group — ["bash", "ping"] for a script that runs ping. Its
 	// first element is always Name, and its last is the program actually

@@ -47,7 +47,7 @@ type Server struct {
 	ws      *ws.Handler
 	log     *slog.Logger
 
-	// workspaceRoot is the local-host sandbox root, <data-dir>/workspace
+	// workspaceRoot is the local-host workspace root, <data-dir>/workspace
 	// (PROJECT_PLAN.md §4.5, §9) — fixed, not operator-supplied.
 	workspaceRoot string
 	// serverConfig holds config.yml (displayName, allowRegistration,
