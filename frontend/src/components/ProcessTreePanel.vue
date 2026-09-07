@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ArrowPathIcon } from '@heroicons/vue/20/solid'
+import { ArrowPathIcon, ShareIcon } from '@heroicons/vue/20/solid'
 import { api, isUnsupportedPlatform } from '@/api/client'
 import type { Process } from '@/api/types'
 import { useSessionsStore } from '@/stores/sessions'
@@ -64,9 +64,23 @@ watch(() => props.sessionId, load)
 <template>
   <div class="flex h-full flex-col">
     <div class="flex items-center justify-between border-b border-slate-800 px-3 py-2">
-      <span class="text-xs font-medium uppercase tracking-wide text-slate-400">
-        Process tree<template v-if="rootPid !== null"> — root {{ rootPid }}</template>
+      <!-- The tab beside this one already says "Processes", so the header spends
+           its width on the one thing only it can say: which process the tree
+           hangs off. The glyph is Heroicons' node graph — one node branching
+           into two, the same shape as the list below it — and carries the
+           "root" meaning that the old wording spelled out as the word "root",
+           where it read as the *user* root sitting in front of a pid. In Host
+           scope there is no single root (§4.10), and this is empty: the
+           toggle already says which mode we are in. -->
+      <span
+        v-if="rootPid !== null"
+        class="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-400"
+        :title="`Tree rooted at PID ${rootPid} — this session's shell. The list below is its descendants.`"
+      >
+        <ShareIcon class="h-3.5 w-3.5 shrink-0" />
+        PID {{ rootPid }}
       </span>
+      <span v-else />
       <div class="flex items-center gap-2">
         <div class="flex rounded-md border border-slate-700 text-xs">
           <button
@@ -75,7 +89,7 @@ watch(() => props.sessionId, load)
             :class="requestedScope === 'session' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-800'"
             @click="requestedScope = 'session'; load()"
           >
-            This session
+            Session
           </button>
           <button
             type="button"
@@ -83,7 +97,7 @@ watch(() => props.sessionId, load)
             :class="requestedScope === 'all' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-800'"
             @click="requestedScope = 'all'; load()"
           >
-            All processes
+            Host
           </button>
         </div>
         <button
