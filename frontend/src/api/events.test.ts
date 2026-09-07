@@ -9,6 +9,7 @@ const validSession = {
   shell: 'bash',
   hostId: '',
   hostDisplayName: '',
+  group: 'Production',
   status: 'running',
   pid: 42,
   created: '2026-08-07T10:00:00Z',
@@ -95,10 +96,14 @@ describe('parseEvent', () => {
     delete (sparse as Record<string, unknown>).cwd
     delete (sparse as Record<string, unknown>).command
     delete (sparse as Record<string, unknown>).title
+    // A session from a server that predates groups has no group field at all,
+    // and that has to read as "no group" rather than undefined (§4.11).
+    delete (sparse as Record<string, unknown>).group
     const ev = parseEvent(JSON.stringify({ type: 'session', session: sparse }))
     expect(ev).toHaveProperty('session.cwd', '')
     expect(ev).toHaveProperty('session.command', '')
     expect(ev).toHaveProperty('session.title', '')
+    expect(ev).toHaveProperty('session.group', '')
   })
 
   it('parses a hostopStarted event', () => {

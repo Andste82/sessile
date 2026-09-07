@@ -76,6 +76,7 @@ function parseSession(v: unknown): Session | null {
     shell: s.shell,
     hostId: str(s.hostId),
     hostDisplayName: str(s.hostDisplayName),
+    group: str(s.group),
     status: s.status as Status,
     pid: num(s.pid),
     created: str(s.created),

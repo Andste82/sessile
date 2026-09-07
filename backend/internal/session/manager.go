@@ -116,12 +116,15 @@ func (m *Manager) SetHostResolver(r HostResolver) {
 
 // CreateLocal validates inputs, starts a local PTY-backed shell, begins its
 // read/broadcast goroutine, persists metadata and returns a snapshot.
-func (m *Manager) CreateLocal(userID, name, dir, shell string) (Info, error) {
+func (m *Manager) CreateLocal(userID, name, group, dir, shell string) (Info, error) {
 	now := timeNow()
 	s, err := m.spawnLocal(uuid.NewString(), userID, name, dir, shell, now)
 	if err != nil {
 		return Info{}, err
 	}
+	// Set before register, which is what publishes and persists it: nothing
+	// else can see s yet, so this needs no lock.
+	s.Group = group
 	info, err := m.register(s)
 	if err != nil {
 		return Info{}, err
@@ -139,12 +142,13 @@ func (m *Manager) CreateLocal(userID, name, dir, shell string) (Info, error) {
 // §4.5.1) this returns that error unwrapped and creates no session and no
 // store row — a clean no-op the caller retries after the user trusts the
 // key (§6).
-func (m *Manager) CreateSSH(userID, name, hostID, hostDisplayName string, target sshpty.Target) (Info, error) {
+func (m *Manager) CreateSSH(userID, name, group, hostID, hostDisplayName string, target sshpty.Target) (Info, error) {
 	now := timeNow()
 	s, err := m.spawnSSH(uuid.NewString(), userID, name, hostID, hostDisplayName, target, now)
 	if err != nil {
 		return Info{}, err
 	}
+	s.Group = group
 	info, err := m.register(s)
 	if err != nil {
 		return Info{}, err
@@ -204,6 +208,9 @@ func (m *Manager) Restart(id, userID string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	// Metadata the spawn helpers do not take: a restart must not drop the
+	// session out of its group (§4.11).
+	s.Group = meta.Group
 
 	// Seed the fresh ring buffer with what the previous shell left behind, so the
 	// first client to attach sees the old output above the new prompt. Nothing is
@@ -809,10 +816,25 @@ func (m *Manager) discardState(id string) {
 	}
 }
 
-// Rename updates a session's name in memory and the store.
-func (m *Manager) Rename(id, userID, name string) (Info, error) {
-	if l := len(name); l < 1 || l > 64 {
-		return Info{}, ErrInvalidName
+// Update changes a session's name and/or group, in memory and in the store.
+//
+// Both are optional and distinguished by pointer, not by emptiness: nil means
+// "leave alone", and a non-nil "" clears the group (there is no such thing as
+// clearing a name — it is 1-64 characters or an error). This is the same
+// omitted-means-unchanged shape the host update body already uses (§6).
+//
+// Status is deliberately not checked. Name and group are metadata; filing a
+// stopped session under a group is exactly when one wants to, and the
+// published Info reaches every attached browser over the event channel (§5.1)
+// without either side polling for it.
+func (m *Manager) Update(id, userID string, name, group *string) (Info, error) {
+	if name != nil {
+		if l := len(*name); l < 1 || l > 64 {
+			return Info{}, ErrInvalidName
+		}
+	}
+	if group != nil && len(*group) > 64 {
+		return Info{}, ErrInvalidGroup
 	}
 	m.mu.RLock()
 	s, ok := m.sessions[id]
@@ -825,7 +847,12 @@ func (m *Manager) Rename(id, userID, name string) (Info, error) {
 		s.mu.Unlock()
 		return Info{}, ErrNotFound
 	}
-	s.Name = name
+	if name != nil {
+		s.Name = *name
+	}
+	if group != nil {
+		s.Group = *group
+	}
 	info := s.infoLocked()
 	s.mu.Unlock()
 	if m.store != nil {

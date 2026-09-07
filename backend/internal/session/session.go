@@ -51,6 +51,14 @@ type Session struct {
 	// only) — survives the host being renamed or deleted after the fact.
 	HostDisplayName string
 
+	// Group is a free-text label the user sorts their sessions under, "" for
+	// none. There is no group entity anywhere: the set of groups is whatever
+	// the live sessions name, so a group appears when a session claims it and
+	// is gone once the last session carrying it is deleted. Stopped sessions
+	// keep theirs — the field is persisted, so a restart does not scatter the
+	// grouping (§4.11).
+	Group string
+
 	Status       Status
 	PID          int
 	Created      time.Time
@@ -108,6 +116,7 @@ type Info struct {
 	Shell           string
 	HostID          string
 	HostDisplayName string
+	Group           string
 	Status          Status
 	PID             int
 	Created         time.Time
@@ -145,6 +154,7 @@ func (s *Session) infoLocked() Info {
 		Shell:           s.Shell,
 		HostID:          s.HostID,
 		HostDisplayName: s.HostDisplayName,
+		Group:           s.Group,
 		Status:          s.Status,
 		PID:             s.PID,
 		Created:         s.Created,

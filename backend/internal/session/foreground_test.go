@@ -51,7 +51,7 @@ func TestCommandLabel(t *testing.T) {
 // started with as its foreground program.
 func TestSampleForegroundReportsARealSession(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestSampleForegroundNamesTheProgramInsideAScript(t *testing.T) {
 		t.Fatalf("write script: %v", err)
 	}
 
-	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -112,7 +112,7 @@ func waitForForeground(t *testing.T, m *Manager, id string, ok func(Info) bool) 
 // A stopped session must not keep advertising the program it was running.
 func TestSampleForegroundClearsAStoppedSession(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "probe", ".", "sh")
+	info, err := mgr.CreateLocal("test-user", "probe", "", ".", "sh")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
 import type { ServerEvent } from '@/api/events'
-import type { AppConfig, CreateSessionBody, Session } from '@/api/types'
+import type { AppConfig, CreateSessionBody, Session, UpdateSessionBody } from '@/api/types'
 import { useUiStore } from './ui'
 
 // Session list + config store. The list is kept live by the event channel
@@ -137,8 +137,8 @@ export const useSessionsStore = defineStore('sessions', () => {
     removeSession(id)
   }
 
-  async function renameSession(id: string, name: string) {
-    const updated = await api.renameSession(id, name)
+  async function updateSession(id: string, body: UpdateSessionBody) {
+    const updated = await api.updateSession(id, body)
     sessions.value = sessions.value.map((s) => (s.id === id ? updated : s))
     return updated
   }
@@ -198,7 +198,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     upsertSession,
     createSession,
     deleteSession,
-    renameSession,
+    updateSession,
     markStopped,
     markAllStopped,
     restartSession,

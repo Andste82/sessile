@@ -16,6 +16,7 @@ import type {
   HostopStatus,
   ProcessTreeResponse,
   Session,
+  UpdateSessionBody,
   User,
 } from './types'
 
@@ -107,10 +108,13 @@ export const api = {
     }),
   deleteSession: (id: string) =>
     request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
-  renameSession: (id: string, name: string) =>
+  // Only the fields present in `body` are changed; JSON.stringify drops an
+  // undefined property, which is exactly the omitted-means-unchanged shape the
+  // endpoint expects (§6). `group: ''` is a value, and clears the group.
+  updateSession: (id: string, body: UpdateSessionBody) =>
     request<Session>(`/api/sessions/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(body),
     }),
   restartSession: (id: string) =>
     request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),

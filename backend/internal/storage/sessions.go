@@ -9,12 +9,12 @@ import (
 	"github.com/Andste82/sessile/backend/internal/session"
 )
 
-// Insert upserts a session's metadata (used on create and rename).
+// Insert upserts a session's metadata (used on create and update).
 func (s *Store) Insert(i session.Info) error {
 	_, err := s.db.Exec(
 		`INSERT INTO sessions (id, name, directory, shell, status, created, last_activity,
-		                       user_id, target_type, host_id, host_display_name)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                       user_id, target_type, host_id, host_display_name, group_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name=excluded.name,
 		   directory=excluded.directory,
@@ -24,10 +24,11 @@ func (s *Store) Insert(i session.Info) error {
 		   user_id=excluded.user_id,
 		   target_type=excluded.target_type,
 		   host_id=excluded.host_id,
-		   host_display_name=excluded.host_display_name`,
+		   host_display_name=excluded.host_display_name,
+		   group_name=excluded.group_name`,
 		i.ID, i.Name, i.Directory, i.Shell, string(i.Status),
 		i.Created.UTC().Format(time.RFC3339), i.LastActivity.UTC().Format(time.RFC3339),
-		i.UserID, string(i.TargetType), i.HostID, i.HostDisplayName,
+		i.UserID, string(i.TargetType), i.HostID, i.HostDisplayName, i.Group,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
@@ -66,7 +67,7 @@ func (s *Store) Delete(id string) error {
 // selectColumns lists every column scan expects, in order — shared by Get
 // and LoadStopped so the two queries can never drift apart.
 const selectColumns = `id, name, directory, shell, status, created, last_activity,
-	                       user_id, target_type, host_id, host_display_name`
+	                       user_id, target_type, host_id, host_display_name, group_name`
 
 // Get returns a single session's persisted metadata.
 func (s *Store) Get(id string) (session.Info, bool, error) {
@@ -154,7 +155,8 @@ func scan(sc scanner) (session.Info, error) {
 	)
 	if err := sc.Scan(&info.ID, &info.Name, &info.Directory, &info.Shell,
 		&status, &created, &lastAct,
-		&info.UserID, &targetType, &info.HostID, &info.HostDisplayName); err != nil {
+		&info.UserID, &targetType, &info.HostID, &info.HostDisplayName,
+		&info.Group); err != nil {
 		return session.Info{}, err
 	}
 	info.Status = session.Status(status)
