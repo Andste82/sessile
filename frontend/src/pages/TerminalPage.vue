@@ -143,7 +143,14 @@ watch(
     <TabBar :conn="conn" />
 
     <div class="flex min-h-0 flex-1">
-      <div class="relative min-h-0 flex-1">
+      <!-- min-w-0: this column is a *row* flex item, so its automatic minimum
+           size is its content's min-content width — which is the key bar's, and
+           that is wider than a phone screen. Without it, opening the key bar
+           widens the whole terminal column past the viewport (clipped by the
+           app shell's overflow-hidden) instead of letting the bar's own
+           overflow-x-auto rows scroll. Before the files panel put this column
+           in a row, it was a column flex item, where no such minimum applies. -->
+      <div class="relative min-h-0 min-w-0 flex-1">
         <p v-if="loadError" class="p-6 text-sm text-rose-400">{{ loadError }}</p>
         <TerminalView
           v-else
