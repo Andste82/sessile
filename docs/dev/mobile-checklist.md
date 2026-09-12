@@ -98,6 +98,51 @@ project dependency (§2 rules out an E2E framework), so this lives in a scratch
 directory when it is needed and does not ship.
 
 
+## On-screen key bar ("Keys")
+
+- [ ] Tapping "Keys" in the bottom nav shows the bar above the bottom nav and
+      tapping it again hides it.
+- [ ] **On a screen narrower than the bar, the page does not get wider.** The
+      bar's two rows scroll sideways under a finger instead; everything else —
+      the tab strip, the files button in the terminal's top-right corner — stays
+      where it was. Opening the bar used to stretch the terminal column to the
+      bar's own width, which the app shell then clipped, so whatever sat past
+      the screen edge was simply gone (no scrollbar, nothing to swipe).
+- [ ] A sticky modifier (Ctrl/Alt/Shift) highlights while armed and clears after
+      the next key.
+- [ ] Pressing a key does not close the soft keyboard.
+
+### Checking widths without a phone
+
+The width faults above are measurable, so they need no eye and no device. Drive
+the real app in Chromium at a phone viewport, open the key bar, and compare what
+the layout produced against the viewport:
+
+```js
+const ctx = await browser.newContext({ ...devices['Pixel 5'] })  // pointer: coarse, hover: none
+// …log in, open /sessions/<id>, tap "Keys"…
+await page.evaluate(() => {
+  const col = document.querySelector('main .flex-1 > .relative')
+  const row = document.querySelector('main .select-none.border-t > div')
+  return {
+    innerWidth: window.innerWidth,                  // 393
+    terminalColumn: col.getBoundingClientRect().width,  // must equal innerWidth
+    rowScrollable: row.scrollWidth > row.clientWidth,   // must be true
+  }
+})
+```
+
+A column wider than the viewport is the fault; a row whose `scrollWidth` equals
+its `clientWidth` is the same fault seen from the other side, because a scroller
+as wide as its content has nothing left to scroll. Note that `documentElement
+.scrollWidth` stays at the viewport width either way — the app shell's
+`overflow-hidden` clips the overflow rather than letting the page scroll — so it
+is not the thing to assert on.
+
+Same scratch-directory rule as the swipe recipe above — the browser is installed
+globally in the devcontainer, nothing about it belongs in `frontend/package.json`.
+
+
 ## Dashboard
 
 - [ ] Session cards reflow: 1 column (<640px), 2 (sm), 3 (lg).
