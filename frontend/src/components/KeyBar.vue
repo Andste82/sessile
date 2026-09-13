@@ -49,8 +49,22 @@ const fKeys: SpecialKey[] = [
   'F12',
 ]
 
+// Text labels, not symbols — tried Unicode key-cap glyphs (⇥ ⇧ ⇱ ⇲ ⇞ ⇟ ⌦)
+// first, but they rendered as unknown-glyph boxes on a real Android device:
+// this component's font stack (style.css's global sans stack) isn't the one
+// this project bundled Noto Sans Symbols for (that's scoped to the terminal
+// buffer only, for issue #46), so there is no guarantee those codepoints are
+// covered on an arbitrary phone. Text is the safe choice.
+//
+// w-10, not padding: every button in the row is this one width regardless
+// of its label's length — padding alone only makes each button as wide as
+// its own content demands, which is what made "Shift" and "→" different
+// sizes before. text-xs is small enough that "Shift" and "PgDn" (the widest
+// labels) still fit this width without wrapping, which is what keeps the
+// row narrow enough to reach past Del without scrolling. F-keys are still a
+// swipe away on the right for the rare time one is needed.
 const btn =
-  'shrink-0 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-200 active:bg-slate-700'
+  'w-10 shrink-0 rounded-md border border-slate-700 bg-slate-800 py-2 text-center text-xs font-medium text-slate-200 active:bg-slate-700'
 </script>
 
 <template>
@@ -74,7 +88,7 @@ const btn =
         v-for="m in modifiers"
         :key="m.name"
         type="button"
-        class="shrink-0 rounded-md border px-3 py-2 text-sm font-medium"
+        class="w-10 shrink-0 rounded-md border py-2 text-center text-xs font-medium"
         :class="
           mods[m.name]
             ? 'border-emerald-500 bg-emerald-600 text-white'
@@ -108,14 +122,14 @@ const btn =
       >
         {{ k.label }}
       </button>
-    </div>
 
-    <div class="flex items-stretch gap-1 overflow-x-auto px-1.5 pb-1.5">
+      <span class="w-px shrink-0 self-stretch bg-slate-700" />
+
       <button
         v-for="k in fKeys"
         :key="k"
         type="button"
-        class="shrink-0 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 active:bg-slate-700"
+        :class="btn"
         @pointerdown.prevent="emit('key', k)"
       >
         {{ k }}

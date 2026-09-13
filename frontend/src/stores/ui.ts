@@ -154,11 +154,54 @@ function newFilesPanelState(): FilesPanelState {
 
 // Small store for cross-component UI state that isn't tied to session data.
 export const useUiStore = defineStore('ui', () => {
-  // Whether the on-screen special-key bar is shown on the terminal (issue #10).
-  const keyBarOpen = ref(false)
+  // Whether the on-screen (software) keyboard is open — drives two things on
+  // a phone: BottomNav hides (its fixed 56px is worth reclaiming while
+  // typing; closing the keyboard to get it back is an acceptable trade), and
+  // the special-key bar (issue #10) shows exactly while this is true. The
+  // two used to be independent (a manual toggle plus a separate "force it
+  // open when the keyboard appears" rule), which meant closing the keyboard
+  // left the bar behind with nothing shown above it, and the toggle button
+  // — reachable only while the keyboard was already closed, i.e. never when
+  // it would actually be useful — duplicated the one thing opening the
+  // keyboard already does for free. Tying the bar directly to this removes
+  // both: there is nothing left to desync.
+  //
+  // There is no direct "keyboard is open" signal on the web, so this infers
+  // it from a shrinking viewport: index.html sets
+  // interactive-widget=resizes-content, so the layout viewport itself
+  // (window.innerHeight) shrinks to fit above the keyboard on most mobile
+  // browsers, while visualViewport shrinks instead on ones that don't honor
+  // that (older WebViews, some non-Chromium browsers) — both listeners feed
+  // the same check so either mode is caught. restingHeight tracks the
+  // largest height seen; a later height well below it (comfortably past
+  // ordinary address-bar show/hide, which moves tens of px, not hundreds) is
+  // read as the keyboard being open. orientationchange resets the baseline
+  // immediately, so a rotation to a shorter landscape height is never
+  // mistaken for the keyboard.
+  const keyboardOpen = ref(false)
+  const keyboardOpenThreshold = 150
 
-  function toggleKeyBar() {
-    keyBarOpen.value = !keyBarOpen.value
+  function currentViewportHeight(): number {
+    return window.visualViewport?.height ?? window.innerHeight
+  }
+
+  let restingHeight = typeof window !== 'undefined' ? currentViewportHeight() : 0
+
+  function updateKeyboardOpen() {
+    const h = currentViewportHeight()
+    if (h > restingHeight) restingHeight = h
+    keyboardOpen.value = restingHeight - h > keyboardOpenThreshold
+  }
+
+  function resetKeyboardBaseline() {
+    restingHeight = currentViewportHeight()
+    updateKeyboardOpen()
+  }
+
+  if (typeof window !== 'undefined') {
+    window.visualViewport?.addEventListener('resize', updateKeyboardOpen)
+    window.addEventListener('resize', updateKeyboardOpen)
+    window.addEventListener('orientationchange', resetKeyboardBaseline)
   }
 
   const terminalFontSize = ref(readFontSize())
@@ -288,8 +331,7 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   return {
-    keyBarOpen,
-    toggleKeyBar,
+    keyboardOpen,
     terminalFontSize,
     setTerminalFontSize,
     copyOnSelect,

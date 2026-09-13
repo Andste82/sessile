@@ -38,7 +38,7 @@ onBeforeUnmount(() => dispose());
   <div class="flex h-full w-full flex-col">
     <div ref="host" class="terminal-host min-h-0 flex-1" />
     <KeyBar
-      v-if="ui.keyBarOpen"
+      v-if="ui.keyboardOpen"
       :mods="mods"
       class="shrink-0"
       @mod="toggleMod"
