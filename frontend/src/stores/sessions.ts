@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
 import type { ServerEvent } from '@/api/events'
 import type { AppConfig, CreateSessionBody, Session, UpdateSessionBody } from '@/api/types'
@@ -14,6 +14,45 @@ export interface SessionGroup {
   sessions: Session[]
 }
 
+// Ordered ids of the sessions open as terminal tabs. In localStorage, like the
+// terminal font size (`ui.ts`), because a reload otherwise leaves the one tab
+// the router mounted and throws the rest of the working set away — the sessions
+// themselves survive on the server (§9), only this view of them was lost.
+//
+// Deliberately *not* mirrored across browser tabs through the `storage` event
+// the way the font size is: two windows should agree on a preference, but the
+// set of open tabs is what each window is working on, so opening one in the
+// first window must not make it appear in the second.
+const openTabsKey = 'sessile.openTabs'
+
+/**
+ * parseOpenTabs reads a stored value as the ordered tab ids. Anything that is
+ * not the array of strings we write — a corrupted entry, a cleared one, a
+ * shape from a future version — reads as "no tabs", which costs a click per
+ * session and cannot show a tab that was never open.
+ */
+export function parseOpenTabs(value: unknown): string[] {
+  if (typeof value !== 'string') return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((id): id is string => typeof id === 'string' && id !== '')
+  } catch {
+    return []
+  }
+}
+
+// Storage is not guaranteed: a browser with cookies blocked throws on access
+// rather than returning null, and losing the tab set is not a reason to fail to
+// build the store.
+function readOpenTabs(): string[] {
+  try {
+    return parseOpenTabs(localStorage.getItem(openTabsKey))
+  } catch {
+    return []
+  }
+}
+
 // Session list + config store. The list is kept live by the event channel
 // (§5.1); polling remains as the fallback for while that socket is down.
 export const useSessionsStore = defineStore('sessions', () => {
@@ -22,11 +61,22 @@ export const useSessionsStore = defineStore('sessions', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
 
-  // Ordered ids of sessions opened as terminal tabs.
+  // Ordered ids of sessions opened as terminal tabs, restored from the last
+  // page load once the session list says which of them still exist.
   const openTabIds = ref<string[]>([])
 
+  // Ids read from storage but not yet checked against the server's list. They
+  // are held here rather than put straight into openTabIds so a deleted
+  // session — or one belonging to whoever used this browser before — never
+  // shows up as a tab, not even for the one paint before the list arrives.
+  // Nulled by the first authoritative snapshot, which is what merges them in.
+  let pendingRestore: string[] | null = readOpenTabs()
+
+  // Assigns rather than pushes: the watcher below is on the ref, not deep, so
+  // a mutated array would apply on screen and never reach storage.
   function openTab(id: string) {
-    if (!openTabIds.value.includes(id)) openTabIds.value.push(id)
+    if (openTabIds.value.includes(id)) return
+    openTabIds.value = [...openTabIds.value, id]
   }
 
   function closeTab(id: string) {
@@ -35,6 +85,41 @@ export const useSessionsStore = defineStore('sessions', () => {
     // outlive every tab that ever opened one. removeSession() closes the tab
     // too, so a deleted session is covered by this as well.
     useUiStore().forgetSessionPanel(id)
+  }
+
+  watch(openTabIds, (ids) => {
+    try {
+      localStorage.setItem(openTabsKey, JSON.stringify(ids))
+    } catch {
+      // Unwritable storage: the tabs still work for this page's lifetime.
+    }
+  })
+
+  /**
+   * setSessions applies a whole-list snapshot from the server — the one place
+   * that knows which sessions exist, and therefore the only place that can
+   * decide which tabs are real.
+   *
+   * On the first snapshot it merges the restored ids in stored order, dropping
+   * the ones the server does not list. Afterwards it only prunes: a session
+   * deleted from another client loses its tab here as well as through
+   * `sessionGone`, whichever arrives first. The length guard keeps a poll that
+   * changed nothing from writing storage every few seconds.
+   */
+  function setSessions(list: Session[]) {
+    sessions.value = list
+    const exists = new Set(list.map((s) => s.id))
+    if (pendingRestore) {
+      const restored = pendingRestore.filter((id) => exists.has(id))
+      pendingRestore = null
+      // A tab opened before the list landed — the session this page was
+      // deep-linked to — keeps its tab and goes after the restored ones.
+      const opened = openTabIds.value.filter((id) => !restored.includes(id))
+      openTabIds.value = [...restored, ...opened]
+      return
+    }
+    const kept = openTabIds.value.filter((id) => exists.has(id))
+    if (kept.length !== openTabIds.value.length) openTabIds.value = kept
   }
 
   // Sessions in display order: the ungrouped ones first and unlabelled, then
@@ -89,7 +174,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     loading.value = true
     error.value = null
     try {
-      sessions.value = await api.listSessions()
+      setSessions(await api.listSessions())
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
     } finally {
@@ -105,7 +190,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   // are running whatever the last successful poll said — see markAllStopped.
   async function refreshSessions() {
     try {
-      sessions.value = await api.listSessions()
+      setSessions(await api.listSessions())
       error.value = null
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
@@ -137,7 +222,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       case 'sessions':
         // The snapshot is the whole truth, including a session this client
         // never saw created and one it never saw deleted.
-        sessions.value = ev.sessions
+        setSessions(ev.sessions)
         error.value = null
         break
       case 'session':
