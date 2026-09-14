@@ -1199,6 +1199,17 @@ frontend/src/
   local sessions get it from §4.7's existing lookup, SSH sessions from
   §4.10's `ProcessTree`. A `Delete`/`Copy` in progress shows an inline
   progress bar fed by §5.2's events, not a poll.
+
+  The set of open tabs survives a reload: the ordered ids live in
+  `localStorage` under `sessile.openTabs` (`stores/sessions.ts`), like the
+  font size and for the same reason — it describes this browser's view, and
+  the sessions behind it already survive on the server, so there is nothing
+  here for the server to own. A restored id only becomes a tab once a
+  whole-list snapshot confirms the session exists, which is what keeps a
+  deleted session — or one belonging to whoever used this browser before —
+  from coming back as a tab. Unlike the font size it is *not* mirrored
+  across browser tabs through the `storage` event: two windows should agree
+  on a preference, but the open-tab set is what each window is working on.
 - **Settings** (`/settings`): read-only server config display (display name,
   shells, version, whether local-host sessions are allowed), plus — admin
   only — an editable panel for `displayName`/`allowRegistration`/

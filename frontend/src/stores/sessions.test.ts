@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { ApiRequestError } from '@/api/client'
 import type { Session } from '@/api/types'
-import { useSessionsStore } from './sessions'
+import { parseOpenTabs, useSessionsStore } from './sessions'
 
 vi.mock('@/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/api/client')>('@/api/client')
@@ -309,5 +310,152 @@ describe('grouped', () => {
     const store = useSessionsStore()
     store.sessions = [session({ id: 'a', group: 'Production' })]
     expect(store.grouped.map((g) => g.name)).toEqual(['Production'])
+  })
+})
+
+describe('parseOpenTabs', () => {
+  it.each([
+    ['["a","b"]', ['a', 'b']],
+    // Not the array we write, in every shape storage can hand back.
+    [null, []],
+    ['', []],
+    ['not json', []],
+    ['{"a":1}', []],
+    ['"a"', []],
+    // Mixed contents: keep the usable ids rather than dropping the whole set.
+    ['["a",7,null,"","b"]', ['a', 'b']],
+  ])('reads %j as %j', (stored, want) => {
+    expect(parseOpenTabs(stored)).toEqual(want)
+  })
+})
+
+// Tabs are restored from localStorage, like the terminal font size, because a
+// reload otherwise left only the session the router mounted. What makes that
+// safe is the session list: a stored id the server does not list — deleted
+// since, or belonging to whoever used this browser before — never becomes a
+// tab.
+describe('open tabs across a reload', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    delete (globalThis as { localStorage?: unknown }).localStorage
+  })
+
+  function withStoredTabs(ids: string[]) {
+    const data: Record<string, string> = { 'sessile.openTabs': JSON.stringify(ids) }
+    const storage = {
+      getItem: vi.fn((k: string) => (k in data ? data[k] : null)),
+      setItem: vi.fn((k: string, v: string) => {
+        data[k] = v
+      }),
+    }
+    ;(globalThis as { localStorage?: unknown }).localStorage = storage
+    return { storage, data }
+  }
+
+  it('restores the stored tabs in order once the list arrives', async () => {
+    withStoredTabs(['b', 'a'])
+    listSessionsMock.mockResolvedValue([session({ id: 'a' }), session({ id: 'b' })])
+    const store = useSessionsStore()
+
+    // Nothing before the snapshot: an id is not a tab until the server has
+    // confirmed the session behind it.
+    expect(store.openTabIds).toEqual([])
+
+    await store.fetchSessions()
+
+    expect(store.openTabIds).toEqual(['b', 'a'])
+  })
+
+  it('drops a stored tab whose session is gone', async () => {
+    withStoredTabs(['a', 'deleted'])
+    listSessionsMock.mockResolvedValue([session({ id: 'a' })])
+    const store = useSessionsStore()
+
+    await store.fetchSessions()
+
+    expect(store.openTabIds).toEqual(['a'])
+  })
+
+  // The terminal page opens its own tab on mount, before the list it fired off
+  // has come back. That tab is the one the user is looking at, so it survives
+  // the merge — a deep link into a session that was not in the stored set
+  // included.
+  it('keeps a tab opened before the list arrived', async () => {
+    withStoredTabs(['a'])
+    listSessionsMock.mockResolvedValue([session({ id: 'a' }), session({ id: 'deep' })])
+    const store = useSessionsStore()
+    store.openTab('deep')
+
+    await store.fetchSessions()
+
+    expect(store.openTabIds).toEqual(['a', 'deep'])
+  })
+
+  it('restores nothing when storage cannot be read', async () => {
+    ;(globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: vi.fn(() => {
+        throw new Error('cookies blocked')
+      }),
+      setItem: vi.fn(),
+    }
+    listSessionsMock.mockResolvedValue([session({ id: 'a' })])
+    const store = useSessionsStore()
+
+    await store.fetchSessions()
+
+    expect(store.openTabIds).toEqual([])
+  })
+
+  it('writes the tab set as it changes', async () => {
+    const { storage, data } = withStoredTabs([])
+    listSessionsMock.mockResolvedValue([session({ id: 'a' }), session({ id: 'b' })])
+    const store = useSessionsStore()
+    await store.fetchSessions()
+
+    store.openTab('a')
+    store.openTab('b')
+    await nextTick()
+    expect(data['sessile.openTabs']).toBe('["a","b"]')
+
+    store.closeTab('a')
+    await nextTick()
+    expect(data['sessile.openTabs']).toBe('["b"]')
+    expect(storage.setItem).toHaveBeenCalled()
+  })
+
+  // Restoring happens once. A later snapshot is still authoritative about
+  // which tabs are real: a session deleted from another client loses its tab
+  // whether the event channel or the next poll notices first.
+  it('prunes a tab whose session disappears from a later snapshot', async () => {
+    withStoredTabs([])
+    listSessionsMock.mockResolvedValue([session({ id: 'a' }), session({ id: 'b' })])
+    const store = useSessionsStore()
+    await store.fetchSessions()
+    store.openTab('a')
+    store.openTab('b')
+
+    store.applyEvent({ type: 'sessions', sessions: [session({ id: 'a' })] })
+
+    expect(store.openTabIds).toEqual(['a'])
+  })
+
+  // A poll that changes nothing must not keep rewriting storage: the pruned
+  // array is only assigned when it is actually shorter.
+  it('leaves the tab set untouched by a snapshot that changes nothing', async () => {
+    withStoredTabs(['a'])
+    listSessionsMock.mockResolvedValue([session({ id: 'a' })])
+    const store = useSessionsStore()
+    await store.fetchSessions()
+    await nextTick()
+    const before = store.openTabIds
+
+    await store.refreshSessions()
+    await nextTick()
+
+    expect(store.openTabIds).toBe(before)
   })
 })
