@@ -98,16 +98,25 @@ project dependency (§2 rules out an E2E framework), so this lives in a scratch
 directory when it is needed and does not ship.
 
 
-## On-screen key bar ("Keys")
+## On-screen key bar
 
-- [ ] Tapping "Keys" in the bottom nav shows the bar above the bottom nav and
-      tapping it again hides it.
+- [ ] Tapping the terminal opens the soft keyboard, and the key bar comes up
+      with it, in the space the bottom nav just gave up. Closing the keyboard
+      takes the bar with it. There is no "Keys" button to press any more — the
+      bar's visibility *is* the keyboard's.
+- [ ] Rotating to landscape while the keyboard is closed leaves the bar closed
+      and the bottom nav in place: the shorter landscape height is a rotation,
+      not a keyboard.
+- [ ] On a desktop browser, a window that loses height — devtools docked to
+      the bottom is the everyday case — does *not* bring the bar up. It is
+      phone chrome, gated on a coarse pointer like the bottom nav.
 - [ ] **On a screen narrower than the bar, the page does not get wider.** The
-      bar's two rows scroll sideways under a finger instead; everything else —
+      bar's single row scrolls sideways under a finger instead; everything else —
       the tab strip, the files button in the terminal's top-right corner — stays
       where it was. Opening the bar used to stretch the terminal column to the
       bar's own width, which the app shell then clipped, so whatever sat past
       the screen edge was simply gone (no scrollbar, nothing to swipe).
+- [ ] Scrolling that row to its end reaches F1–F12.
 - [ ] A sticky modifier (Ctrl/Alt/Shift) highlights while armed and clears after
       the next key.
 - [ ] Pressing a key does not close the soft keyboard.
@@ -115,12 +124,16 @@ directory when it is needed and does not ship.
 ### Checking widths without a phone
 
 The width faults above are measurable, so they need no eye and no device. Drive
-the real app in Chromium at a phone viewport, open the key bar, and compare what
-the layout produced against the viewport:
+the real app in Chromium at a phone viewport, bring the key bar up, and compare
+what the layout produced against the viewport. Headless Chromium has no soft
+keyboard, so the way to show the bar is to do to the viewport what a keyboard
+does: shrink the height past the store's threshold and leave the width alone (a
+changed width reads as a rotation and re-baselines instead).
 
 ```js
 const ctx = await browser.newContext({ ...devices['Pixel 5'] })  // pointer: coarse, hover: none
-// …log in, open /sessions/<id>, tap "Keys"…
+// …log in, open /sessions/<id>, wait for .xterm…
+await page.setViewportSize({ width: 393, height: 851 - 320 })  // "keyboard open"
 await page.evaluate(() => {
   const col = document.querySelector('main .flex-1 > .relative')
   const row = document.querySelector('main .select-none.border-t > div')

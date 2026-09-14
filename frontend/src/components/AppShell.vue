@@ -3,7 +3,10 @@ import { RouterView } from 'vue-router'
 import AppSidebar from '@/components/AppSidebar.vue'
 import BottomNav from '@/components/BottomNav.vue'
 import { useSessionEvents } from '@/composables/useSessionEvents'
+import { useUiStore } from '@/stores/ui'
 import { hasFinePointer } from '@/utils/device'
+
+const ui = useUiStore()
 
 // The authenticated app chrome: sidebar, bottom nav, and the session-events
 // socket. Split out of App.vue so useSessionEvents only ever runs once the
@@ -37,15 +40,20 @@ const touchPrimary = !hasFinePointer(window)
     <!-- Sidebar: icon rail 640–1024px, full at ≥1024px, phones get BottomNav instead. -->
     <AppSidebar v-if="!touchPrimary" />
 
-    <!-- Content: leaves room for the fixed bottom nav on phones. -->
+    <!-- Content: leaves room for the fixed bottom nav on phones, except
+         while the on-screen keyboard is open — that 56px is worth
+         reclaiming for the terminal, and closing the keyboard to get the
+         bar back is an acceptable trade (BottomNav is how the key bar and
+         every other tab is reached, so the keyboard being open cannot mean
+         losing them, just having to close it first). -->
     <main
       class="relative flex min-w-0 flex-1 flex-col overflow-hidden"
-      :class="touchPrimary ? 'pb-14' : ''"
+      :class="touchPrimary && !ui.keyboardOpen ? 'pb-14' : ''"
     >
       <RouterView />
     </main>
 
-    <!-- Bottom navigation on phones only. -->
-    <BottomNav v-if="touchPrimary" />
+    <!-- Bottom navigation on phones only, hidden while typing. -->
+    <BottomNav v-if="touchPrimary && !ui.keyboardOpen" />
   </div>
 </template>

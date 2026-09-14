@@ -10,6 +10,12 @@ const props = defineProps<{ sessionId: string }>();
 const emit = defineEmits<{ (e: "status", s: ConnStatus): void }>();
 
 const ui = useUiStore();
+// keyboardOpen is inferred from a shrinking viewport, so on a desktop it is
+// also true whenever the window loses height — docking devtools to the bottom
+// is the everyday case. The key bar is phone chrome, so it takes the same
+// pointer gate AppShell.vue puts on the sidebar and BottomNav. Read once on
+// mount: pointer capability doesn't change from a resize or a rotation.
+const touchPrimary = !hasFinePointer(window);
 const host = ref<HTMLElement | null>(null);
 const { status, mods, open, connect, dispose, toggleMod, pressSpecial, focus } =
   useTerminal();
@@ -38,7 +44,7 @@ onBeforeUnmount(() => dispose());
   <div class="flex h-full w-full flex-col">
     <div ref="host" class="terminal-host min-h-0 flex-1" />
     <KeyBar
-      v-if="ui.keyBarOpen"
+      v-if="touchPrimary && ui.keyboardOpen"
       :mods="mods"
       class="shrink-0"
       @mod="toggleMod"
