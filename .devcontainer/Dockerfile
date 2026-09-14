@@ -18,6 +18,12 @@ ENV LANG=C.UTF-8
 #
 #   git curl wget jq make       repo + Makefile workflow, REST smoke tests
 #   ca-certificates gnupg        TLS + apt keyring for the GitHub CLI repo
+#   ripgrep (rg)                 searching the tree by hand: recursive by
+#                                default and .gitignore-aware, so it skips
+#                                node_modules and stale worktrees. Dev-only on
+#                                purpose — scripts in scripts/ and the recipes
+#                                in docs/dev/ stay on POSIX grep, which the
+#                                runtime images and CI runners also have
 #   bash zsh fish                the three shells in sessile's default allowlist
 #                                (--shells=bash,zsh,fish) so sessions can spawn
 #                                any of them during manual testing
@@ -38,7 +44,7 @@ ENV LANG=C.UTF-8
 #                                a real engine — see the stanza at the bottom
 # =============================================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl wget git jq make gnupg \
+    ca-certificates curl wget git jq make gnupg ripgrep \
     bash zsh fish \
     gcc libc6-dev \
     procps psmisc iproute2 util-linux \
