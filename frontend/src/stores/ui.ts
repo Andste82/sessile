@@ -175,9 +175,9 @@ export const useUiStore = defineStore('ui', () => {
   // the same check so either mode is caught. restingHeight tracks the
   // largest height seen; a later height well below it (comfortably past
   // ordinary address-bar show/hide, which moves tens of px, not hundreds) is
-  // read as the keyboard being open. orientationchange resets the baseline
-  // immediately, so a rotation to a shorter landscape height is never
-  // mistaken for the keyboard.
+  // read as the keyboard being open. A changed *width* re-baselines both
+  // dimensions, which is what keeps a rotation to a shorter landscape height
+  // from reading as the keyboard: see updateKeyboardOpen.
   const keyboardOpen = ref(false)
   const keyboardOpenThreshold = 150
 
@@ -185,15 +185,35 @@ export const useUiStore = defineStore('ui', () => {
     return window.visualViewport?.height ?? window.innerHeight
   }
 
+  function currentViewportWidth(): number {
+    return window.visualViewport?.width ?? window.innerWidth
+  }
+
   let restingHeight = typeof window !== 'undefined' ? currentViewportHeight() : 0
+  let restingWidth = typeof window !== 'undefined' ? currentViewportWidth() : 0
 
   function updateKeyboardOpen() {
+    const w = currentViewportWidth()
     const h = currentViewportHeight()
+    // A width change is a rotation, or a window resized by hand — never a
+    // keyboard, which only ever eats height. Re-baselining on it keeps this
+    // out of the ordering question entirely: no orientationchange has to have
+    // fired, and nothing depends on whether the metrics were updated when it
+    // did — which on some engines they are not: reading the height inside
+    // that handler gave the pre-rotation one, leaving landscape with the key
+    // bar shown and no way back, since restingHeight only ever grew.
+    if (w !== restingWidth) {
+      restingWidth = w
+      restingHeight = h
+      keyboardOpen.value = false
+      return
+    }
     if (h > restingHeight) restingHeight = h
     keyboardOpen.value = restingHeight - h > keyboardOpenThreshold
   }
 
   function resetKeyboardBaseline() {
+    restingWidth = currentViewportWidth()
     restingHeight = currentViewportHeight()
     updateKeyboardOpen()
   }

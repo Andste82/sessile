@@ -424,3 +424,118 @@ describe('collapsed groups', () => {
     expect(ui.isGroupCollapsed('dashboard', 'Production')).toBe(false)
   })
 })
+
+// The keyboard inference had no test, which is how a change to the store's
+// public API (keyBarOpen going away, keyboardOpen arriving) passed CI, and how
+// the rotation fault below got in: it is a pure function of two numbers, so
+// there is nothing here that needs a browser.
+describe('keyboardOpen', () => {
+  // A window with the two metrics the store reads and a way to play the events
+  // a browser would send. No visualViewport, so the store falls back to
+  // window.innerHeight/innerWidth — the path phones with
+  // interactive-widget=resizes-content take.
+  function withViewport(width: number, height: number) {
+    const handlers: Record<string, ((e?: unknown) => void)[]> = {}
+    const win = {
+      innerWidth: width,
+      innerHeight: height,
+      addEventListener: (type: string, fn: (e?: unknown) => void) => {
+        ;(handlers[type] ??= []).push(fn)
+      },
+    }
+    ;(globalThis as { window?: unknown }).window = win
+    return {
+      // The ordering a browser gives: new metrics, then the event.
+      resize(w: number, h: number) {
+        win.innerWidth = w
+        win.innerHeight = h
+        handlers.resize?.forEach((fn) => fn())
+      },
+      fire(type: string) {
+        handlers[type]?.forEach((fn) => fn())
+      },
+    }
+  }
+
+  // Each step is [width, height, keyboardOpen] applied in order from a
+  // 393x851 baseline — a Pixel 5 in portrait.
+  it.each([
+    [
+      'a keyboard eating a third of the screen',
+      [[393, 531, true]],
+    ],
+    [
+      'the keyboard closing again',
+      [
+        [393, 531, true],
+        [393, 851, false],
+      ],
+    ],
+    [
+      'the address bar showing and hiding, which moves tens of px',
+      [
+        [393, 790, false],
+        [393, 851, false],
+      ],
+    ],
+    [
+      'a baseline that grows, so a later dip is measured from the tallest seen',
+      [
+        [393, 900, false],
+        [393, 760, false],
+      ],
+    ],
+    [
+      'exactly the threshold, which is not past it',
+      [[393, 701, false]],
+    ],
+    [
+      // The fault this table was asked for: a rotation drops the height by
+      // more than any keyboard would, and restingHeight only ever grew, so
+      // landscape showed the key bar with no way back.
+      'a rotation to landscape',
+      [[851, 393, false]],
+    ],
+    [
+      'a keyboard in landscape, measured against the landscape baseline',
+      [
+        [851, 393, false],
+        [851, 200, true],
+      ],
+    ],
+    [
+      'a window resized narrower and shorter at once, as on a desktop',
+      [[300, 400, false]],
+    ],
+  ])('reads %s', (_name, steps) => {
+    const vp = withViewport(393, 851)
+    const store = useUiStore()
+    expect(store.keyboardOpen).toBe(false)
+
+    for (const [w, h, want] of steps as [number, number, boolean][]) {
+      vp.resize(w, h)
+      expect(store.keyboardOpen).toBe(want)
+    }
+  })
+
+  // Whether the metrics are already updated when orientationchange fires is
+  // engine-dependent, so nothing may depend on it. Both orderings have to end
+  // up in the same place: landscape, keyboard closed.
+  it.each([
+    ['the event before the new metrics', true],
+    ['the event after the new metrics', false],
+  ])('survives %s', (_name, eventFirst) => {
+    const vp = withViewport(393, 851)
+    const store = useUiStore()
+
+    if (eventFirst) {
+      vp.fire('orientationchange')
+      vp.resize(851, 393)
+    } else {
+      vp.resize(851, 393)
+      vp.fire('orientationchange')
+    }
+
+    expect(store.keyboardOpen).toBe(false)
+  })
+})
