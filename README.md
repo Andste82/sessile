@@ -66,14 +66,18 @@ specification, the development setup and the project layout live there.
   sequence a desktop terminal puts in its title bar. Both are kept current about
   once a second for every session, attached or not.
 - **Resilient UI.** Automatic reconnect with exponential backoff, a session tab
-  bar, and a responsive layout that adapts from desktop to mobile.
+  bar that reopens the same tabs after a reload, and a responsive layout that
+  adapts from desktop to mobile. Which tabs are open is this browser's business,
+  not the server's — it is remembered locally, per browser, and a tab whose
+  session is gone is dropped rather than restored.
 - **Usable by touch.** A one-finger drag scrolls the backlog and keeps coasting
   after a flick. Where a program draws its own screen — `less`, `htop`, an
   editor — the drag reaches the program instead, exactly as a mouse wheel does
   on a desktop, since the alternate screen has no scrollback to move. An
   on-screen bar supplies what a phone keyboard has no keys for: Ctrl, Alt and
   Shift as sticky modifiers, plus Esc, Tab, the arrows, Home/End, PgUp/PgDn and
-  Del.
+  Del. It rides with the keyboard — up when the keyboard is up, gone when it
+  closes — so there is no separate toggle to keep in sync with it.
 - **GPU rendering.** The terminal draws through WebGL, the renderer VS Code's
   terminal uses. Where no WebGL context can be had — an old device, a
   blocklisted driver, or a context a mobile browser reclaims from a backgrounded
