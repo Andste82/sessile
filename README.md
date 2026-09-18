@@ -46,6 +46,21 @@ specification, the development setup and the project layout live there.
   can fold away. There is nothing to manage: a group exists while a session
   names it and is gone with its last member. Leave the field empty and the
   list looks exactly as it did before.
+- **Tasks with your coding agent.** Start a task and sessile sets a session
+  up for it on the host you pick: its own folder, the main repo cloned with
+  your Git account, optionally the repo's devcontainer, and your agent
+  (Claude Code, Codex or Gemini — installed if it's missing) started in plan
+  mode. You say what to do in the terminal; the agent plans, you approve,
+  it works — in one conversation that resumes after a restart. Agents log in
+  with tokens you give sessile once (a Claude subscription's
+  `claude setup-token`, an API key, or Bedrock/Foundry/Vertex for
+  enterprises).
+- **Notes and scripts as the agent's context and tools.** Markdown notes
+  ("which repo is what") go into every task. Scripts — zip extensions with
+  Jira, Jenkins and Artifactory examples — run on the sessile server with
+  your settings, and reach the agent as tools through the task's own SSH
+  connection; their tokens never leave the server, and anything that changes
+  a service waits for your approval in the task's side panel.
 - **Persistent sessions.** Once connected, PTYs are owned by the backend and
   survive browser disconnects, refreshes and closed tabs.
 - **Scrollback restoration.** Each session keeps a ring buffer of its raw
@@ -274,6 +289,16 @@ Everything server- and account-level lives in hand-editable YAML under
   history) does, and the session can be restarted from the UI — but the
   process or connection that was running is gone.
 - Stopped sessions are kept forever unless you set `--session-retention`.
+- **Agent scripts run on the server, as sessile's own user, for every
+  user.** Uploading a script is equal to shell access on the sessile server:
+  a script can read what sessile can read, every user's hosts and settings
+  included. That fits users who trust each other; otherwise turn scripts
+  off in Settings (`allowAgentScripts: false`).
+- **Agent credentials** (connections, Git accounts, script settings) are
+  plaintext in each user's `agent.yml` and `settings/`, like `hosts.yml`,
+  and are never returned by the API. A task hands them to its host in a
+  0600 `.env` that the bootstrap loads and deletes; while the agent runs,
+  they are in its environment on that host.
 
 ## License
 

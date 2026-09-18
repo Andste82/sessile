@@ -1098,14 +1098,18 @@ same bind mount, so they show the same files. The instructions file says
 to run builds from the workspace path, where the repo's devcontainer config
 expects them.
 
-**Fixed env** (`devcontainer exec --remote-env`):
+**Fixed env.** Only one variable crosses the command line:
+`devcontainer exec --remote-env SESSILE_IN_CONTAINER=1 sh /sessile/task/agent.sh`.
+Everything secret — connection, Git credentials, model — reaches the
+container through the mounted `.env`, which `agent.sh` loads and deletes
+inside it; `--remote-env` values would sit in the host's process list.
+`agent.sh` then sets, inside the container:
 
 | Variable | Purpose |
 |---|---|
-| `SESSILE_TASK_DIR=/sessile/task` | where the prompt is |
-| `PATH=/sessile/task/.tools/bin:$PATH` | agent installed per task (§4.12.5). It survives a container rebuild, because it lives in the task folder |
+| `PATH=$PATH:/sessile/task/.tools/bin:/sessile/task/.tools/home/.local/bin` | agent installed per task (§4.12.5). It survives a container rebuild, because it lives in the task folder |
 | the agent's state-dir variable pointing into the task folder: `CLAUDE_CONFIG_DIR=/sessile/task/.agent/claude`, `CODEX_HOME=/sessile/task/.agent/codex`, `GEMINI_CLI_HOME=/sessile/task/.agent/gemini` (`CLAUDE_CONFIG_DIR` isn't formally documented; verify in M34) | the agent's history and settings live in the task folder, so resume survives a container rebuild, whatever the container user is |
-| connection env (§4.13), git credential env (§4.16), model env (§4.12.7) | as on a host |
+| connection env (§4.13), git credential env (§4.16), model env (§4.12.7) | from the mounted `.env`, as on a host |
 
 So there's no `read-configuration` lookup of the remote user and no guess
 at a home directory.
@@ -1180,8 +1184,8 @@ depend on the container user.
 
 | Agent | Linux (and in containers) | Windows |
 |---|---|---|
-| `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` |
-| `codex` | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `irm https://chatgpt.com/codex/install.ps1 \| iex` (native Windows is still maturing upstream) |
+| `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` (in a container with `HOME` pointed into the task folder for the install) | `irm https://claude.ai/install.ps1 \| iex` |
+| `codex` | `npm install -g --prefix ~/.local @openai/codex` (its standalone script's install location isn't documented, so npm with an explicit prefix is what keeps it on the bootstrap's PATH) | `irm https://chatgpt.com/codex/install.ps1 \| iex` (native Windows is still maturing upstream) |
 | `gemini` | `npm install -g --prefix ~/.local @google/gemini-cli` (needs Node ≥ 20) | same, with npm |
 
 - The installers are fixed URLs and package names in code, the same as the
@@ -1191,9 +1195,9 @@ depend on the container user.
   a shell, as any failed step does.
 - Inside a devcontainer, the install lives in the task folder, so it
   happens once per task, not once per container.
-- The task form shows "claude will be installed on linux-box", based on an
-  SFTP `Stat` of the usual install path. That's a hint only; the bootstrap
-  decides.
+- The bootstrap decides on its own; the task form shows no install hint
+  (a stat of one path would be wrong for an agent installed anywhere else
+  on PATH).
 
 #### 4.12.6 Recovering a task after a restart
 
@@ -1249,16 +1253,14 @@ credentials, over plain HTTP :
 Lists are cached per user and credential set for one hour, with a refresh
 button.
 
-**Current default**, shown as the first entry, e.g. *"Default: Sonnet 5
-(from ~/.claude/settings.json on linux-box)"*:
+**Current default**, shown as the first entry:
 - The profile's own model, if set, **else**
 - the connection's pinned model (Bedrock and Foundry need one, e.g. an
   inference profile id), **else**
-- the agent's own settings on the chosen host, read over SFTP from a fixed
-  path per agent (`~/.claude/settings.json` → `model`,
-  `~/.gemini/settings.json`, `~/.codex/config.toml` → `model`; paths
-  verified in M35), **else**
-- "CLI default", when nothing is set and the CLI picks its own.
+- "the agent decides": sessile sets no model, and the CLI uses whatever
+  its own settings on the host say (e.g. `~/.claude/settings.json`). v0.8
+  doesn't read those settings to name the model in the picker — that
+  would need a connection to the host just to label an option.
 
 **How a chosen model reaches the agent.** Through env, where the CLI
 supports it (`ANTHROPIC_MODEL` for claude, `GEMINI_MODEL` for gemini), so
@@ -1295,8 +1297,10 @@ would leak into scrollback. So:
   the user-profile ACL.
 - The bootstrap loads it into the agent's environment and deletes it right
   away.
-- Inside a devcontainer, the variables are passed with
-  `devcontainer exec --remote-env`.
+- Inside a devcontainer, the same `.env` reaches the agent through the
+  task-folder mount: the host-side `task.sh` loads it for the clone and
+  leaves it, `agent.sh` loads and deletes it inside the container
+  (§4.12.3). Any failure before that deletes it too.
 
 What's left is that the running agent's environment is readable by the same
 OS user on that host. That's accepted as the user's own host, and it gets
@@ -1665,13 +1669,16 @@ git:
   (the same kind of typed internal call as `ProcessTree`, §4.10), with the
   git host as the only, validated argument. The result pre-fills the form,
   and nothing is saved until the user presses Save. The UI says plainly
-  that this copies the token into sessile.
+  that this copies the token into sessile. The imported token itself never
+  goes to the browser: the server keeps it for ten minutes under an import
+  id, and the form saves with `tokenImportId` (`POST /api/agent/git/import`).
 
 **How a task uses it** (only for `https://` repo URLs; `ssh://` and
 `git@` URLs keep using the host's SSH keys):
-- The matching account goes into the task's `.env` (§4.12.9) as
-  `SESSILE_GIT_USERNAME`, `SESSILE_GIT_TOKEN`, and for github.com also
-  `GH_TOKEN`, so the `gh` CLI works.
+- The matching account (with no main repo: every account) goes into the
+  task's `.env` (§4.12.9) as `SESSILE_GIT_USERNAME_<n>`,
+  `SESSILE_GIT_TOKEN_<n>`, and for github.com also `GH_TOKEN`, so the `gh`
+  CLI works.
 - It also adds git's **environment-only configuration** (git ≥ 2.31):
   ```
   GIT_CONFIG_COUNT=2
@@ -1684,8 +1691,9 @@ git:
   `~/.gitconfig`, `.git/config`, or a credential store**, and the token is
   never part of the clone URL (which would land in `.git/config` and the
   process list).
-- The same variables go into a devcontainer with `--remote-env` (§4.12.3),
-  so pushing from inside the container works with no mount.
+- The same variables reach a devcontainer through the mounted `.env`
+  (§4.12.3), so pushing from inside the container works with no
+  credential mount.
 - `user.name`/`user.email` are written to the **repo's** config
   (`git -C repo config`). They aren't secret, and commits made later in any
   shell get the right identity.
@@ -1730,8 +1738,8 @@ constant command line, by the bootstrap:
 
 | | claude | codex | gemini |
 |---|---|---|---|
-| MCP server registered | `--mcp-config <task>/.mcp.json`: loaded for this run only, with no project-trust prompt, next to the user's own MCP servers | `-c mcp_servers.sessile.command=…` / `.args=…` constants | `<task>/.gemini/settings.json` (workspace settings; the folder is trusted through `GEMINI_CLI_TRUST_WORKSPACE`) |
-| sessile tools pre-allowed | `--allowedTools mcp__sessile` | the approval policy for that server in the same `-c` overrides | `trust: true` on that server in the same settings |
+| MCP server registered | `--mcp-config <task>/.sessile-mcp.json`: loaded for this run only, next to the user's own MCP servers. It takes several values, so it comes before any positional prompt | `-c mcp_servers.sessile.command=…` / `.args=…` constants | `<task>/.gemini/settings.json` (workspace settings; the folder is trusted through `GEMINI_CLI_TRUST_WORKSPACE`) |
+| sessile tools pre-allowed | `--settings <task>/.sessile-claude-settings.json` with `permissions.allow: ["mcp__sessile"]` (not the multi-value `--allowedTools`, which would swallow the prompt) | not pre-allowed: codex asks in the terminal | `trust: true` on that server in the same settings |
 | instructions loaded | `CLAUDE.md` in cwd, read at start | `AGENTS.md` in cwd, read at start (to verify in M32 for a cwd that isn't a git repo; if not, the constant first message becomes "Read AGENTS.md …") | `GEMINI.md` in cwd, read at start |
 
 So the tools and their descriptions are **not** prepended to the request.
@@ -1838,12 +1846,16 @@ support.
     `.tools/` per task: the host's architecture, and additionally the Linux
     one for its devcontainer.
   - It's configured as an ordinary stdio MCP server in the agent's config,
-    written into the task dir: `.mcp.json` passed with `--mcp-config` for
-    claude, `-c mcp_servers.sessile.command=…` constants for codex, and
-    `.gemini/settings.json` for gemini.
-- **Auth**: a per-task random token in the task env
-  (`SESSILE_MCP_TOKEN`), which the bridge sends on connect. The token and
-  the forward die with the session. Restart opens new ones.
+    written into the task dir: `.sessile-mcp.json` passed with
+    `--mcp-config` for claude, `-c mcp_servers.sessile.command=…` constants
+    for codex, and `.gemini/settings.json` for gemini.
+  - It finds everything relative to itself, so it takes no flags and no
+    environment (CLIs differ in what environment they pass an MCP server):
+    the socket (`../.sessile.sock`) or port (`../.sessile-port`, tried on
+    127.0.0.1 and then host.docker.internal) and the token.
+- **Auth**: a per-start random token in `<task dir>/.sessile-token` (0600),
+  which the bridge sends as its first line. The token and the forward die
+  with the session. Restart opens new ones.
 - **The tunnel is tied to the session's connection.** If the connection
   drops, the tools fail with "sessile connection lost", and the session
   is marked stopped as usual.
@@ -2085,7 +2097,7 @@ never trusts a client-supplied user id.
 | `GET /api/sessions/:id` | Get one | Owner-scoped |
 | `DELETE /api/sessions/:id` | Kill + remove permanently | 204; also drops the session's scrollback snapshot and history file (§8) |
 | `PATCH /api/sessions/:id` | Edit a session's metadata (`{"name":"…","group":"…"}`) | Both fields optional; an omitted one is left unchanged, a present one always applies — `"group":""` is how a session leaves its group (§4.11). Name 1–64 chars, group ≤64. 400 `validation` otherwise |
-| `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (local), 404 `host_not_found` or 409 host-key responses (SSH) |
+| `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body — except a task session (§4.12.6), which may send `{"fresh":bool,"rebuildContainer":bool}`; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (local), 404 `host_not_found` or 409 host-key responses (SSH) |
 | `GET /api/directories` | Browse dirs under the local-host workspace; optional `?path=` (relative, validated by §4.5) navigates into subdirs | 403 if `allowLocalHost` is off. `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
 | `GET /api/config` | Display name, available shells, `allowLocalHost`, version | Shells = allowlist ∩ installed |
 | `GET /api/sessions/:id/hostops/process-tree?scope=` | Process tree (§4.10) | `scope` is `session` (default, narrowed to this session's own processes) or `all` (the whole target). `{"rootPid":123,"scoped":true,"processes":[…Process…]}` — `scoped` is false when `session` was asked for but couldn't be resolved (falls back to `all` rather than erroring). 501 `unsupported_platform` if the target's `Platform` has no `ProcessTree` |
@@ -2108,15 +2120,18 @@ never trusts a client-supplied user id.
 | `POST /api/agent/scripts?as=` | Install/update a script zip | Upload a zip extension (raw body, 5 MiB cap) → validated, extracted, 201 script. 409 `script_exists` with `{installed, uploaded}` versions unless `?update=true`. `as` installs under another name |
 | `GET /api/agent/scripts/:name/zip` | Export a script | Download the installed script as a zip (never includes settings) |
 | `DELETE /api/agent/scripts/:name` | Remove a script | Remove the script and its settings |
-| `GET /api/agent/scripts/examples` | List built-in examples | Built-in example zips, with version and "update available" against installed copies |
-| `POST /api/agent/scripts/examples/:name/install` | Install an example | `{as?}` → same path as an upload |
-| `GET /api/agent/scripts/examples/:name/zip` | Download an example | Download an example to adapt |
+| `GET /api/agent/script-examples` | List built-in examples | Built-in example zips, with version and "update available" against installed copies |
+| `POST /api/agent/script-examples/:name/install` | Install an example | `{as?}` → same path as an upload |
+| `GET /api/agent/script-examples/:name/zip` | Download an example | Download an example to adapt |
 | `POST /api/agent/scripts/:name/run` | Run one function | `{function, input}` → `{output, stderr}` ("Test run") |
 | `POST /api/agent/scripts/:name/rebuild` | Rebuild the venv | Drop + rebuild the venv |
 | `GET/PUT /api/agent/settings` | Agent settings (§4.13, §4.16) | Connections (secrets masked, expiry), profiles, task defaults, Git accounts (tokens masked) |
 | `POST /api/agent/git/test` | Test a Git account | `{host, username, token?}` (an omitted token means the saved one) → `{ok, login\|error}` |
 | `POST /api/agent/git/import` | Import a Git identity from a host | `{hostId, gitHost}` → `{name, email, username, token?}` read from that host, **not saved**. Same host-key 409s as sessions |
 | `POST /api/tasks/:id/approvals/:callId` | Approve/deny a held tool call | `{approve: bool}` for a held write-effect script call (§4.17.3) |
+| `GET /api/tasks` | List tasks | Each task with its pending `approvals`, for summaries and badges |
+| `GET /api/tasks/:id/approvals` | Pending approvals | A task's held write calls, for a page opened after the request |
+| `POST /api/agent/git/import` | Read a host's git identity | `{hostId, gitHost}` → `{name, email, username, hasToken, tokenImportId?}`; the token stays on the server (§4.16) |
 
 Every `/api/tasks*` and `/api/agent*` route is owner-scoped exactly like
 sessions and hosts: a task, note, script, connection or Git account is only
@@ -3308,6 +3323,26 @@ card; the tunnel is back after Restart.
 phone sheet, and §5.3's events.
 ✅ *Verify:* approve and deny a write call from a second browser; the
 summary updates live on the dashboard card.
+
+### Implementation notes (M31–M41)
+What was verified, and how, as the milestones landed:
+- Linux over real SSH (a throwaway account behind this repo's dev
+  container's sshd): task creation with the host-key prompt, the https
+  clone with a sessile Git account (no token left on disk), repo
+  identity, plan mode, resume after a server restart, "restart fresh",
+  the automatic install of Claude Code 2.1.276 and its start, notes in
+  the task folder, and the MCP tunnel end to end — tools/list and a
+  redacted script call from the host through the reverse-forwarded Unix
+  socket.
+- The web UI in a headless browser, desktop and phone: the task form,
+  Agent pages, Scripts, and an approval flowing from the agent to the
+  card and back.
+- Not yet run for real: a Windows host (M33 — golden files only), a
+  devcontainer (M34 — this environment's Docker daemon belongs to the
+  outer host, so bind mounts can't be checked here), the codex and gemini
+  installers and flags beyond their docs and source, and Bedrock /
+  Foundry / Vertex connections against live accounts. These are the first
+  things to check on real infrastructure.
 
 ### Future (post-v0.8, do not start now)
 - A task-folder cleanup cycle (age or size based, with a preview).
