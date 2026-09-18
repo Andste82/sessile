@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { FolderIcon } from '@heroicons/vue/24/outline'
+import { FolderIcon, SparklesIcon } from '@heroicons/vue/24/outline'
+import TaskSidePanel from '@/components/TaskSidePanel.vue'
+import { useTasksStore } from '@/stores/tasks'
+import { hasFinePointer } from '@/utils/device'
 import TerminalView from '@/components/TerminalView.vue'
 import TabBar from '@/components/TabBar.vue'
 import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
@@ -29,6 +32,17 @@ const restartFresh = ref(false)
 const rebuildContainer = ref(false)
 const task = ref<Task | null>(null)
 const isTask = computed(() => !!session.value?.taskId)
+
+// The task panel (§4.17.4): a column on a desktop, a sheet on a phone. Open by
+// default where there is room, and opened by an approval request wherever it
+// arrives — a write call that nobody sees just times out.
+const tasksStore = useTasksStore()
+const touch = !hasFinePointer(window)
+const taskPanelOpen = ref(!touch && window.innerWidth >= 1024)
+const pending = computed(() => tasksStore.pendingCount(session.value?.taskId))
+watch(pending, (n, old) => {
+  if (n > (old ?? 0)) taskPanelOpen.value = true
+})
 // Same host-key-changed recovery gap as DashboardPage.vue's restart button —
 // see its comment. Kept local to this page rather than shared, since the two
 // restart call sites otherwise have nothing in common to factor out.
@@ -195,6 +209,21 @@ watch(
         >
           <FolderIcon class="h-4 w-4" />
         </button>
+        <button
+          v-if="isTask"
+          type="button"
+          class="absolute right-12 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-md bg-slate-800/80 text-slate-300 shadow hover:bg-slate-700 hover:text-slate-100"
+          :class="{ 'text-emerald-400': taskPanelOpen }"
+          :title="pending ? `Task — ${pending} waiting for approval` : 'Task'"
+          @click="taskPanelOpen = !taskPanelOpen"
+        >
+          <SparklesIcon class="h-4 w-4" />
+          <span
+            v-if="pending"
+            class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-slate-900"
+            >{{ pending }}</span
+          >
+        </button>
 
         <div
           v-if="conn === 'exited'"
@@ -239,6 +268,13 @@ watch(
         </div>
       </div>
 
+      <TaskSidePanel
+        v-if="isTask && taskPanelOpen && session?.taskId"
+        :task-id="session.taskId"
+        :sheet="touch"
+        @close="taskPanelOpen = false"
+        @open-files="filesPanelOpen = true"
+      />
       <FileBrowserPanel v-if="filesPanelOpen" :session-id="id" @close="filesPanelOpen = false" />
     </div>
 

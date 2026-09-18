@@ -178,7 +178,7 @@ const btnCls = 'rounded-md border border-slate-600 px-3 py-1.5 text-xs text-slat
           <span class="rounded border px-1.5 text-[11px]" :class="statusCls[s.status]">{{ statusLabel[s.status] }}</span>
         </div>
         <p v-if="s.description" class="mt-1 text-sm text-slate-400">{{ s.description }}</p>
-        <p v-if="s.missing.length" class="mt-1 text-xs text-amber-400">Missing: {{ s.missing.join(', ') }}</p>
+        <p v-if="s.missing?.length" class="mt-1 text-xs text-amber-400">Missing: {{ s.missing.join(', ') }}</p>
         <p v-if="s.lastCheck && !s.lastCheck.ok" class="mt-1 break-all text-xs text-rose-400">{{ s.lastCheck.message }}</p>
         <p v-if="s.venv === 'failed'" class="mt-1 break-all text-xs text-rose-400">Venv: {{ s.venvError }}</p>
         <ul class="mt-3 flex flex-wrap gap-1.5">

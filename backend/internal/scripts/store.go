@@ -434,9 +434,10 @@ func (s *Store) pruneSettings(userID string, m Meta) {
 	}
 }
 
-// Missing lists the required settings that have no value.
+// Missing lists the required settings that have no value (never nil: it is
+// served as a JSON array).
 func Missing(m Meta, st Settings) []string {
-	var out []string
+	out := []string{}
 	for _, d := range m.Settings {
 		if d.Required && st.Values[d.Name] == "" && st.Git[d.Name] == "" {
 			out = append(out, d.Name)

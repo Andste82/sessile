@@ -7,8 +7,13 @@ import { useUiStore } from '@/stores/ui'
 import { hasFinePointer } from '@/utils/device'
 import NewTaskDialog from '@/components/NewTaskDialog.vue'
 import { useTaskDialog } from '@/composables/useTaskDialog'
+import { useTasksStore } from '@/stores/tasks'
 
 const taskDialog = useTaskDialog()
+
+// Task summaries and pending approvals (§4.17.4) show in the sidebar and on
+// the dashboard; the event channel keeps them current after this load.
+void useTasksStore().load()
 
 const ui = useUiStore()
 

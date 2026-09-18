@@ -346,6 +346,11 @@ export interface Task {
   created: string
 }
 
+// GET /api/tasks carries each task's held write calls (§4.17.4).
+export interface TaskWithApprovals extends Task {
+  approvals: PendingApproval[]
+}
+
 export interface RestartOptions {
   rebuildContainer?: boolean
   fresh?: boolean
@@ -440,4 +445,12 @@ export interface ScriptExample {
   functions: string[]
   installed: string // "" when not installed
   updateAvailable: boolean
+}
+
+export interface PendingApproval {
+  taskId: string
+  callId: string
+  name: string
+  input?: unknown
+  status: string
 }

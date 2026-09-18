@@ -198,6 +198,7 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/tasks", s.createTask)
 		authGroup.GET("/tasks", s.listTasks)
 		authGroup.GET("/tasks/:id", s.getTask)
+		authGroup.GET("/tasks/:id/approvals", s.listApprovals)
 		authGroup.POST("/tasks/:id/approvals/:callId", s.decideApproval)
 	}
 

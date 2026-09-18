@@ -13,6 +13,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import StatusDot from './StatusDot.vue'
 import { useTaskDialog } from '@/composables/useTaskDialog'
+import { useTasksStore } from '@/stores/tasks'
 import GroupHeader from './GroupHeader.vue'
 
 const store = useSessionsStore()
@@ -20,6 +21,7 @@ const auth = useAuthStore()
 const ui = useUiStore()
 const route = useRoute()
 const taskDialog = useTaskDialog()
+const tasks = useTasksStore()
 
 function isTerminal(id: string) {
   return route.name === 'terminal' && route.params.id === id
@@ -133,7 +135,12 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
         >
           <StatusDot :status="s.status" />
           <span class="truncate">{{ s.name }}</span>
-          <span v-if="s.taskId" class="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-slate-500">task</span>
+          <span
+            v-if="tasks.pendingCount(s.taskId)"
+            class="ml-auto h-2 w-2 shrink-0 rounded-full bg-amber-400"
+            title="Waiting for your approval"
+          />
+          <span v-else-if="s.taskId" class="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-slate-500">task</span>
         </RouterLink>
       </template>
       <p

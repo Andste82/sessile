@@ -7,6 +7,7 @@ import type {
   GitImportResponse,
   Note,
   NoteContext,
+  PendingApproval,
   ModelsResponse,
   RestartOptions,
   Script,
@@ -17,6 +18,7 @@ import type {
   ScriptSettingsBody,
   Task,
   TaskSpec,
+  TaskWithApprovals,
   TestResult,
   AppConfig,
   AuthStatus,
@@ -143,6 +145,10 @@ export const api = {
   createTask: (spec: TaskSpec) =>
     request<Session>('/api/tasks', { method: 'POST', body: JSON.stringify(spec) }),
   getTask: (id: string) => request<Task>(`/api/tasks/${id}`),
+  listTasks: () => request<TaskWithApprovals[]>('/api/tasks'),
+  taskApprovals: (id: string) => request<PendingApproval[]>(`/api/tasks/${id}/approvals`),
+  decideApproval: (id: string, callId: string, approve: boolean) =>
+    request<void>(`/api/tasks/${id}/approvals/${callId}`, { method: 'POST', body: JSON.stringify({ approve }) }),
   processTree: (id: string, scope?: 'session' | 'all') =>
     request<ProcessTreeResponse>(
       `/api/sessions/${id}/hostops/process-tree${scope ? `?scope=${scope}` : ''}`,

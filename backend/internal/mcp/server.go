@@ -57,6 +57,8 @@ type Server struct {
 
 type approval struct {
 	userID, taskID string
+	name           string
+	input          json.RawMessage
 	decided        chan bool
 }
 
@@ -448,7 +450,7 @@ func (s *Server) call(ctx context.Context, userID, taskID, name string, args jso
 }
 
 func (s *Server) awaitApproval(ctx context.Context, userID, taskID, callID, name string, args json.RawMessage) (bool, string) {
-	a := &approval{userID: userID, taskID: taskID, decided: make(chan bool, 1)}
+	a := &approval{userID: userID, taskID: taskID, name: name, input: args, decided: make(chan bool, 1)}
 	s.mu.Lock()
 	s.approvals[callID] = a
 	s.mu.Unlock()
@@ -489,9 +491,19 @@ func (s *Server) Decide(userID, taskID, callID string, approve bool) error {
 	}
 }
 
-// PendingApproval is a held call as a task page loading late sees it.
-type PendingApproval struct {
-	CallID string `json:"callId"`
+// Pending lists a task's held write calls, for a task page that opens after
+// the request was published.
+func (s *Server) Pending(userID, taskID string) []ApprovalMsg {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []ApprovalMsg{}
+	for id, a := range s.approvals {
+		if a.userID == userID && a.taskID == taskID {
+			out = append(out, ApprovalMsg{Type: "taskApproval", TaskID: taskID, CallID: id, Name: a.name, Input: a.input, Status: "pending"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CallID < out[j].CallID })
+	return out
 }
 
 // ToolsChanged tells a user's connected agents that their tool list changed

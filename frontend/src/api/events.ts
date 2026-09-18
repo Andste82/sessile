@@ -43,6 +43,32 @@ export interface HostopDoneEvent {
   message: string
 }
 
+// Task agent events (§4.17.4, §5.3): tool activity, held write calls, and
+// the agent's status line.
+export interface TaskToolEvent {
+  type: 'taskTool'
+  taskId: string
+  callId: string
+  name: string
+  status: 'running' | 'ok' | 'error' | 'denied'
+  message: string
+}
+export interface TaskApprovalEvent {
+  type: 'taskApproval'
+  taskId: string
+  callId: string
+  name: string
+  input: unknown
+  status: 'pending' | 'approved' | 'denied' | 'expired'
+}
+export interface TaskSummaryEvent {
+  type: 'taskSummary'
+  taskId: string
+  summary: string
+}
+
+export type TaskEvent = TaskToolEvent | TaskApprovalEvent | TaskSummaryEvent
+
 export type ServerEvent =
   | SessionsEvent
   | SessionEvent
@@ -50,6 +76,7 @@ export type ServerEvent =
   | HostopStartedEvent
   | HostopProgressEvent
   | HostopDoneEvent
+  | TaskEvent
 
 const statuses: Status[] = ['running', 'stopped']
 const targetTypes: TargetType[] = ['local', 'ssh']
@@ -145,6 +172,33 @@ export function parseEvent(data: string): ServerEvent | null {
         status: m.status === 'error' ? 'error' : 'ok',
         message: str(m.message),
       }
+    case 'taskTool': {
+      if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
+      const st = ['running', 'ok', 'error', 'denied'].includes(m.status as string) ? m.status : 'error'
+      return {
+        type: 'taskTool',
+        taskId: m.taskId,
+        callId: m.callId,
+        name: str(m.name),
+        status: st as TaskToolEvent['status'],
+        message: str(m.message),
+      }
+    }
+    case 'taskApproval': {
+      if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
+      const st = ['pending', 'approved', 'denied', 'expired'].includes(m.status as string) ? m.status : 'expired'
+      return {
+        type: 'taskApproval',
+        taskId: m.taskId,
+        callId: m.callId,
+        name: str(m.name),
+        input: m.input ?? null,
+        status: st as TaskApprovalEvent['status'],
+      }
+    }
+    case 'taskSummary':
+      if (typeof m.taskId !== 'string') return null
+      return { type: 'taskSummary', taskId: m.taskId, summary: str(m.summary) }
     default:
       // Includes the `error` frame the server sends when it cannot build a
       // snapshot (§5.1). There is nothing to apply, and the subscription
