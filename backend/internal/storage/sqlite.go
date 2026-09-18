@@ -44,6 +44,8 @@ var migrationColumns = []struct{ name, ddl string }{
 	// Rows written before this migration get '', which is exactly "no group"
 	// (§4.11) — nothing to backfill.
 	{"group_name", `ALTER TABLE sessions ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`},
+	// M32 (§12e): the task a session runs, '' for an ordinary session.
+	{"task_id", `ALTER TABLE sessions ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`},
 }
 
 // migrate applies migrationColumns, skipping any column that already exists.
@@ -114,6 +116,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if _, err := db.Exec(tasksSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply tasks schema: %w", err)
 	}
 	if err := migrate(db); err != nil {
 		db.Close()

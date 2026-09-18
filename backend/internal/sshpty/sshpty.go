@@ -52,6 +52,14 @@ type Target struct {
 	// *ErrHostKeyChanged instead of connecting when this doesn't match what
 	// the server presents.
 	TrustedHostKeyFingerprint string
+
+	// Task, when set, makes this a task session (§4.12.2). Start calls it on
+	// the connected client before any command runs, so the task folder is
+	// written over this same connection — no second dial, no second trust
+	// decision — and runs the command it returns instead of TerminalType.
+	// That command is always one of internal/tasks' fixed forms, never
+	// caller input.
+	Task func(client *ssh.Client) (command string, err error)
 }
 
 // dialTimeout bounds the SSH handshake, separately from any timeout on the
@@ -153,8 +161,23 @@ func Start(t Target, rows, cols uint16) (*PTY, error) {
 	if cmd == "custom" {
 		cmd = t.CustomCommand
 	}
+	terminalType := t.TerminalType
+	if t.Task != nil {
+		taskCmd, err := t.Task(client)
+		if err != nil {
+			_ = stdinR.Close()
+			_ = stdinW.Close()
+			_ = stdoutR.Close()
+			_ = stdoutW.Close()
+			_ = session.Close()
+			_ = client.Close()
+			return nil, fmt.Errorf("prepare task: %w", err)
+		}
+		// Wrapped like a custom command: real shell syntax, run by sh.
+		cmd, terminalType = taskCmd, "custom"
+	}
 
-	pidFilePath, startCmd := wrapWithPIDRecording(t.TargetOS, t.TerminalType, cmd)
+	pidFilePath, startCmd := wrapWithPIDRecording(t.TargetOS, terminalType, cmd)
 
 	if err := session.Start(startCmd); err != nil {
 		_ = stdinR.Close()

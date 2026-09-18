@@ -9,6 +9,7 @@ import (
 
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/session"
+	"github.com/Andste82/sessile/backend/internal/tasks"
 )
 
 // The §6 session shape is session.JSON, built by session.ToJSON. It lives in
@@ -189,6 +190,14 @@ func (s *Server) respondSessionError(c *gin.Context, err error) {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 	case errors.Is(err, session.ErrShuttingDown):
 		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
+	case errors.Is(err, tasks.ErrNotFound):
+		respondError(c, http.StatusNotFound, CodeNotFound, err.Error())
+	case errors.Is(err, tasks.ErrConnectionExpired):
+		respondError(c, http.StatusConflict, CodeConnectionExpired, err.Error())
+	case errors.Is(err, tasks.ErrProfileNotFound):
+		respondError(c, http.StatusConflict, CodeConflict, err.Error())
+	case errors.Is(err, tasks.ErrUnsupportedTarget):
+		respondError(c, http.StatusNotImplemented, CodeUnsupportedPlatform, err.Error())
 	default:
 		// resolveDir, sshpty dial failures and other validation-style failures
 		// surface here as 400; treat unknown errors as validation to avoid

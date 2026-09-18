@@ -19,6 +19,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
+	"github.com/Andste82/sessile/backend/internal/tasks"
 	"github.com/Andste82/sessile/backend/internal/ws"
 )
 
@@ -65,6 +66,8 @@ type Server struct {
 	// with SetAgents; nil in tests that don't exercise them.
 	agents *agents.Registry
 	prober *agents.Prober
+	// tasks is the task service (§4.12); nil where tests don't need it.
+	tasks *tasks.Service
 
 	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
 	// opId. Entries are removed once a client has had a chance to observe
@@ -164,6 +167,8 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/agent/connections/test", s.testConnection)
 		authGroup.GET("/agent/connections/:id/models", s.listConnectionModels)
 		authGroup.POST("/agent/git/test", s.testGitAccount)
+		authGroup.POST("/tasks", s.createTask)
+		authGroup.GET("/tasks/:id", s.getTask)
 	}
 
 	// Download/upload get their own routes outside authGroup's blanket

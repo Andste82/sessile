@@ -80,7 +80,13 @@ func (p *PTY) Read(b []byte) (int, error) {
 // extraEnv is appended last and so overrides anything of the same name inherited
 // from the server; it carries the per-session history settings (§8).
 func Start(shellPath, dir string, rows, cols uint16, extraEnv []string) (*PTY, error) {
-	cmd := exec.Command(shellPath)
+	return StartArgs(shellPath, nil, dir, rows, cols, extraEnv)
+}
+
+// StartArgs is Start with arguments: a local task session runs its fixed
+// bootstrap (`sh <task dir>/task.sh`, §4.12.2) rather than a bare shell.
+func StartArgs(path string, args []string, dir string, rows, cols uint16, extraEnv []string) (*PTY, error) {
+	cmd := exec.Command(path, args...)
 	cmd.Dir = dir
 	cmd.Env = shellEnv(os.Environ(), extraEnv)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

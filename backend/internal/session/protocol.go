@@ -25,14 +25,16 @@ type JSON struct {
 	// Group is "" for a session the user filed under no group — the majority
 	// case, and the one the UI renders exactly as it did before groups
 	// existed (§4.11).
-	Group        string `json:"group"`
-	Status       string `json:"status"`
-	PID          int    `json:"pid"`
-	Created      string `json:"created"`
-	LastActivity string `json:"lastActivity"`
-	Rows         uint16 `json:"rows"`
-	Cols         uint16 `json:"cols"`
-	ClientCount  int    `json:"clientCount"`
+	Group string `json:"group"`
+	// TaskID is the task (§4.12) the session runs, null for an ordinary one.
+	TaskID       *string `json:"taskId"`
+	Status       string  `json:"status"`
+	PID          int     `json:"pid"`
+	Created      string  `json:"created"`
+	LastActivity string  `json:"lastActivity"`
+	Rows         uint16  `json:"rows"`
+	Cols         uint16  `json:"cols"`
+	ClientCount  int     `json:"clientCount"`
 
 	// Derived state (§4.7, §4.8). All three are "" for a stopped session,
 	// where they could not be determined, and Command/Cwd are always "" for
@@ -53,6 +55,7 @@ func ToJSON(i Info) JSON {
 		HostID:          i.HostID,
 		HostDisplayName: i.HostDisplayName,
 		Group:           i.Group,
+		TaskID:          nullable(i.TaskID),
 		Status:          string(i.Status),
 		PID:             i.PID,
 		Created:         rfc3339(i.Created),
@@ -64,6 +67,13 @@ func ToJSON(i Info) JSON {
 		Cwd:             i.Cwd,
 		Title:           i.Title,
 	}
+}
+
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // rfc3339 formats a timestamp the way §6 requires, and renders the zero time as

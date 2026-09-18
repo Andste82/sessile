@@ -28,6 +28,7 @@ function session(over: Partial<Session> = {}): Session {
     shell: 'bash',
     hostId: '',
     hostDisplayName: '',
+    taskId: null,
     group: '',
     status: 'running',
     pid: 42,

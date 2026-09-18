@@ -77,6 +77,7 @@ function parseSession(v: unknown): Session | null {
     hostId: str(s.hostId),
     hostDisplayName: str(s.hostDisplayName),
     group: str(s.group),
+    taskId: typeof s.taskId === 'string' && s.taskId ? s.taskId : null,
     status: s.status as Status,
     pid: num(s.pid),
     created: str(s.created),

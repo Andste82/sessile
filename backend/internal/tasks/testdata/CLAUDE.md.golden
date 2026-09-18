@@ -1,0 +1,32 @@
+# Task: DBG-142 print crash
+
+You are working on a task that the user set up in sessile, a browser-based
+terminal manager. The user talks to you in this terminal.
+
+## Where things are
+
+- This folder, `/home/ob/.sessile/tasks/dbg-142-print-crash-3f9a1c`, is the task folder and your working directory.
+- The main repository is cloned in `repo/` (https://github.com/moonlight-stream/moonlight-android, `main`).
+- If you need another repository, clone it into `repos/<name>/`.
+- git is already set up to authenticate over https for github.com (as ob), through
+  the environment. Don't write credentials into any git config or remote URL. `gh` is logged in for github.com through `GH_TOKEN`.
+- The user's notes are in `notes/`. Read the ones that sound relevant.
+
+## Notes the user always wants you to have
+
+### repos
+
+- moonlight-android: the Android client
+
+
+
+## How to work
+- The user's request is in `PROMPT.md`.
+- Investigate first: read the code, the notes and anything the request
+  points to. Ask the user when something is unclear.
+- Present a plan and wait for the user to approve it before you change
+  anything.
+
+## Where things stood
+
+The last status recorded for this task: Plan approved, implementing

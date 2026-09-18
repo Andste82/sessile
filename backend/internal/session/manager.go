@@ -61,6 +61,8 @@ type Manager struct {
 	// construction — a setter rather than a NewManager parameter so the many
 	// tests that never create an SSH session don't all need to pass one).
 	hostResolver HostResolver
+	// taskLauncher resolves task sessions (§4.12); nil until SetTaskLauncher.
+	taskLauncher TaskLauncher
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -185,8 +187,12 @@ func (m *Manager) Restart(id, userID string) (Info, error) {
 	prev := m.live(id)
 
 	var s *Session
-	switch meta.TargetType {
-	case TargetSSH:
+	switch {
+	case meta.TaskID != "":
+		// A task re-resolves everything through its launcher: the host, the
+		// connection's current token, the folder's files (§4.12.6).
+		s, err = m.spawnTask(meta.ID, meta.UserID, meta.Name, meta.TaskID, meta.Created)
+	case meta.TargetType == TargetSSH:
 		// SSH credentials are never persisted to sqlite (§8), so a restart
 		// re-resolves the *current* host config — including its current
 		// pinned host-key fingerprint — rather than reusing anything saved

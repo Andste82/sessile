@@ -41,6 +41,7 @@ const privateKeyPassphrase = ref('')
 const targetOS = ref<TargetOS | ''>('')
 const terminalType = ref('bash')
 const customCommand = ref('')
+const tasksDir = ref('')
 const submitting = ref(false)
 const error = ref<string | null>(null)
 
@@ -75,6 +76,7 @@ watch(
     targetOS.value = h?.targetOS ?? ''
     terminalType.value = h?.terminalType || 'bash'
     customCommand.value = h?.customCommand ?? ''
+    tasksDir.value = h?.tasksDir ?? ''
   },
 )
 
@@ -101,6 +103,7 @@ async function saveHost(): Promise<Host> {
     targetOS: targetOS.value,
     terminalType: terminalType.value,
     customCommand: terminalType.value === 'custom' ? customCommand.value.trim() : '',
+    tasksDir: tasksDir.value.trim(),
   }
   // Omit a blank secret field entirely so an edit that isn't changing the
   // credential doesn't overwrite it with empty — HostBody's fields are
@@ -298,6 +301,12 @@ const inputCls =
               <label v-if="terminalType === 'custom'" :class="labelCls">
                 <span class="text-slate-400">Command</span>
                 <input v-model="customCommand" type="text" placeholder="tmux new -A -s main" :class="inputCls" />
+              </label>
+
+              <label :class="labelCls">
+                <span class="text-slate-400">Tasks folder</span>
+                <input v-model="tasksDir" type="text" placeholder=".sessile/tasks" :class="inputCls" />
+                <span class="text-xs text-slate-500">Where task folders go, relative to the login directory.</span>
               </label>
 
               <p v-if="error" class="text-sm text-rose-400">{{ error }}</p>

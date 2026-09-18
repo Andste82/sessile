@@ -59,6 +59,10 @@ type Session struct {
 	// grouping (§4.11).
 	Group string
 
+	// TaskID is the task (§4.12) this session runs, "" for an ordinary
+	// session. Persisted, so a restart finds its way back to the task.
+	TaskID string
+
 	Status       Status
 	PID          int
 	Created      time.Time
@@ -117,6 +121,7 @@ type Info struct {
 	HostID          string
 	HostDisplayName string
 	Group           string
+	TaskID          string
 	Status          Status
 	PID             int
 	Created         time.Time
@@ -155,6 +160,7 @@ func (s *Session) infoLocked() Info {
 		HostID:          s.HostID,
 		HostDisplayName: s.HostDisplayName,
 		Group:           s.Group,
+		TaskID:          s.TaskID,
 		Status:          s.Status,
 		PID:             s.PID,
 		Created:         s.Created,

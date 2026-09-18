@@ -1,0 +1,57 @@
+#!/bin/sh
+# Task bootstrap, written by sessile (PROJECT_PLAN.md §4.12.2) for task
+# 'dbg-142-print-crash-3f9a1c'. Rewritten on every start; each step skips what is already done.
+# Every value below is quoted by sessile, and nothing here comes from a
+# command line anyone typed.
+
+TASK_DIR='/home/ob/.sessile/tasks/dbg-142-print-crash-3f9a1c'
+cd "$TASK_DIR" || exit 1
+
+say() { printf '\033[36msessile: %s\033[0m\n' "$1"; }
+stay() {
+	printf '\n\033[33msessile: %s\033[0m\n' "$1"
+	printf 'You are in the task folder, %s.\n' "$TASK_DIR"
+	exec "${SHELL:-/bin/sh}" -l
+}
+
+# Connection, Git and agent environment: loaded, then removed from disk (§4.12.9).
+if [ -f .env ]; then
+	set -a
+	. ./.env
+	set +a
+	rm -f .env
+fi
+
+if [ ! -d repo/.git ]; then
+	command -v git >/dev/null 2>&1 || stay "git is not installed on this host."
+	say 'cloning https://github.com/moonlight-stream/moonlight-android'
+	git clone -- 'https://github.com/moonlight-stream/moonlight-android' repo || stay "git clone failed; see above."
+	git -C repo checkout 'main' || stay 'could not check out main'
+fi
+git -C repo config user.name 'O'\''Brien'
+git -C repo config user.email 'ob@example.com'
+
+# Where the user-space installers put agents; after the user's own PATH.
+export PATH="$PATH:$HOME/.local/bin"
+if ! command -v 'claude' >/dev/null 2>&1; then
+	stay 'claude is not installed on this host.'
+fi
+
+if [ -f .agent-started ]; then
+	say 'resuming claude'
+	started=$(date +%s)
+	'claude' '--continue' '--permission-mode' 'plan'
+	status=$?
+	# A resume that fails straight away found nothing to resume (the history is
+	# gone): start a new conversation in the same folder instead.
+	if [ "$status" -ne 0 ] && [ $(( $(date +%s) - started )) -lt 10 ]; then
+		say 'nothing to resume; starting claude again'
+		'claude' '--permission-mode' 'plan' 'Read PROMPT.md: that'\''s my request.'
+	fi
+else
+	touch .agent-started
+	say 'starting claude'
+	'claude' '--permission-mode' 'plan' 'Read PROMPT.md: that'\''s my request.'
+fi
+
+stay 'claude has exited.'

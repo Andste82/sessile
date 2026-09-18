@@ -13,6 +13,7 @@ export interface Session {
   hostId: string // ssh only
   hostDisplayName: string // ssh only — snapshotted at creation, survives a host rename/delete
   group: string // free-text label the user files sessions under, "" for none (§4.11)
+  taskId: string | null // the task (§4.12) this session runs, null for an ordinary session
   status: Status
   pid: number
   created: string // RFC 3339 UTC
@@ -117,6 +118,7 @@ export interface Host {
   customCommand: string
   trustedHostKeyType: string
   trustedHostKeyFingerprint: string // empty means "not yet trusted" (§4.5.1)
+  tasksDir: string // where task folders go on this host (§4.12), default ".sessile/tasks"
   created: string // RFC 3339 UTC
 }
 
@@ -135,6 +137,7 @@ export interface HostBody {
   targetOS: TargetOS | ''
   terminalType: string
   customCommand: string
+  tasksDir?: string // "" or omitted: the default
 }
 
 // A session's process tree (PROJECT_PLAN.md §4.10, §6).

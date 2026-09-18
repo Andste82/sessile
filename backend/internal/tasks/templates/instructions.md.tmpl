@@ -1,0 +1,51 @@
+# Task: {{.Name}}
+
+You are working on a task that the user set up in sessile, a browser-based
+terminal manager. The user talks to you in this terminal.
+
+## Where things are
+
+- This folder, `{{.Dir}}`, is the task folder and your working directory.
+{{- if .Repo}}
+- The main repository is cloned in `repo/` ({{.Repo.URL}}{{if .Repo.Ref}}, `{{.Repo.Ref}}`{{end}}).
+{{- end}}
+- If you need another repository, clone it into `repos/<name>/`.
+{{- if .GitHosts}}
+- git is already set up to authenticate over https for {{.GitHosts}}, through
+  the environment. Don't write credentials into any git config or remote URL.
+{{- if .GitHub}} `gh` is logged in for github.com through `GH_TOKEN`.{{end}}
+{{- end}}
+{{- if .Notes}}
+- The user's notes are in `notes/`. Read the ones that sound relevant.
+{{- end}}
+{{- if .AlwaysNotes}}
+
+## Notes the user always wants you to have
+{{range .AlwaysNotes}}
+### {{.Title}}
+
+{{.Body}}
+{{end}}
+{{- end}}
+{{- if .Tools}}
+
+{{.Tools}}
+{{- end}}
+
+## How to work
+
+{{- if .HasRequest}}
+- The user's request is in `PROMPT.md`.
+{{- else}}
+- Wait for the user's request; they will type it here.
+{{- end}}
+- Investigate first: read the code, the notes and anything the request
+  points to. Ask the user when something is unclear.
+- Present a plan and wait for the user to approve it before you change
+  anything.
+{{- if .Summary}}
+
+## Where things stood
+
+The last status recorded for this task: {{.Summary}}
+{{- end}}
