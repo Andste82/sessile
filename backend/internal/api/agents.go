@@ -122,6 +122,9 @@ type gitBody struct {
 	Email    string  `json:"email"`
 	Username string  `json:"username"`
 	Token    *string `json:"token"`
+	// TokenImportID takes the token from an "Import from host" (§4.16)
+	// instead: the imported token never travels to the browser.
+	TokenImportID string `json:"tokenImportId,omitempty"`
 }
 
 type agentSettingsBody struct {
@@ -295,6 +298,20 @@ func (s *Server) putAgentSettings(c *gin.Context) {
 		return
 	}
 	hostExists := func(id string) bool { _, found := hostStore.Get(id); return found }
+
+	userID := c.MustGet(userIDKey).(string)
+	for i := range body.Git {
+		g := &body.Git[i]
+		if g.TokenImportID == "" || g.Token != nil {
+			continue
+		}
+		token, ok := s.takeGitImport(userID, g.TokenImportID)
+		if !ok {
+			respondError(c, http.StatusBadRequest, CodeValidation, "the imported token has expired; import it again")
+			return
+		}
+		g.Token = &token
+	}
 
 	updated, err := store.Update(func(cur *agents.Settings) error {
 		next, err := body.merge(*cur)

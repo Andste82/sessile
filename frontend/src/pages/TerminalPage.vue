@@ -9,7 +9,7 @@ import FileBrowserPanel from '@/components/FileBrowserPanel.vue'
 import { useSessionsStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
 import { ApiRequestError, api, isAlreadyRunning } from '@/api/client'
-import type { HostKeyErrorDetails, Session } from '@/api/types'
+import type { HostKeyErrorDetails, Session, Task } from '@/api/types'
 import type { ConnStatus } from '@/composables/useTerminal'
 
 const route = useRoute()
@@ -23,6 +23,12 @@ const loadError = ref<string | null>(null)
 
 const restarting = ref(false)
 const restartError = ref<string | null>(null)
+// A task session's restart can start the agent fresh or rebuild its
+// devcontainer (§4.12.6); both default off — a plain restart resumes.
+const restartFresh = ref(false)
+const rebuildContainer = ref(false)
+const task = ref<Task | null>(null)
+const isTask = computed(() => !!session.value?.taskId)
 // Same host-key-changed recovery gap as DashboardPage.vue's restart button —
 // see its comment. Kept local to this page rather than shared, since the two
 // restart call sites otherwise have nothing in common to factor out.
@@ -49,7 +55,12 @@ async function restart() {
   restarting.value = true
   restartError.value = null
   try {
-    session.value = await store.restartSession(id.value)
+    session.value = await store.restartSession(
+      id.value,
+      isTask.value ? { fresh: restartFresh.value, rebuildContainer: rebuildContainer.value } : undefined,
+    )
+    restartFresh.value = false
+    rebuildContainer.value = false
     reloadNonce.value++
   } catch (e) {
     // Another browser on this session got there first. Not a failure: this
@@ -80,6 +91,21 @@ function retryRestartAfterTrust() {
   pendingHostKey.value = null
   void restart()
 }
+
+// A task session's own record, for the restart options (and the task panel).
+watch(
+  () => session.value?.taskId,
+  async (taskId) => {
+    task.value = null
+    if (!taskId) return
+    try {
+      task.value = await api.getTask(taskId)
+    } catch {
+      // The restart still works without it; only the rebuild option hides.
+    }
+  },
+  { immediate: true },
+)
 
 async function loadSession(sessionId: string) {
   store.openTab(sessionId)
@@ -184,8 +210,18 @@ watch(
               :disabled="restarting"
               @click="restart"
             >
-              {{ restarting ? 'Restarting…' : 'Restart session' }}
+              {{ restarting ? 'Restarting…' : isTask ? 'Restart task' : 'Restart session' }}
             </button>
+            <template v-if="isTask">
+              <label class="flex items-center gap-1.5 text-xs text-slate-400">
+                <input v-model="restartFresh" type="checkbox" class="accent-emerald-400" />
+                Start the agent fresh
+              </label>
+              <label v-if="task?.spec.devcontainer" class="flex items-center gap-1.5 text-xs text-slate-400">
+                <input v-model="rebuildContainer" type="checkbox" class="accent-emerald-400" />
+                Rebuild the container
+              </label>
+            </template>
             <span v-if="restartError" class="w-full text-center text-xs text-rose-400">{{
               restartError
             }}</span>

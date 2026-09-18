@@ -5,6 +5,10 @@ import BottomNav from '@/components/BottomNav.vue'
 import { useSessionEvents } from '@/composables/useSessionEvents'
 import { useUiStore } from '@/stores/ui'
 import { hasFinePointer } from '@/utils/device'
+import NewTaskDialog from '@/components/NewTaskDialog.vue'
+import { useTaskDialog } from '@/composables/useTaskDialog'
+
+const taskDialog = useTaskDialog()
 
 const ui = useUiStore()
 
@@ -55,5 +59,7 @@ const touchPrimary = !hasFinePointer(window)
 
     <!-- Bottom navigation on phones only, hidden while typing. -->
     <BottomNav v-if="touchPrimary && !ui.keyboardOpen" />
+
+    <NewTaskDialog :open="taskDialog.open.value" @close="taskDialog.hide" />
   </div>
 </template>

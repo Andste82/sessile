@@ -2,7 +2,13 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
 import type { ServerEvent } from '@/api/events'
-import type { AppConfig, CreateSessionBody, Session, UpdateSessionBody } from '@/api/types'
+import type {
+  AppConfig,
+  CreateSessionBody,
+  RestartOptions,
+  Session,
+  UpdateSessionBody,
+} from '@/api/types'
 import { useUiStore } from './ui'
 
 /**
@@ -298,8 +304,8 @@ export const useSessionsStore = defineStore('sessions', () => {
   // Gives a stopped session a new shell under the same id, with its scrollback
   // and command history restored. The id is unchanged, so any open tab keeps
   // pointing at the same session and only needs to reconnect.
-  async function restartSession(id: string) {
-    const restarted = await api.restartSession(id)
+  async function restartSession(id: string, opts?: RestartOptions) {
+    const restarted = await api.restartSession(id, opts)
     sessions.value = sessions.value.map((s) => (s.id === id ? restarted : s))
     return restarted
   }

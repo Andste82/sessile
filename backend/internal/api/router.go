@@ -68,6 +68,8 @@ type Server struct {
 	prober *agents.Prober
 	// tasks is the task service (§4.12); nil where tests don't need it.
 	tasks *tasks.Service
+	// imports holds tokens read by "Import from host" until saved (§4.16).
+	imports gitImports
 
 	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
 	// opId. Entries are removed once a client has had a chance to observe
@@ -167,6 +169,7 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/agent/connections/test", s.testConnection)
 		authGroup.GET("/agent/connections/:id/models", s.listConnectionModels)
 		authGroup.POST("/agent/git/test", s.testGitAccount)
+		authGroup.POST("/agent/git/import", s.importGitIdentity)
 		authGroup.POST("/tasks", s.createTask)
 		authGroup.GET("/tasks/:id", s.getTask)
 	}

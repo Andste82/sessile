@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { useAgentStore } from '@/stores/agent'
+import { useHostsStore } from '@/stores/hosts'
 import { uuidv4 } from '@/utils/uuid'
 import AppDialog from './AppDialog.vue'
 import PasswordInput from './PasswordInput.vue'
@@ -26,6 +27,35 @@ const test = ref<TestResult | null>(null)
 
 const isEdit = computed(() => props.account !== null)
 
+// "Import from host" (§4.16): read what a host's own git setup already has.
+// The token stays on the server; the form only holds a reference to it.
+const hosts = useHostsStore()
+const importHost = ref('')
+const importing = ref(false)
+const importNote = ref<string | null>(null)
+const tokenImportId = ref('')
+
+async function runImport() {
+  if (!importHost.value || !host.value.trim()) return
+  importing.value = true
+  importNote.value = null
+  try {
+    const r = await api.importGitIdentity(importHost.value, host.value.trim())
+    if (r.name) name.value = r.name
+    if (r.email) email.value = r.email
+    if (r.username) username.value = r.username
+    tokenImportId.value = r.tokenImportId ?? ''
+    if (r.tokenImportId) token.value = ''
+    importNote.value = r.hasToken
+      ? 'Imported, including the token git has stored for this host. Nothing is saved until you press Save — and that copies the token into sessile.'
+      : 'Imported name and e-mail; git has no stored token for this host there.'
+  } catch (e) {
+    importNote.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    importing.value = false
+  }
+}
+
 watch(
   () => props.open,
   (open) => {
@@ -38,11 +68,18 @@ watch(
     token.value = ''
     error.value = null
     test.value = null
+    tokenImportId.value = ''
+    importNote.value = null
+    importHost.value = ''
+    if (hosts.hosts.length === 0) void hosts.fetchHosts()
   },
 )
 
 const canSave = computed(
-  () => host.value.trim() && username.value.trim() && (token.value.trim() || props.account?.hasToken),
+  () =>
+    host.value.trim() &&
+    username.value.trim() &&
+    (token.value.trim() || tokenImportId.value || props.account?.hasToken),
 )
 
 async function runTest() {
@@ -73,6 +110,7 @@ async function submit() {
       email: email.value.trim(),
       username: username.value.trim(),
       token: token.value.trim() || undefined,
+      tokenImportId: !token.value.trim() && tokenImportId.value ? tokenImportId.value : undefined,
     })
     emit('saved')
   } catch (e) {
@@ -94,6 +132,24 @@ const inputCls =
         <span class="text-slate-400">Git host</span>
         <input v-model="host" type="text" placeholder="github.com" :class="inputCls" />
       </label>
+      <div v-if="hosts.hosts.length" class="flex flex-col gap-1 rounded-md border border-slate-700 p-3">
+        <span class="text-xs text-slate-400">Import from a host that already has git set up</span>
+        <div class="flex gap-2">
+          <select v-model="importHost" :class="inputCls" class="min-w-0 flex-1">
+            <option value="">Pick a host</option>
+            <option v-for="h in hosts.hosts" :key="h.id" :value="h.id">{{ h.name }}</option>
+          </select>
+          <button
+            type="button"
+            class="rounded-md border border-slate-600 px-3 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+            :disabled="!importHost || !host.trim() || importing"
+            @click="runImport"
+          >
+            {{ importing ? 'Reading…' : 'Import' }}
+          </button>
+        </div>
+        <span v-if="importNote" class="text-xs text-slate-400">{{ importNote }}</span>
+      </div>
       <div class="grid grid-cols-2 gap-3">
         <label :class="labelCls">
           <span class="text-slate-400">Name (commits)</span>

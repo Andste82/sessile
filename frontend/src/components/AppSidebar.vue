@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router'
-import { HomeIcon, ServerIcon, Cog6ToothIcon, UsersIcon, CpuChipIcon } from '@heroicons/vue/24/outline'
+import {
+  HomeIcon,
+  ServerIcon,
+  Cog6ToothIcon,
+  UsersIcon,
+  CpuChipIcon,
+  SparklesIcon,
+} from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import StatusDot from './StatusDot.vue'
+import { useTaskDialog } from '@/composables/useTaskDialog'
 import GroupHeader from './GroupHeader.vue'
 
 const store = useSessionsStore()
 const auth = useAuthStore()
 const ui = useUiStore()
 const route = useRoute()
+const taskDialog = useTaskDialog()
 
 function isTerminal(id: string) {
   return route.name === 'terminal' && route.params.id === id
@@ -71,6 +80,15 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
         <CpuChipIcon class="h-5 w-5 shrink-0" />
         <span class="hidden lg:inline">Agent</span>
       </RouterLink>
+      <button
+        type="button"
+        class="flex items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-slate-800"
+        title="New task"
+        @click="taskDialog.show()"
+      >
+        <SparklesIcon class="h-5 w-5 shrink-0" />
+        <span class="hidden lg:inline">New task…</span>
+      </button>
       <RouterLink
         to="/settings"
         class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-800"
@@ -115,6 +133,7 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
         >
           <StatusDot :status="s.status" />
           <span class="truncate">{{ s.name }}</span>
+          <span v-if="s.taskId" class="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-slate-500">task</span>
         </RouterLink>
       </template>
       <p

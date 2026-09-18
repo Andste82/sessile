@@ -12,12 +12,14 @@ import EditSessionDialog from '@/components/EditSessionDialog.vue'
 import GroupHeader from '@/components/GroupHeader.vue'
 import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
 import type { HostKeyErrorDetails, Session } from '@/api/types'
+import { useTaskDialog } from '@/composables/useTaskDialog'
 
 const store = useSessionsStore()
 const ui = useUiStore()
 const hostsStore = useHostsStore()
 const router = useRouter()
 const dialogOpen = ref(false)
+const taskDialog = useTaskDialog()
 // The session being edited, and the dialog's open state in one: null is closed.
 const editing = ref<Session | null>(null)
 
@@ -98,7 +100,13 @@ function retryRestartAfterTrust() {
     >
       <h1 class="text-lg font-semibold tracking-tight">Sessions</h1>
       <button
-        class="ml-auto flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-500"
+        class="ml-auto flex items-center gap-2 rounded-md border border-slate-600 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-800"
+        @click="taskDialog.show()"
+      >
+        <PlusIcon class="h-4 w-4" /> New task
+      </button>
+      <button
+        class="flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-500"
         @click="dialogOpen = true"
       >
         <PlusIcon class="h-4 w-4" /> New session

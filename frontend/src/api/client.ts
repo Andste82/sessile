@@ -4,7 +4,11 @@ import type {
   AgentSettings,
   AgentSettingsBody,
   ConnectionKind,
+  GitImportResponse,
   ModelsResponse,
+  RestartOptions,
+  Task,
+  TaskSpec,
   TestResult,
   AppConfig,
   AuthStatus,
@@ -121,8 +125,16 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
-  restartSession: (id: string) =>
-    request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),
+  // Options only mean something for a task session (§4.12.6); an ordinary
+  // restart sends no body at all.
+  restartSession: (id: string, opts?: RestartOptions) =>
+    request<Session>(`/api/sessions/${id}/restart`, {
+      method: 'POST',
+      ...(opts && (opts.fresh || opts.rebuildContainer) ? { body: JSON.stringify(opts) } : {}),
+    }),
+  createTask: (spec: TaskSpec) =>
+    request<Session>('/api/tasks', { method: 'POST', body: JSON.stringify(spec) }),
+  getTask: (id: string) => request<Task>(`/api/tasks/${id}`),
   processTree: (id: string, scope?: 'session' | 'all') =>
     request<ProcessTreeResponse>(
       `/api/sessions/${id}/hostops/process-tree${scope ? `?scope=${scope}` : ''}`,
@@ -190,6 +202,11 @@ export const api = {
     request<TestResult>('/api/agent/connections/test', { method: 'POST', body: JSON.stringify(body) }),
   connectionModels: (id: string, refresh = false) =>
     request<ModelsResponse>(`/api/agent/connections/${id}/models${refresh ? '?refresh=1' : ''}`),
+  importGitIdentity: (hostId: string, gitHost: string) =>
+    request<GitImportResponse>('/api/agent/git/import', {
+      method: 'POST',
+      body: JSON.stringify({ hostId, gitHost }),
+    }),
   testGitAccount: (body: { id?: string; host: string; token?: string }) =>
     request<TestResult>('/api/agent/git/test', { method: 'POST', body: JSON.stringify(body) }),
 

@@ -292,7 +292,15 @@ export interface AgentSettingsBody {
   }[]
   profiles: { id: string; name: string; connectionId: string; model: string }[]
   taskDefaults: TaskDefaults
-  git: { id: string; host: string; name: string; email: string; username: string; token?: string }[]
+  git: {
+    id: string
+    host: string
+    name: string
+    email: string
+    username: string
+    token?: string
+    tokenImportId?: string
+  }[]
 }
 
 export interface TestResult {
@@ -312,4 +320,39 @@ export interface ModelsResponse {
   error?: string
   defaultModel: string
   defaultSource: 'connection' | 'cli'
+}
+
+// ---- Tasks (PROJECT_PLAN.md §4.12) ----
+
+export interface TaskSpec {
+  name: string
+  hostId?: string
+  target?: 'local'
+  repo?: { url: string; ref?: string }
+  devcontainer?: { mode: 'auto' | 'repo' | 'generic'; dockerSocket: boolean }
+  agent: { profileId: string; model?: string; mode?: 'plan' | 'normal' }
+  request?: string
+}
+
+export interface Task {
+  id: string
+  sessionId: string
+  hostId: string
+  dir: string
+  spec: TaskSpec
+  summary: string
+  created: string
+}
+
+export interface RestartOptions {
+  rebuildContainer?: boolean
+  fresh?: boolean
+}
+
+export interface GitImportResponse {
+  name: string
+  email: string
+  username: string
+  hasToken: boolean
+  tokenImportId?: string
 }

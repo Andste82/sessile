@@ -27,6 +27,7 @@ export interface GitDraft {
   email: string
   username: string
   token?: string
+  tokenImportId?: string // an "Import from host" token, kept on the server
 }
 
 // The agent settings document (§4.13, §4.16). The server takes the whole

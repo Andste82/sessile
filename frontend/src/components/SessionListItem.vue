@@ -40,6 +40,11 @@ const targetBadge = computed(() => (isSSH.value ? 'ssh' : props.session.shell))
     <div class="flex items-center gap-2">
       <StatusDot :status="session.status" />
       <span class="truncate font-medium text-slate-100">{{ session.name }}</span>
+      <span
+        v-if="session.taskId"
+        class="shrink-0 rounded border border-slate-600 px-1 text-[10px] uppercase tracking-wide text-slate-400"
+        >task</span
+      >
       <span class="ml-auto font-mono text-xs text-slate-400">{{ targetBadge }}</span>
       <button
         v-if="session.status === 'stopped'"
