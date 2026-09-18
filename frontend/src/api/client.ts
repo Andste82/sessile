@@ -11,6 +11,7 @@ import type {
   RestartOptions,
   Script,
   ScriptCheck,
+  ScriptExample,
   ScriptList,
   ScriptRunResult,
   ScriptSettingsBody,
@@ -219,6 +220,13 @@ export const api = {
   deleteNote: (slug: string) =>
     request<void>(`/api/agent/notes/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
   listScripts: () => request<ScriptList>('/api/agent/scripts'),
+  listScriptExamples: () => request<ScriptExample[]>('/api/agent/script-examples'),
+  installScriptExample: (name: string, opts: { as?: string; update?: boolean } = {}) => {
+    const q = new URLSearchParams()
+    if (opts.as) q.set('as', opts.as)
+    if (opts.update) q.set('update', 'true')
+    return request<Script>(`/api/agent/script-examples/${name}/install${q.size ? `?${q}` : ''}`, { method: 'POST' })
+  },
   putScriptSettings: (name: string, body: ScriptSettingsBody) =>
     request<Script>(`/api/agent/scripts/${name}/settings`, { method: 'PUT', body: JSON.stringify(body) }),
   checkScript: (name: string, body?: ScriptSettingsBody) =>

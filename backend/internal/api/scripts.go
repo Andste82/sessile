@@ -417,3 +417,61 @@ func GitTokenResolver(reg *agents.Registry) func(userID, host string) (string, b
 		return "", false
 	}
 }
+
+type exampleJSON struct {
+	Name            string   `json:"name"`
+	Version         string   `json:"version"`
+	Description     string   `json:"description"`
+	Functions       []string `json:"functions"`
+	Installed       string   `json:"installed"`
+	UpdateAvailable bool     `json:"updateAvailable"`
+}
+
+// listScriptExamples lists the built-in extensions (§4.15.6).
+func (s *Server) listScriptExamples(c *gin.Context) {
+	if !s.scriptsOK(c, false) {
+		return
+	}
+	list, err := s.scriptStore.Examples(c.MustGet(userIDKey).(string))
+	if err != nil {
+		s.respondScriptError(c, err)
+		return
+	}
+	out := []exampleJSON{}
+	for _, e := range list {
+		ej := exampleJSON{Name: e.Meta.Name, Version: e.Meta.Version, Description: e.Meta.Description,
+			Installed: e.Installed, UpdateAvailable: e.UpdateAvailable, Functions: []string{}}
+		for _, f := range e.Meta.Functions {
+			ej.Functions = append(ej.Functions, f.Name)
+		}
+		out = append(out, ej)
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// installScriptExample installs a built-in extension through the same path
+// as an upload: ?as= and ?update=true apply alike.
+func (s *Server) installScriptExample(c *gin.Context) {
+	if !s.scriptsOK(c, true) {
+		return
+	}
+	data, err := scripts.ExampleZip(c.Param("name"))
+	if err != nil {
+		s.respondScriptError(c, err)
+		return
+	}
+	s.installScriptZip(c, data)
+}
+
+func (s *Server) downloadScriptExample(c *gin.Context) {
+	if !s.scriptsOK(c, false) {
+		return
+	}
+	data, err := scripts.ExampleZip(c.Param("name"))
+	if err != nil {
+		s.respondScriptError(c, err)
+		return
+	}
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-example.zip"`, c.Param("name")))
+	c.Data(http.StatusOK, "application/zip", data)
+}

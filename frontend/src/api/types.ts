@@ -432,3 +432,12 @@ export interface ScriptRunResult {
   error?: string
   stderr?: string
 }
+
+export interface ScriptExample {
+  name: string
+  version: string
+  description: string
+  functions: string[]
+  installed: string // "" when not installed
+  updateAvailable: boolean
+}

@@ -5,7 +5,7 @@ import { api, ApiRequestError } from '@/api/client'
 import AgentNav from '@/components/AgentNav.vue'
 import ScriptConfigureDialog from '@/components/ScriptConfigureDialog.vue'
 import ScriptRunDialog from '@/components/ScriptRunDialog.vue'
-import type { Script, ScriptList } from '@/api/types'
+import type { Script, ScriptExample, ScriptList } from '@/api/types'
 
 // Script extensions (§4.15): zip in, configure, test, and the task agent gets
 // every ready script's functions as tools. Editing happens outside: download
@@ -21,12 +21,23 @@ const runOpen = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const pendingUpdate = ref<{ file: File; installed: string; uploaded: string } | null>(null)
 
+const examples = ref<ScriptExample[]>([])
+
 async function refresh() {
   try {
-    list.value = await api.listScripts()
+    ;[list.value, examples.value] = await Promise.all([api.listScripts(), api.listScriptExamples()])
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   }
+}
+
+// Installing an example goes through the same path as an upload; an
+// installed copy is the user's own, so "update" is only ever an offer.
+async function installExample(ex: ScriptExample) {
+  await act('example:' + ex.name, async () => {
+    const s = await api.installScriptExample(ex.name, { update: !!ex.installed })
+    if (!ex.installed && s.settings.length) openConfigure(s)
+  })
 }
 
 // A script's venv is built in the background after an install; poll while
@@ -218,8 +229,37 @@ const btnCls = 'rounded-md border border-slate-600 px-3 py-1.5 text-xs text-slat
       </p>
       <p v-if="list && list.scripts.length === 0" class="text-sm text-slate-500">
         No scripts yet. A script's functions become tools your task agents can call — read a ticket, check a build,
-        search an artifact store.
+        search an artifact store. Start from an example below.
       </p>
+
+      <h2 v-if="examples.length" class="mb-3 mt-8 text-sm font-medium uppercase tracking-wide text-slate-400">
+        Examples
+      </h2>
+      <div
+        v-for="ex in examples"
+        :key="ex.name"
+        class="mb-3 flex flex-col gap-2 rounded-lg border border-slate-700 p-4 sm:flex-row sm:items-center"
+      >
+        <div class="min-w-0 flex-1">
+          <p class="text-sm text-slate-100">
+            {{ ex.name }} <span class="text-xs text-slate-500">{{ ex.version }}</span>
+            <span v-if="ex.installed" class="text-xs text-slate-500"> · installed {{ ex.installed }}</span>
+          </p>
+          <p class="text-xs text-slate-400">{{ ex.description }}</p>
+        </div>
+        <div class="flex shrink-0 gap-2">
+          <button
+            v-if="!ex.installed || ex.updateAvailable"
+            type="button"
+            :class="btnCls"
+            :disabled="!list?.allowed || busy === 'example:' + ex.name"
+            @click="installExample(ex)"
+          >
+            {{ ex.installed ? `Update to ${ex.version}` : 'Install' }}
+          </button>
+          <a :href="`/api/agent/script-examples/${ex.name}/zip`" :class="btnCls">Download to adapt</a>
+        </div>
+      </div>
     </main>
 
     <ScriptConfigureDialog
