@@ -9,6 +9,11 @@ import type {
   NoteContext,
   ModelsResponse,
   RestartOptions,
+  Script,
+  ScriptCheck,
+  ScriptList,
+  ScriptRunResult,
+  ScriptSettingsBody,
   Task,
   TaskSpec,
   TestResult,
@@ -213,6 +218,32 @@ export const api = {
     }),
   deleteNote: (slug: string) =>
     request<void>(`/api/agent/notes/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+  listScripts: () => request<ScriptList>('/api/agent/scripts'),
+  putScriptSettings: (name: string, body: ScriptSettingsBody) =>
+    request<Script>(`/api/agent/scripts/${name}/settings`, { method: 'PUT', body: JSON.stringify(body) }),
+  checkScript: (name: string, body?: ScriptSettingsBody) =>
+    request<ScriptCheck>(`/api/agent/scripts/${name}/check`, {
+      method: 'POST',
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }),
+  runScript: (name: string, fn: string, input: unknown) =>
+    request<ScriptRunResult>(`/api/agent/scripts/${name}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ function: fn, input }),
+    }),
+  rebuildScript: (name: string) => request<Script>(`/api/agent/scripts/${name}/rebuild`, { method: 'POST' }),
+  removeScript: (name: string) => request<void>(`/api/agent/scripts/${name}`, { method: 'DELETE' }),
+  // A zip goes up as the raw body, not JSON (§4.15.1).
+  uploadScript: (zip: Blob, opts: { as?: string; update?: boolean } = {}) => {
+    const q = new URLSearchParams()
+    if (opts.as) q.set('as', opts.as)
+    if (opts.update) q.set('update', 'true')
+    return request<Script>(`/api/agent/scripts${q.size ? `?${q}` : ''}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: zip,
+    })
+  },
   importGitIdentity: (hostId: string, gitHost: string) =>
     request<GitImportResponse>('/api/agent/git/import', {
       method: 'POST',

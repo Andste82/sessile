@@ -51,7 +51,7 @@ describe('fetchConfig', () => {
     const store = useSessionsStore()
     store.error = 'stale failure from an earlier attempt'
 
-    configMock.mockResolvedValue({ shells: ['bash'], version: '1.2.3', allowLocalHost: true })
+    configMock.mockResolvedValue({ shells: ['bash'], version: '1.2.3', allowLocalHost: true, allowAgentScripts: true })
     await store.fetchConfig()
 
     expect(store.config).toEqual({ shells: ['bash'], version: '1.2.3', allowLocalHost: true })

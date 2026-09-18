@@ -18,6 +18,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/notes"
+	"github.com/Andste82/sessile/backend/internal/scripts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/tasks"
@@ -73,6 +74,9 @@ type Server struct {
 	imports gitImports
 	// notes is the per-user notes store (§4.14).
 	notes *notes.Store
+	// scriptStore and scriptRunner back the script extensions (§4.15).
+	scriptStore  *scripts.Store
+	scriptRunner *scripts.Runner
 
 	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
 	// opId. Entries are removed once a client has had a chance to observe
@@ -177,6 +181,13 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.GET("/agent/notes/:slug", s.getNote)
 		authGroup.PUT("/agent/notes/:slug", s.putNote)
 		authGroup.DELETE("/agent/notes/:slug", s.deleteNote)
+		authGroup.GET("/agent/scripts", s.listScripts)
+		authGroup.GET("/agent/scripts/:name/zip", s.exportScript)
+		authGroup.DELETE("/agent/scripts/:name", s.removeScript)
+		authGroup.PUT("/agent/scripts/:name/settings", s.putScriptSettings)
+		authGroup.POST("/agent/scripts/:name/check", s.checkScript)
+		authGroup.POST("/agent/scripts/:name/run", s.runScript)
+		authGroup.POST("/agent/scripts/:name/rebuild", s.rebuildScript)
 		authGroup.POST("/tasks", s.createTask)
 		authGroup.GET("/tasks/:id", s.getTask)
 	}
@@ -189,6 +200,15 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 	// memory regardless of size — the size cap that used to exist here
 	// was a consequence of buffering the whole file, not an independent
 	// safety property worth keeping once that stopped being true.
+	// A script zip (§4.15.1) is too big for the JSON cap and small enough
+	// for a cap of its own.
+	scriptUpload := r.Group("/api")
+	scriptUpload.Use(s.requireAuth())
+	scriptUpload.Use(limitBody(scripts.MaxZip))
+	{
+		scriptUpload.POST("/agent/scripts", s.installScript)
+	}
+
 	authOnly := r.Group("/api")
 	authOnly.Use(s.requireAuth())
 	{

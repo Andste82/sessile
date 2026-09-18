@@ -42,6 +42,7 @@ export interface AppConfig {
   shells: string[]
   version: string
   allowLocalHost: boolean
+  allowAgentScripts: boolean
 }
 
 export interface DirectoriesResponse {
@@ -99,6 +100,7 @@ export interface AdminConfig {
   displayName: string
   allowRegistration: boolean
   allowLocalHost: boolean
+  allowAgentScripts?: boolean // absent means on (§9)
 }
 
 export type AuthMethod = 'password' | 'privateKey'
@@ -368,4 +370,65 @@ export interface Note {
   body?: string // only on a single note
   updated: string
   warnings?: string[] // secret-lint findings
+}
+
+// ---- Scripts (PROJECT_PLAN.md §4.15) ----
+
+export interface ScriptSetting {
+  name: string
+  label: string
+  type: 'string' | 'url' | 'secret' | 'bool' | 'choice'
+  options?: string[]
+  required?: boolean
+  context?: boolean
+  help?: string
+  value?: string // non-secret settings only
+  set: boolean
+  git?: string // git host a secret is taken from
+}
+
+export interface ScriptFunction {
+  name: string
+  effect: 'read' | 'write'
+  description: string
+  input?: Record<string, unknown>
+}
+
+export interface ScriptCheck {
+  ok: boolean
+  message: string
+  at: string
+}
+
+export interface Script {
+  name: string
+  version: string
+  description: string
+  functions: ScriptFunction[]
+  settings: ScriptSetting[]
+  guidance: string[]
+  check: string
+  status: 'preparing' | 'needs_setup' | 'check_failed' | 'ready'
+  missing: string[]
+  venv: 'ready' | 'preparing' | 'missing' | 'failed'
+  venvError?: string
+  lastCheck?: ScriptCheck
+}
+
+export interface ScriptList {
+  allowed: boolean
+  scripts: Script[]
+  broken: Record<string, string>
+}
+
+export interface ScriptSettingsBody {
+  values: Record<string, string>
+  git: Record<string, string>
+}
+
+export interface ScriptRunResult {
+  ok: boolean
+  output?: unknown
+  error?: string
+  stderr?: string
 }

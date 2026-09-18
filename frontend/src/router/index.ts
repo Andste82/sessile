@@ -48,6 +48,12 @@ const routes = [
     meta: { title: 'Notes' },
   },
   {
+    path: '/agent/scripts',
+    name: 'agent-scripts',
+    component: () => import('@/pages/ScriptsPage.vue'),
+    meta: { title: 'Scripts' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/pages/SettingsPage.vue'),

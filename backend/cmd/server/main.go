@@ -20,6 +20,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/notes"
+	"github.com/Andste82/sessile/backend/internal/scripts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/sshpty"
@@ -124,6 +125,9 @@ func run(args []string) error {
 	srv.SetAgents(agentsRegistry, agents.NewProber())
 	notesStore := notes.New(cfg.DataDir)
 	srv.SetNotes(notesStore)
+	scriptRunner := scripts.NewRunner(cfg.DataDir, log)
+	scriptRunner.GitToken = api.GitTokenResolver(agentsRegistry)
+	srv.SetScripts(scripts.NewStore(cfg.DataDir), scriptRunner)
 	taskService := &tasks.Service{
 		DB: store, Agents: agentsRegistry, Hosts: hostsRegistry, Log: log,
 		Notes:             notesStore,

@@ -9,6 +9,7 @@ const route = useRoute()
 const tabs = [
   { to: '/agent/settings', name: 'agent-settings', label: 'Connections & Git' },
   { to: '/agent/notes', name: 'agent-notes', label: 'Notes' },
+  { to: '/agent/scripts', name: 'agent-scripts', label: 'Scripts' },
 ]
 </script>
 

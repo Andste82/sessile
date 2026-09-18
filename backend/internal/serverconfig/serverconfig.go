@@ -24,6 +24,16 @@ type Config struct {
 	DisplayName       string `yaml:"displayName" json:"displayName"`
 	AllowRegistration bool   `yaml:"allowRegistration" json:"allowRegistration"`
 	AllowLocalHost    bool   `yaml:"allowLocalHost" json:"allowLocalHost"`
+	// AllowAgentScripts lets users install and run scripts on this server
+	// (§4.15) — equal to shell access here (§11). Unlike the others it
+	// defaults to on, so it is a pointer: absent (a config.yml from before
+	// scripts existed) means on, and only an explicit false turns it off.
+	AllowAgentScripts *bool `yaml:"allowAgentScripts,omitempty" json:"allowAgentScripts,omitempty"`
+}
+
+// ScriptsAllowed resolves AllowAgentScripts' default.
+func (c Config) ScriptsAllowed() bool {
+	return c.AllowAgentScripts == nil || *c.AllowAgentScripts
 }
 
 // Store guards the current Config and persists changes to path.
