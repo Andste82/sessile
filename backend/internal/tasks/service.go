@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -32,11 +33,6 @@ type NotesSource interface {
 	TaskNotes(userID string) ([]Note, error)
 }
 
-// ToolsSource renders the Tools section of a task's instructions (§4.17.2).
-type ToolsSource interface {
-	ToolsSection(userID string) string
-}
-
 // Service creates tasks and launches their sessions. It is the
 // session.TaskLauncher.
 type Service struct {
@@ -45,13 +41,15 @@ type Service struct {
 	Hosts  *hosts.Registry
 	Log    *slog.Logger
 	Notes  NotesSource
-	Tools  ToolsSource
+	// Tools is the sessile MCP server (§4.17.3); nil runs tasks without tools.
+	Tools ToolServer
 	// WorkspaceTasksDir is a local-host task's folder root relative to the
 	// workspace (§4.12).
 	WorkspaceTasksDir string
 
 	mu      sync.Mutex
 	pending map[string]RestartOptions // by task id
+	local   map[string]net.Listener   // local-host tasks' tool tunnels, by task id
 }
 
 // Task is a stored task, decoded.
@@ -271,22 +269,31 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			return session.TaskLaunch{}, fmt.Errorf("load notes: %w", err)
 		}
 	}
-	tools := ""
+	toolsText := ""
 	if s.Tools != nil {
-		tools = s.Tools.ToolsSection(userID)
+		toolsText = s.Tools.ToolsSection(userID)
 	}
 
 	env := append(append(conn.Env(), ln.env...), gitEnv(accounts)...)
-	// files renders the folder for one target; displayDir is the folder as
+	// files renders the folder for one start; displayDir is the folder as
 	// the target itself names it, which is what the bootstrap and the
-	// instructions use.
+	// instructions use; tools is how the agent reaches sessile's tools.
 	restart := s.takeRestart(t.ID)
-	files := func(displayDir string, windows bool) func(string) ([]file, error) {
+	inContainer := t.Spec.Devcontainer != nil
+	files := func(displayDir string, windows bool, tools toolsSetup) func(string) ([]file, error) {
 		return func(string) ([]file, error) {
-			out, err := buildFiles(t, displayDir, windows, ln, identity, accounts, env, notes, tools)
+			launchFor := ln
+			text := ""
+			if tools.enabled {
+				launchFor.first, launchFor.resume = ln.argv(toolArgs(ln.agent, tools.agentDir, tools.bridge, tools.windows))
+				text = toolsText
+			}
+			out, err := buildFiles(t, displayDir, windows, launchFor, identity, accounts, env, notes, text)
 			if err != nil {
 				return nil, err
 			}
+			out = append(out, tools.files...)
+			out = append(out, mcpFiles(ln.agent, tools)...)
 			// One-shot markers the bootstrap consumes (§4.12.3, §4.12.6).
 			if restart.RebuildContainer {
 				out = append(out, file{".rebuild-container", nil, 0o600})
@@ -304,7 +311,8 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			LocalDir: rel,
 			LocalPrepare: func(absDir string) ([]string, []string, error) {
 				fs := localFS{}
-				if err := writeFiles(fs, absDir, files(absDir, false)); err != nil {
+				tools := s.localTools(userID, t.ID, absDir, inContainer)
+				if err := writeFiles(fs, absDir, files(absDir, false, tools)); err != nil {
 					return nil, nil, err
 				}
 				s.recordDir(t.ID, absDir)
@@ -342,20 +350,34 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			base = fs.Join(home, base)
 		}
 		dir := fs.Join(base, t.ID)
-		if windows {
-			native := windowsPath(dir)
-			if err := writeFiles(fs, dir, files(native, true)); err != nil {
-				return "", err
-			}
-			s.recordDir(t.ID, native)
-			// Run by Win32-OpenSSH's own shell (cmd.exe or PowerShell), both of
-			// which take a double-quoted path; tasksDir can't contain a quote.
-			return `powershell -NoProfile -ExecutionPolicy Bypass -File "` + native + `\task.ps1"`, nil
-		}
-		if err := writeFiles(fs, dir, files(dir, false)); err != nil {
+		// The folder first: the tools tunnel's socket lives in it.
+		if err := fs.MkdirAll(dir); err != nil {
 			return "", err
 		}
-		s.recordDir(t.ID, dir)
+		if err := fs.Chmod(dir, 0o700); err != nil {
+			return "", err
+		}
+		tools, l, token := s.sshTools(client, fs.c, dir, windows, inContainer)
+		displayDir := dir
+		if windows {
+			displayDir = windowsPath(dir)
+		}
+		if err := writeFiles(fs, dir, files(displayDir, windows, tools)); err != nil {
+			if l != nil {
+				l.Close()
+			}
+			return "", err
+		}
+		if l != nil {
+			// Serves until the session's connection closes the listener.
+			go s.Tools.Serve(l, userID, t.ID, token)
+		}
+		s.recordDir(t.ID, displayDir)
+		if windows {
+			// Run by Win32-OpenSSH's own shell (cmd.exe or PowerShell), both of
+			// which take a double-quoted path; tasksDir can't contain a quote.
+			return `powershell -NoProfile -ExecutionPolicy Bypass -File "` + displayDir + `\task.ps1"`, nil
+		}
 		return "sh " + shellQuote(fs.Join(dir, "task.sh")), nil
 	}
 	return session.TaskLaunch{SSH: &target, HostID: host.ID, HostDisplayName: host.Name}, nil

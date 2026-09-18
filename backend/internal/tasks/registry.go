@@ -77,10 +77,13 @@ var codexAPIKeyArgs = []string{
 
 // launch is the resolved start of one task's agent.
 type launch struct {
-	def    agentDef
-	first  []string // argv for the first start
-	resume []string // argv to continue the conversation
-	env    [][2]string
+	agent      agents.Agent
+	def        agentDef
+	common     []string // mode, model and connection arguments
+	hasRequest bool
+	env        [][2]string
+	first      []string // argv for the first start, without tools
+	resume     []string // argv to continue the conversation, without tools
 }
 
 // resolveLaunch builds the argv for an agent, mode, model and connection.
@@ -107,15 +110,52 @@ func resolveLaunch(a agents.Agent, connKind, mode, model string, hasRequest bool
 	for k, v := range def.Env {
 		env = append(env, [2]string{k, v})
 	}
+	ln := launch{agent: a, def: def, common: common, hasRequest: hasRequest, env: env}
+	ln.first, ln.resume = ln.argv(nil)
+	return ln, true
+}
 
-	first := append([]string{def.Binary}, common...)
-	if hasRequest {
-		if def.RequestFlag != "" {
-			first = append(first, def.RequestFlag)
+// argv builds both start commands, with the agent's MCP arguments (§4.17.2)
+// when the task has tools. The tool arguments go first: Claude Code's
+// --mcp-config takes several values and would swallow a positional prompt
+// after it.
+func (ln launch) argv(toolArgs []string) (first, resume []string) {
+	first = append([]string{ln.def.Binary}, toolArgs...)
+	first = append(first, ln.common...)
+	if ln.hasRequest {
+		if ln.def.RequestFlag != "" {
+			first = append(first, ln.def.RequestFlag)
 		}
 		first = append(first, requestInstruction)
 	}
-	resume := append([]string{def.Binary}, def.ResumeArgs...)
-	resume = append(resume, common...)
-	return launch{def: def, first: first, resume: resume, env: env}, true
+	resume = append([]string{ln.def.Binary}, ln.def.ResumeArgs...)
+	resume = append(resume, toolArgs...)
+	resume = append(resume, ln.common...)
+	return first, resume
+}
+
+// toolArgs are the agent's command-line part of registering the sessile MCP
+// server; mcpConfig and claudeSettings are files in the task folder, written
+// alongside (see mcpFiles).
+func toolArgs(a agents.Agent, dir, bridge string, windows bool) []string {
+	join := pathJoiner(windows)
+	switch a {
+	case agents.AgentClaude:
+		// --mcp-config loads the server for this run only, next to the
+		// user's own; --settings pre-allows its tools in Claude Code (the
+		// approval that counts for writes is sessile's own, §4.17.3).
+		return []string{"--mcp-config", join(dir, ".sessile-mcp.json"), "--settings", join(dir, ".sessile-claude-settings.json")}
+	case agents.AgentCodex:
+		// TOML literal strings: no escapes, so a Windows path stays as is.
+		return []string{"-c", "mcp_servers.sessile.command='" + bridge + "'", "-c", "mcp_servers.sessile.args=[]"}
+	}
+	// gemini reads .gemini/settings.json from its working directory.
+	return nil
+}
+
+func pathJoiner(windows bool) func(dir, name string) string {
+	if windows {
+		return func(dir, name string) string { return dir + `\` + name }
+	}
+	return func(dir, name string) string { return dir + "/" + name }
 }

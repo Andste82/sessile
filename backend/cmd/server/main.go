@@ -19,6 +19,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/hosts"
+	"github.com/Andste82/sessile/backend/internal/mcp"
 	"github.com/Andste82/sessile/backend/internal/notes"
 	"github.com/Andste82/sessile/backend/internal/scripts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
@@ -127,12 +128,18 @@ func run(args []string) error {
 	srv.SetNotes(notesStore)
 	scriptRunner := scripts.NewRunner(cfg.DataDir, log)
 	scriptRunner.GitToken = api.GitTokenResolver(agentsRegistry)
-	srv.SetScripts(scripts.NewStore(cfg.DataDir), scriptRunner)
+	scriptStore := scripts.NewStore(cfg.DataDir)
+	srv.SetScripts(scriptStore, scriptRunner)
 	taskService := &tasks.Service{
 		DB: store, Agents: agentsRegistry, Hosts: hostsRegistry, Log: log,
 		Notes:             notesStore,
 		WorkspaceTasksDir: ".sessile/tasks",
 	}
+	mcpServer := mcp.New(scriptStore, scriptRunner, taskService, manager.PublishHostop, log)
+	mcpServer.Version = config.Version
+	mcpServer.AllowScripts = func() bool { return serverCfg.Get().ScriptsAllowed() }
+	taskService.Tools = mcpServer
+	srv.SetMCP(mcpServer)
 	manager.SetTaskLauncher(taskService)
 	srv.SetTasks(taskService)
 	handler := srv.Router(dist)

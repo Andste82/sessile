@@ -90,3 +90,26 @@ func (s *Store) DeleteTask(id string) error {
 	}
 	return nil
 }
+
+// ListTasks returns userID's tasks.
+func (s *Store) ListTasks(userID string) ([]TaskRow, error) {
+	rows, err := s.db.Query(`SELECT id, session_id, user_id, host_id, dir, spec_json, summary, created
+	                         FROM tasks WHERE user_id=? ORDER BY created`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
+	}
+	defer rows.Close()
+	var out []TaskRow
+	for rows.Next() {
+		var t TaskRow
+		var created string
+		if err := rows.Scan(&t.ID, &t.SessionID, &t.UserID, &t.HostID, &t.Dir, &t.SpecJSON, &t.Summary, &created); err != nil {
+			return nil, err
+		}
+		if ct, err := time.Parse(time.RFC3339, created); err == nil {
+			t.Created = ct
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}

@@ -151,6 +151,7 @@ func (s *Server) installScriptZip(c *gin.Context, data []byte) {
 	}
 	s.scriptRunner.ForgetCheck(userID, m.Name)
 	s.scriptRunner.Prepare(m, s.scriptStore.Dir(userID, m.Name))
+	s.toolsChanged(userID)
 	c.JSON(http.StatusCreated, s.scriptView(userID, m))
 }
 
@@ -182,6 +183,7 @@ func (s *Server) removeScript(c *gin.Context) {
 		return
 	}
 	s.scriptRunner.ForgetCheck(userID, c.Param("name"))
+	s.toolsChanged(userID)
 	c.Status(http.StatusNoContent)
 }
 
@@ -304,6 +306,7 @@ func (s *Server) putScriptSettings(c *gin.Context) {
 		return
 	}
 	s.scriptRunner.ForgetCheck(userID, m.Name)
+	s.toolsChanged(userID)
 	c.JSON(http.StatusOK, s.scriptView(userID, m))
 }
 

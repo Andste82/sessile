@@ -31,6 +31,13 @@ RUN go mod download
 COPY backend/ ./
 # Overlay the freshly-built SPA into the embed directory.
 COPY --from=frontend /app/frontend/dist ./web/dist
+# The MCP bridge tasks upload to their hosts (§4.17.3), one per target,
+# embedded into the server below.
+RUN for t in linux/amd64 linux/arm64 windows/amd64; do \
+      os=${t%/*}; arch=${t#*/}; ext=; [ "$os" = windows ] && ext=.exe; \
+      CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w" \
+        -o internal/mcp/bridge/sessile-mcp-$os-$arch$ext ./cmd/sessile-mcp || exit 1; \
+    done
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -ldflags="-s -w -X github.com/Andste82/sessile/backend/internal/config.Version=${VERSION}" \
       -o /sessile ./cmd/server

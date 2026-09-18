@@ -8,6 +8,10 @@
 /backend/web/dist/assets/
 /backend/web/dist/favicon.svg
 
+# The cross-compiled MCP bridge (make bridge), embedded into the server;
+# its README stays committed so the embed directive is always valid.
+/backend/internal/mcp/bridge/sessile-mcp-*
+
 # Runtime state
 /sandbox/
 /workspace/

@@ -25,13 +25,26 @@ LDFLAGS   := -s -w -X github.com/Andste82/sessile/backend/internal/config.Versio
 EMBED_DIR := backend/web/dist
 
 .PHONY: help dev-backend dev-frontend test test-backend test-frontend build \
-        build-frontend build-backend docker docker-ubuntu clean placeholder tidy
+        build-frontend build-backend bridge docker docker-ubuntu clean placeholder tidy
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-dev-backend: ## Run the Go backend against ./sandbox/data in dev mode
+# The MCP bridge (PROJECT_PLAN.md §4.17.3) for every target a task can run on,
+# embedded into the server from backend/internal/mcp/bridge/.
+BRIDGE_DIR := backend/internal/mcp/bridge
+BRIDGE_TARGETS := linux/amd64 linux/arm64 windows/amd64
+
+bridge: ## Cross-compile the MCP bridge that tasks upload to their hosts
+	@for t in $(BRIDGE_TARGETS); do \
+	  os=$${t%/*}; arch=$${t#*/}; ext=; [ "$$os" = windows ] && ext=.exe; \
+	  echo "bridge $$os/$$arch"; \
+	  (cd backend && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags="-s -w" \
+	    -o ../$(BRIDGE_DIR)/sessile-mcp-$$os-$$arch$$ext ./cmd/sessile-mcp) || exit 1; \
+	done
+
+dev-backend: bridge ## Run the Go backend against ./sandbox/data in dev mode
 	@mkdir -p $(DATA_DIR)
 	cd backend && go run ./cmd/server --data-dir=$(DATA_DIR) --insecure-cookies --allow-origin=http://localhost:5173
 
@@ -53,7 +66,7 @@ build-frontend: ## Build the SPA and copy it into the backend embed dir
 	@echo "note: $(EMBED_DIR)/index.html now holds the built SPA, not the"
 	@echo "      committed placeholder — run 'make clean' before committing."
 
-build-backend: ## Build the single Go binary (embeds the SPA)
+build-backend: bridge ## Build the single Go binary (embeds the SPA and the bridge)
 	cd backend && CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o ../bin/sessile ./cmd/server
 
 build: build-frontend build-backend ## Full production build → ./bin/sessile

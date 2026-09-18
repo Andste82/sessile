@@ -17,6 +17,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/hosts"
+	"github.com/Andste82/sessile/backend/internal/mcp"
 	"github.com/Andste82/sessile/backend/internal/notes"
 	"github.com/Andste82/sessile/backend/internal/scripts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
@@ -77,6 +78,9 @@ type Server struct {
 	// scriptStore and scriptRunner back the script extensions (§4.15).
 	scriptStore  *scripts.Store
 	scriptRunner *scripts.Runner
+	// mcp is the sessile MCP server task agents reach their tools through
+	// (§4.17): approvals and tool-list changes go through it.
+	mcp *mcp.Server
 
 	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
 	// opId. Entries are removed once a client has had a chance to observe
@@ -192,7 +196,9 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/agent/scripts/:name/run", s.runScript)
 		authGroup.POST("/agent/scripts/:name/rebuild", s.rebuildScript)
 		authGroup.POST("/tasks", s.createTask)
+		authGroup.GET("/tasks", s.listTasks)
 		authGroup.GET("/tasks/:id", s.getTask)
+		authGroup.POST("/tasks/:id/approvals/:callId", s.decideApproval)
 	}
 
 	// Download/upload get their own routes outside authGroup's blanket
