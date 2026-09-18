@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Andste82/sessile/backend/internal/agents"
 	"github.com/Andste82/sessile/backend/internal/api"
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
@@ -117,6 +118,7 @@ func run(args []string) error {
 	wsHandler := ws.NewHandler(manager, cfg, log)
 
 	srv := api.NewServer(cfg, manager, wsHandler, log, cfg.WorkspaceDir, serverCfg, users, webSessions, hostsRegistry)
+	srv.SetAgents(agents.NewRegistry(cfg.DataDir), agents.NewProber())
 	handler := srv.Router(dist)
 
 	httpServer := &http.Server{

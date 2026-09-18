@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router'
-import { HomeIcon, ServerIcon, Cog6ToothIcon, UsersIcon } from '@heroicons/vue/24/outline'
+import { HomeIcon, ServerIcon, Cog6ToothIcon, UsersIcon, CpuChipIcon } from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -61,6 +61,15 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
       >
         <ServerIcon class="h-5 w-5 shrink-0" />
         <span class="hidden lg:inline">Hosts</span>
+      </RouterLink>
+      <RouterLink
+        to="/agent/settings"
+        class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-800"
+        :class="{ 'bg-slate-800 text-slate-100': String(route.name ?? '').startsWith('agent-') }"
+        title="Agent"
+      >
+        <CpuChipIcon class="h-5 w-5 shrink-0" />
+        <span class="hidden lg:inline">Agent</span>
       </RouterLink>
       <RouterLink
         to="/settings"

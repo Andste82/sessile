@@ -203,3 +203,110 @@ export interface HostopStatus {
   status: 'running' | 'ok' | 'error'
   message?: string
 }
+
+// ---- Agent settings (PROJECT_PLAN.md §4.13, §4.16) ----
+
+export type AgentName = 'claude' | 'codex' | 'gemini'
+export type ConnectionFieldType = 'string' | 'url' | 'secret'
+
+export interface ConnectionField {
+  name: string
+  label: string
+  type: ConnectionFieldType
+  required: boolean
+  help?: string
+  env?: string
+}
+
+// One fixed way of authenticating one agent; the table lives in code
+// (internal/agents/kinds.go).
+export interface ConnectionKind {
+  id: string
+  agent: AgentName
+  label: string
+  enterprise: boolean
+  steps: string[]
+  fields: ConnectionField[]
+  fixedEnv?: Record<string, string>
+  testable: boolean
+  listsModels: boolean
+  aliases?: string[]
+  modelField?: string
+  defaultExpiryDays?: number
+}
+
+export interface Connection {
+  id: string
+  name: string
+  kind: string
+  agent: AgentName
+  fields: Record<string, string> // non-secret fields only
+  secretsSet: Record<string, boolean> // secret field -> is it set
+  expires: string | null // RFC 3339 UTC
+  expired: boolean
+  expiresSoon: boolean
+}
+
+export interface Profile {
+  id: string
+  name: string
+  agent: AgentName
+  connectionId: string
+  model: string // "" = the resolved default
+}
+
+export interface TaskDefaults {
+  hostId: string // "" none, "local" for the server itself
+  profileId: string
+}
+
+export interface GitAccount {
+  id: string
+  host: string
+  name: string
+  email: string
+  username: string
+  hasToken: boolean
+}
+
+export interface AgentSettings {
+  connections: Connection[]
+  profiles: Profile[]
+  taskDefaults: TaskDefaults
+  git: GitAccount[]
+}
+
+// PUT body: a secret that is omitted keeps the saved value of the item with
+// the same id; ids may be client-chosen UUIDs so a profile can reference a
+// connection that is new in the same request.
+export interface AgentSettingsBody {
+  connections: {
+    id: string
+    name: string
+    kind: string
+    fields: Record<string, string>
+    expires?: string // YYYY-MM-DD or RFC 3339; omitted/"" = no expiry
+  }[]
+  profiles: { id: string; name: string; connectionId: string; model: string }[]
+  taskDefaults: TaskDefaults
+  git: { id: string; host: string; name: string; email: string; username: string; token?: string }[]
+}
+
+export interface TestResult {
+  ok: boolean
+  detail?: string
+  error?: string
+}
+
+export interface ModelInfo {
+  id: string
+  name: string
+}
+
+export interface ModelsResponse {
+  models: ModelInfo[]
+  listed: boolean // false: the kind's built-in aliases
+  error?: string
+  defaultModel: string
+  defaultSource: 'connection' | 'cli'
+}

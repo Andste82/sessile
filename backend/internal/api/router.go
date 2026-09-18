@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Andste82/sessile/backend/internal/agents"
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/hosts"
@@ -60,6 +61,11 @@ type Server struct {
 	webSessions *auth.SessionStore
 	hosts       *hosts.Registry
 
+	// agents and prober back the agent settings routes (§4.13, §4.16). Set
+	// with SetAgents; nil in tests that don't exercise them.
+	agents *agents.Registry
+	prober *agents.Prober
+
 	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
 	// opId. Entries are removed once a client has had a chance to observe
 	// the terminal state — see hostops_ops.go.
@@ -75,6 +81,14 @@ func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handl
 		users: users, webSessions: webSessions, hosts: hostsRegistry,
 		ops: make(map[string]*hostopStatus),
 	}
+}
+
+// SetAgents wires the agent settings store and the vendor prober (§4.13).
+// A setter rather than more NewServer parameters: most tests construct a
+// Server without either.
+func (s *Server) SetAgents(registry *agents.Registry, prober *agents.Prober) {
+	s.agents = registry
+	s.prober = prober
 }
 
 // Router builds the Gin engine with all routes registered.
@@ -144,6 +158,12 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.DELETE("/sessions/:id/hostops/files", s.deleteHostFile)
 		authGroup.GET("/sessions/:id/hostops/ops/:opId", s.getHostopStatus)
 		authGroup.GET("/directories", s.listDirectories)
+		authGroup.GET("/agent/connection-kinds", s.listConnectionKinds)
+		authGroup.GET("/agent/settings", s.getAgentSettings)
+		authGroup.PUT("/agent/settings", s.putAgentSettings)
+		authGroup.POST("/agent/connections/test", s.testConnection)
+		authGroup.GET("/agent/connections/:id/models", s.listConnectionModels)
+		authGroup.POST("/agent/git/test", s.testGitAccount)
 	}
 
 	// Download/upload get their own routes outside authGroup's blanket

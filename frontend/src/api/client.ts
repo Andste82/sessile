@@ -1,6 +1,11 @@
 // Typed fetch wrappers around the REST API (PROJECT_PLAN.md §6).
 import type {
   AdminConfig,
+  AgentSettings,
+  AgentSettingsBody,
+  ConnectionKind,
+  ModelsResponse,
+  TestResult,
   AppConfig,
   AuthStatus,
   Credentials,
@@ -176,6 +181,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  connectionKinds: () => request<ConnectionKind[]>('/api/agent/connection-kinds'),
+  agentSettings: () => request<AgentSettings>('/api/agent/settings'),
+  putAgentSettings: (body: AgentSettingsBody) =>
+    request<AgentSettings>('/api/agent/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  testConnection: (body: { id?: string; kind: string; fields: Record<string, string> }) =>
+    request<TestResult>('/api/agent/connections/test', { method: 'POST', body: JSON.stringify(body) }),
+  connectionModels: (id: string, refresh = false) =>
+    request<ModelsResponse>(`/api/agent/connections/${id}/models${refresh ? '?refresh=1' : ''}`),
+  testGitAccount: (body: { id?: string; host: string; token?: string }) =>
+    request<TestResult>('/api/agent/git/test', { method: 'POST', body: JSON.stringify(body) }),
 
   listUsers: () => request<User[]>('/api/admin/users'),
   deleteUser: (id: string) => request<void>(`/api/admin/users/${id}`, { method: 'DELETE' }),
