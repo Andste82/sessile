@@ -18,6 +18,7 @@ if ($PSVersionTable.PSVersion -ge [version]'7.3') {
 
 function Say([string]$m) { Write-Host "sessile: $m" -ForegroundColor Cyan }
 function Stay([string]$m) {
+	Remove-Item -LiteralPath '.env.json', '.env' -Force -ErrorAction SilentlyContinue
 	Write-Host ''
 	Write-Host "sessile: $m" -ForegroundColor Yellow
 	Write-Host "You are in the task folder, $TaskDir."
@@ -49,6 +50,10 @@ git -C repo config user.email 'ob@example.com'
 $env:Path = "$env:Path;$env:USERPROFILE\.local\bin"
 if (-not (Get-Command 'codex' -ErrorAction SilentlyContinue)) {
 	Stay 'codex is not installed on this host.'
+}
+
+if (Test-Path -LiteralPath '.restart-fresh') {
+	Remove-Item -LiteralPath '.restart-fresh', '.agent-started' -Force -ErrorAction SilentlyContinue
 }
 
 if (Test-Path -LiteralPath '.agent-started') {

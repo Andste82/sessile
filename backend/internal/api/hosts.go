@@ -94,7 +94,7 @@ func validateHostBody(b hostBody) error {
 		return errors.New("customCommand is required when terminalType is \"custom\"")
 	}
 	if !validTasksDir(b.TasksDir) {
-		return errors.New("tasksDir must be a path without \"..\" or control characters")
+		return errors.New("tasksDir must be a path without \"..\", quotes, commas or control characters")
 	}
 	return nil
 }
@@ -106,7 +106,7 @@ func validTasksDir(p string) bool {
 	if p == "" {
 		return true
 	}
-	if len(p) > 256 || strings.ContainsAny(p, "\x00\r\n'\"`$\\") {
+	if len(p) > 256 || strings.ContainsAny(p, "\x00\r\n'\"`$\\,") {
 		return false
 	}
 	for _, part := range strings.Split(p, "/") {

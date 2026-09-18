@@ -1,10 +1,25 @@
 package tasks
 
-import "os"
+import (
+	"os"
+)
+
+// genericDevcontainer is sessile's own devcontainer config (§4.12.3), for a
+// repo without one.
+var genericDevcontainer = mustTemplateFile("templates/generic-devcontainer.json")
+
+func mustTemplateFile(name string) []byte {
+	b, err := templateFS.ReadFile(name)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
 
 // installFor returns the user-space installer the bootstrap runs when an
-// agent's CLI is missing (§4.12.5), "" when there is none yet.
-func installFor(binary string) string {
+// agent's CLI is missing (§4.12.5), "" when there is none. inContainer is
+// true when it runs inside a devcontainer.
+func installFor(binary string, inContainer bool) string {
 	return ""
 }
 

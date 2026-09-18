@@ -161,6 +161,23 @@ func (s *Server) restartSession(c *gin.Context) {
 		return
 	}
 
+	// A task session may ask for more than a restart (§4.12.6): rebuild its
+	// devcontainer, or start the agent fresh. The body is optional; an empty
+	// one is an ordinary restart.
+	var opts tasks.RestartOptions
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&opts); err != nil {
+			respondError(c, http.StatusBadRequest, CodeValidation, "invalid request body")
+			return
+		}
+	}
+	if s.tasks != nil && (opts.RebuildContainer || opts.Fresh) {
+		if info, err := s.manager.Get(id, userID); err == nil && info.TaskID != "" {
+			s.tasks.RequestRestart(info.TaskID, opts)
+			defer s.tasks.ClearRestart(info.TaskID)
+		}
+	}
+
 	info, err := s.manager.Restart(id, userID)
 	if err != nil {
 		if s.respondHostKeyError(c, err) {

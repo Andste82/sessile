@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -48,6 +49,9 @@ type Service struct {
 	// WorkspaceTasksDir is a local-host task's folder root relative to the
 	// workspace (§4.12).
 	WorkspaceTasksDir string
+
+	mu      sync.Mutex
+	pending map[string]RestartOptions // by task id
 }
 
 // Task is a stored task, decoded.
@@ -84,9 +88,6 @@ func (s *Service) Get(userID, id string) (Task, error) {
 func (s *Service) Check(userID string, spec Spec) (hosts.Host, error) {
 	if err := spec.Validate(); err != nil {
 		return hosts.Host{}, err
-	}
-	if spec.Devcontainer != nil {
-		return hosts.Host{}, invalid("devcontainers are not supported yet")
 	}
 	store, err := s.Agents.For(userID)
 	if err != nil {
@@ -188,6 +189,40 @@ func (s *Service) Discard(id string) {
 	}
 }
 
+// RestartOptions are what a user may ask of a task's next start (§4.12.6):
+// rebuild its devcontainer, or begin a new agent conversation instead of
+// resuming.
+type RestartOptions struct {
+	RebuildContainer bool `json:"rebuildContainer"`
+	Fresh            bool `json:"fresh"`
+}
+
+// RequestRestart records options for the task's next start; Launch consumes
+// them, so they apply exactly once.
+func (s *Service) RequestRestart(taskID string, o RestartOptions) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending == nil {
+		s.pending = map[string]RestartOptions{}
+	}
+	s.pending[taskID] = o
+}
+
+// ClearRestart drops options whose restart didn't happen.
+func (s *Service) ClearRestart(taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pending, taskID)
+}
+
+func (s *Service) takeRestart(taskID string) RestartOptions {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	o := s.pending[taskID]
+	delete(s.pending, taskID)
+	return o
+}
+
 // SetSummary records the agent's status line (§4.17.3).
 func (s *Service) SetSummary(taskID, summary string) error {
 	return s.DB.SetTaskSummary(taskID, summary)
@@ -245,9 +280,21 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 	// files renders the folder for one target; displayDir is the folder as
 	// the target itself names it, which is what the bootstrap and the
 	// instructions use.
+	restart := s.takeRestart(t.ID)
 	files := func(displayDir string, windows bool) func(string) ([]file, error) {
 		return func(string) ([]file, error) {
-			return buildFiles(t, displayDir, windows, ln, identity, accounts, env, notes, tools)
+			out, err := buildFiles(t, displayDir, windows, ln, identity, accounts, env, notes, tools)
+			if err != nil {
+				return nil, err
+			}
+			// One-shot markers the bootstrap consumes (§4.12.3, §4.12.6).
+			if restart.RebuildContainer {
+				out = append(out, file{".rebuild-container", nil, 0o600})
+			}
+			if restart.Fresh {
+				out = append(out, file{".restart-fresh", nil, 0o600})
+			}
+			return out, nil
 		}
 	}
 
@@ -355,18 +402,59 @@ func writeFiles(fs FS, dir string, build func(string) ([]file, error)) error {
 // buildFiles renders every file of a task folder for one start (§4.12.2).
 func buildFiles(t Task, dir string, windows bool, ln launch, identity agents.GitAccount, accounts []agents.GitAccount,
 	env [][2]string, notes []Note, tools string) ([]file, error) {
-	bootName, bootTemplate, envName, renderEnvFile := "task.sh", "task.sh.tmpl", ".env", renderEnv
-	if windows {
-		bootName, bootTemplate, envName, renderEnvFile = "task.ps1", "task.ps1.tmpl", ".env.json", renderEnvJSON
-	}
-	boot, err := render(bootTemplate, bootstrapData{
+	dc := t.Spec.Devcontainer
+	data := bootstrapData{
 		ID: t.ID, Dir: dir, Repo: t.Spec.Repo,
 		GitName: identity.Name, GitEmail: identity.Email,
-		Agent: ln.def.Binary, Install: installFor(ln.def.Binary), InstallPS: installForPS(ln.def.Binary),
-		First: ln.first, Resume: ln.resume,
-	})
-	if err != nil {
+		Agent: ln.def.Binary, Install: installFor(ln.def.Binary, dc != nil), InstallPS: installForPS(ln.def.Binary),
+		First: ln.first, Resume: ln.resume, Devcontainer: dc,
+	}
+	var files []file
+	add := func(name, tmpl string, perm uint32) error {
+		out, err := render(tmpl, data)
+		if err != nil {
+			return err
+		}
+		files = append(files, file{name, out, perm})
+		return nil
+	}
+	addEnv := func(name string, fn func([][2]string) ([]byte, error)) error {
+		out, err := fn(env)
+		if err != nil {
+			return err
+		}
+		files = append(files, file{name, out, 0o600})
+		return nil
+	}
+
+	// The host side: task.sh + agent.sh on a POSIX host, task.ps1 on Windows.
+	// Wherever the agent itself runs POSIX — any devcontainer — agent.sh and
+	// the POSIX .env go along too.
+	if windows {
+		if err := add("task.ps1", "task.ps1.tmpl", 0o700); err != nil {
+			return nil, err
+		}
+		if err := addEnv(".env.json", renderEnvJSON); err != nil {
+			return nil, err
+		}
+	} else if err := add("task.sh", "task.sh.tmpl", 0o700); err != nil {
 		return nil, err
+	}
+	if !windows || dc != nil {
+		if err := add("agent.sh", "agent.sh.tmpl", 0o700); err != nil {
+			return nil, err
+		}
+		if err := addEnv(".env", renderEnv); err != nil {
+			return nil, err
+		}
+	}
+	if dc != nil && dc.Mode != "repo" {
+		files = append(files, file{".devcontainer-generic/devcontainer.json", genericDevcontainer, 0o600})
+	}
+
+	instrDir := dir
+	if dc != nil {
+		instrDir = "/sessile/task"
 	}
 	gitHosts, github := gitHostsList(accounts)
 	var always []Note
@@ -376,7 +464,7 @@ func buildFiles(t Task, dir string, windows bool, ln launch, identity agents.Git
 		}
 	}
 	instr, err := render("instructions.md.tmpl", instructionsData{
-		Name: t.Spec.Name, Dir: dir, Repo: t.Spec.Repo,
+		Name: t.Spec.Name, Dir: instrDir, Repo: t.Spec.Repo, Devcontainer: dc != nil,
 		GitHosts: gitHosts, GitHub: github,
 		Notes: len(notes) > 0, AlwaysNotes: always, Tools: tools,
 		HasRequest: t.Spec.Request != "", Summary: t.Summary,
@@ -384,20 +472,14 @@ func buildFiles(t Task, dir string, windows bool, ln launch, identity agents.Git
 	if err != nil {
 		return nil, err
 	}
-	envFile, err := renderEnvFile(env)
-	if err != nil {
-		return nil, err
-	}
 	spec, err := json.MarshalIndent(t.Spec, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-	files := []file{
-		{"task.json", append(spec, '\n'), 0o600},
-		{ln.def.InstructionsFile, instr, 0o600},
-		{envName, envFile, 0o600},
-		{bootName, boot, 0o700},
-	}
+	files = append(files,
+		file{"task.json", append(spec, '\n'), 0o600},
+		file{ln.def.InstructionsFile, instr, 0o600},
+	)
 	if t.Spec.Request != "" {
 		files = append(files, file{"PROMPT.md", []byte(t.Spec.Request + "\n"), 0o600})
 	}

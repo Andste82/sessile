@@ -72,19 +72,21 @@ type bootstrapData struct {
 	Install           string // the registry's user-space installer (sh), "" for none
 	InstallPS         string // the same for Windows (PowerShell)
 	First, Resume     []string
+	Devcontainer      *Devcontainer
 }
 
 // instructionsData fills instructions.md.tmpl.
 type instructionsData struct {
-	Name, Dir   string
-	Repo        *Repo
-	GitHosts    string
-	GitHub      bool
-	Notes       bool
-	AlwaysNotes []Note
-	Tools       string
-	HasRequest  bool
-	Summary     string
+	Name, Dir    string
+	Repo         *Repo
+	Devcontainer bool
+	GitHosts     string
+	GitHub       bool
+	Notes        bool
+	AlwaysNotes  []Note
+	Tools        string
+	HasRequest   bool
+	Summary      string
 }
 
 // Note is one of the user's notes as a task sees it (§4.14).

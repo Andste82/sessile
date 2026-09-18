@@ -1,0 +1,76 @@
+#!/bin/sh
+# Starts the task's agent (PROJECT_PLAN.md §4.12.4), on the host or inside
+# the task's devcontainer. Written by sessile for task {{q .ID}}.
+
+if [ -n "$SESSILE_IN_CONTAINER" ]; then
+	TASK_DIR=/sessile/task
+else
+	TASK_DIR={{q .Dir}}
+fi
+cd "$TASK_DIR" || exit 1
+
+say() { printf '\033[36msessile: %s\033[0m\n' "$1"; }
+stay() {
+	rm -f .env
+	printf '\n\033[33msessile: %s\033[0m\n' "$1"
+	printf 'You are in the task folder, %s.\n' "$TASK_DIR"
+	exec "${SHELL:-/bin/sh}" -l
+}
+
+# Connection, Git and agent environment: loaded, then removed from disk (§4.12.9).
+if [ -f .env ]; then
+	set -a
+	. ./.env
+	set +a
+	rm -f .env
+fi
+
+if [ -n "$SESSILE_IN_CONTAINER" ]; then
+	# Inside the container everything sessile brings lives in the task folder,
+	# whoever the container's user is (§4.12.3): the agent install survives a
+	# rebuild, and so does its history, which is what makes resume work.
+	export PATH="$PATH:$TASK_DIR/.tools/bin:$HOME/.local/bin"
+	export CLAUDE_CONFIG_DIR="$TASK_DIR/.agent/claude"
+	export CODEX_HOME="$TASK_DIR/.agent/codex"
+	export GEMINI_CLI_HOME="$TASK_DIR/.agent/gemini"
+	mkdir -p "$CLAUDE_CONFIG_DIR" "$CODEX_HOME" "$GEMINI_CLI_HOME"
+	if [ "$(id -u)" = 0 ]; then
+		say "this container runs as root: files it creates in the repo will be owned by root on the host"
+	fi
+else
+	# Where the user-space installers put agents; after the user's own PATH.
+	export PATH="$PATH:$HOME/.local/bin"
+fi
+
+if ! command -v {{q .Agent}} >/dev/null 2>&1; then
+{{- if .Install}}
+	say {{q (print "installing " .Agent)}}
+	{{.Install}} || stay {{q (print "installing " .Agent " failed; see above.")}}
+	command -v {{q .Agent}} >/dev/null 2>&1 || stay {{q (print .Agent " was installed but isn't on PATH.")}}
+{{- else}}
+	stay {{q (print .Agent " is not installed here.")}}
+{{- end}}
+fi
+
+if [ -f .restart-fresh ]; then
+	rm -f .restart-fresh .agent-started
+fi
+
+if [ -f .agent-started ]; then
+	say {{q (print "resuming " .Agent)}}
+	started=$(date +%s)
+	{{argv .Resume}}
+	status=$?
+	# A resume that fails straight away found nothing to resume (the history is
+	# gone): start a new conversation in the same folder instead.
+	if [ "$status" -ne 0 ] && [ $(( $(date +%s) - started )) -lt 10 ]; then
+		say {{q (print "nothing to resume; starting " .Agent " again")}}
+		{{argv .First}}
+	fi
+else
+	touch .agent-started
+	say {{q (print "starting " .Agent)}}
+	{{argv .First}}
+fi
+
+stay {{q (print .Agent " has exited.")}}

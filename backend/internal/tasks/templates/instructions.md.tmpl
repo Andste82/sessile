@@ -9,6 +9,12 @@ terminal manager. The user talks to you in this terminal.
 {{- if .Repo}}
 - The main repository is cloned in `repo/` ({{.Repo.URL}}{{if .Repo.Ref}}, `{{.Repo.Ref}}`{{end}}).
 {{- end}}
+{{- if .Devcontainer}}
+- You are running inside the repository's devcontainer. `repo/` here is the
+  same checkout as the container's workspace folder (usually
+  `/workspaces/repo`); run builds and tests from the workspace folder, where
+  the devcontainer config expects them.
+{{- end}}
 - If you need another repository, clone it into `repos/<name>/`.
 {{- if .GitHosts}}
 - git is already set up to authenticate over https for {{.GitHosts}}, through
