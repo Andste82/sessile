@@ -7,7 +7,11 @@ operational guidance for working in this repo.
 A browser-based, multi-user terminal session manager (tmux-like) for SSH-reachable
 hosts. Users log in, configure their own SSH hosts, and open persistent terminal
 sessions against them; an admin may additionally allow local-shell sessions on the
-server itself. Backend: Go + Gin + gorilla/websocket + creack/pty +
+server itself. Since v0.8 a session can also be a **task** (plan §4.12): a
+task folder on the target, the main repo cloned into it, optionally a
+devcontainer, and the user's own coding agent (Claude Code, Codex, Gemini)
+started in plan mode, with the user's notes as context and their scripts as
+MCP tools. Backend: Go + Gin + gorilla/websocket + creack/pty +
 golang.org/x/crypto (ssh, bcrypt) + modernc.org/sqlite + gopkg.in/yaml.v3.
 Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
 
@@ -28,6 +32,25 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
   boundary here — any endpoint that takes an arbitrary command string or
   acts on more than one explicit src/dst/path argument. If a change drifts
   toward that, stop.
+  **v0.8 widened the scope on purpose** (plan §1, §4.12–§4.17): tasks,
+  agent connections, notes, script extensions, Git accounts, and the
+  `sessile` MCP tunnel are in. The boundary above still holds inside them:
+  - A task is a typed `TaskSpec` rendered into the fixed templates in
+    `internal/tasks/templates`, with every field validated and quoted.
+    Agents come from the built-in registry with **constant argv**; the
+    request and env go to files. No API field ever becomes a command line.
+  - Devcontainers are *used* through the host's `devcontainer` CLI
+    (`up`/`exec`, a fixed set of mounts), never managed.
+  - Agents run on the task's host (or its devcontainer), **never on the
+    sessile server**, and sessile never drives a host from the server.
+  - Sessile has **no LLM client**. The only vendor calls it makes are a
+    connection Test and a model list, over plain HTTP. A Claude
+    subscription token is only ever used by Claude Code running
+    interactively in a session — never for an API call, never with
+    `claude -p` on sessile's behalf.
+  - Agent credentials are tokens/API keys the user gave sessile
+    (connections). Don't add host-login checks, copy login files, or mount
+    them.
 - **Security posture, by design, not by accident:**
   - Host credentials (SSH password / private key) are stored **inline,
     plaintext** in each user's `hosts.yml` — the operator is the trusted owner
@@ -44,7 +67,21 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
     discarded.
   - Every session/host lookup must be scoped to the authenticated user; a
     client-supplied user id is never trusted (mirrors the path-validation
-    precedent below).
+    precedent below). The same goes for tasks, notes, scripts, connections
+    and Git accounts.
+  - **Scripts run on the sessile server, for every user**, as sessile's OS
+    user — equal to shell access there, documented as such (plan §11), and
+    never to be described as a sandbox. `allowAgentScripts` is the
+    operator's off switch.
+  - Secrets that belong to sessile (script settings, connection tokens, Git
+    tokens) are never returned by the API and never reach an LLM through
+    sessile. Script output is redacted before it reaches the agent, the UI
+    or the logs. Script code (`scripts/<name>/`) and its settings
+    (`settings/<name>.yml`) are stored apart, so an exported zip can't
+    leak a token. `agent.yml` and script settings are plaintext like
+    `hosts.yml` (same `// TODO(security):`).
+  - Write-effect script calls wait for the user's approval in sessile; the
+    agent's own permission mode can't bypass that.
 - **Stack:** Do not add GORM, sqlc, zap, viper, socket.io, or an E2E test
   framework. `golang.org/x/crypto` (bcrypt, ssh), `gopkg.in/yaml.v3`, and
   `github.com/pkg/sftp` (host file operations over the session's existing
@@ -55,9 +92,16 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
   investigated, benchmarked against alternatives (real OpenSSH, a Rust
   `russh`-based helper), and deliberately kept as-is for now; not a bug to
   silently "fix" by swapping the SSH client. See PROJECT_PLAN.md §11.1.
+  No LLM or MCP SDK: the MCP server is a small hand-written JSON-RPC handler
+  (`internal/mcp`) plus the `cmd/sessile-mcp` stdio bridge, cross-compiled
+  with CGO off and embedded. User scripts are plain-HTTP Python
+  (`requests`/`urllib`), no vendor SDKs.
 - **Protocol:** Binary WS frames = terminal bytes; text frames = JSON control
-  messages exactly as specified in PROJECT_PLAN.md §5. Never change the wire
-  format without updating the plan.
+  messages exactly as specified in PROJECT_PLAN.md §5 (task events: §5.3).
+  Never change the wire format without updating the plan. The MCP tunnel is
+  not a WS protocol: it rides the task session's own `*ssh.Client` as a
+  reverse forward (a 0600 Unix socket in the task dir on Linux, a loopback
+  TCP port on Windows) — no second dial, no new trust decision.
 - **Security:** Every path an API caller supplies **for the local host** must
   pass the workspace validation in `internal/session/workspace.go` (plan §4.5)
   — a session's starting directory, the directory browser, every local file
@@ -76,12 +120,15 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
   bounds the API.
   Shells only from the allowlist (local-host sessions only). Host keys are
   pinned per-host; changes require explicit user confirmation (see above).
+  A local-host task's folder (`<workspace>/.sessile/tasks/…`) passes the
+  same workspace validation; an SSH task's `tasksDir` is exempt for the same
+  reason every SSH path is.
 - **Concurrency:** Exactly one writer goroutine per WebSocket connection.
   Broadcasts must never block on a slow client. This applies equally to
   SSH-backed sessions — they reuse the same `Manager`/`ws.Client` machinery as
   local sessions, not a parallel implementation.
-- Follow the milestone order in plan §12/§12b/§12c. Finish + verify a
-  milestone before starting the next.
+- Follow the milestone order in plan §12/§12b/§12c/§12d/§12e. Finish + verify
+  a milestone before starting the next.
 
 ## Commands
 ```bash
@@ -101,6 +148,11 @@ make docker          # multi-stage image build
 - Manual smoke test for auth/host changes: bootstrap admin on a fresh
   `./data` → add an SSH host → confirm the host-key trust prompt appears on
   first connect, not a silent connection.
+- Manual smoke test for task changes: create a task on a host with a repo →
+  the clone runs with the sessile Git account → the agent starts in plan mode
+  having read the task instructions → a script tool call works through the
+  tunnel, and a write call waits for approval → restart the server, Restart
+  the task, and the agent's conversation resumes.
 
 ## Conventions
 - Go: stdlib `log/slog`, wrapped errors (`fmt.Errorf("…: %w", err)`), table-

@@ -14,6 +14,16 @@ verify each milestone's acceptance criteria before moving on.
 > Sections below are updated in place to describe the system as it now
 > stands; §12 keeps the original milestone history for record, and §12b holds
 > the new one.
+>
+> **v0.8 scope change.** Starting at M30 (§12e), sessile also sets sessions
+> up **for a task**: a task folder on the target, the main repo cloned into
+> it, optionally a devcontainer, and the user's own coding agent (Claude
+> Code, Codex or Gemini) started in plan mode, with the user's notes as
+> context and the user's scripts as tools. The agent runs on the task's
+> host, never on the sessile server. The API still never carries a command
+> string: tasks are typed specs rendered into fixed templates (§4.12,
+> §14.8). The design record, with the ideas it started from and the
+> alternatives it rejected, is `docs/dev/proposals/0.8-tasks-and-agents.md`.
 
 ---
 
@@ -45,6 +55,25 @@ verify each milestone's acceptance criteria before moving on.
   local or SSH, Linux or Windows (§4.10). Both ride the session's own identity
   and, for SSH, its own already-trusted connection — neither is a general
   remote-command or file-transfer tool, see Out of Scope below
+- **Tasks** (§4.12): a session set up for a piece of work — its own folder
+  on the target, the main repo cloned into it, optionally a devcontainer
+  (used through the host's `devcontainer` CLI, never managed), and the
+  user's coding agent (Claude Code, Codex, Gemini) installed if missing and
+  started in plan mode. Linux, Windows and local targets. One agent session
+  per task, from planning to the PR
+- **Agent connections** (§4.13): the user's agent credentials as tokens or
+  API keys only — Claude subscription token, Anthropic API, Bedrock,
+  Foundry, OpenAI API, ChatGPT Business/Enterprise token, Gemini API,
+  Vertex — entered through a guided per-agent dialog, with model lists
+  where the vendor allows it
+- **Notes and scripts** (§4.14, §4.15): per-user markdown notes as agent
+  context, and per-user Python scripts installed as zip extensions whose
+  functions become the agent's tools. Scripts run **on the sessile server**
+  and reach the agent through a `sessile` MCP server tunnelled over the
+  task's own SSH connection (§4.17); their credentials never leave the
+  server
+- **Git accounts** (§4.16): per-user git identity and tokens, importable
+  from a host, handed to a task's git through environment-only config
 
 ### Explicitly Out of Scope (do NOT build these, even partially)
 - An in-app text editor for files reached through §4.10 — the read/write path
@@ -52,8 +81,16 @@ verify each milestone's acceptance criteria before moving on.
   separate decision layered on top, not implied by this one
 - A generic remote-command endpoint, or any file operation that takes more
   than one explicit src/dst/path — §4.10's operations are a fixed, named set
-  for exactly that reason
-- Docker/Kubernetes management
+  for exactly that reason. Tasks (§4.12) don't change this: the API takes a
+  typed task spec, rendered into fixed templates, never a command string
+- Running agents on the sessile server, or driving hosts from it over SSH —
+  a task's agent runs on the task's own host (§4.17)
+- An LLM client inside sessile: planning and work both happen in the user's
+  own agent CLI, and sessile never calls a model API with a user's
+  credentials beyond a connection test and a model list (§4.13)
+- Docker/Kubernetes management — a task *uses* the host's `devcontainer`
+  CLI (`up`/`exec`, a fixed set of mounts); it never builds images, lists
+  containers or cleans them up
 - RDP/VNC, host monitoring (CPU/RAM/disk/service dashboards), server inventory
 - Encryption-at-rest for stored host credentials (tracked as a TODO — see
   §11 — not built in v0.4)
@@ -81,6 +118,9 @@ verify each milestone's acceptance criteria before moving on.
 | Logging | stdlib `log/slog` (JSON handler) | No dependency needed |
 | Config | CLI flags via stdlib `flag`, with env-var fallbacks, plus `config.yml`/`users.yml`/`hosts.yml` | See §9 |
 | Frontend embedding | `embed.FS` (`//go:embed`) | Single-binary distribution |
+| Agent tools (MCP) | Hand-written JSON-RPC handler (`initialize`, `tools/list`, `tools/call`) + `cmd/sessile-mcp` stdio bridge, cross-compiled and embedded | No MCP SDK; three methods don't justify one (§4.17) |
+| Scripts runtime | `python3` + `venv` on the server (both runtime images) | User scripts are plain-HTTP Python (`requests`/`urllib`), no vendor SDKs (§4.15) |
+| LLM access | **None** | The user's agent CLI does all model work; sessile only tests connections and lists models over plain HTTP (§4.13) |
 
 Do **not** add GORM, sqlc, zap, viper, socket.io, or an E2E test framework.
 
@@ -206,6 +246,20 @@ backend/
       sessions.go            # CRUD queries (now user/target scoped)
     config/
       config.go             # CLI flags (--data-dir, --shells, …)
+    tasks/                  # TaskSpec validation, bootstrap templates, tasks table (§4.12)
+      spec.go
+      bootstrap.go            # renders task.sh / task.ps1 from embedded templates
+      templates/              # task.sh.tmpl, task.ps1.tmpl, instructions.md.tmpl,
+                              # generic devcontainer.json
+      registry.go             # built-in agents: argv, installers, resume, env (§4.12.4)
+    agents/                 # agent.yml: connections, profiles, task defaults, Git accounts (§4.13, §4.16)
+      connections.go          # the fixed connection kinds, Test, model lists
+      git.go                  # Git accounts, Test, import from host
+    notes/                  # per-user notes store (§4.14)
+    scripts/                # zip extensions, settings, runner, venv cache (§4.15)
+      examples/               # embedded example zips (jira, jenkins, artifactory)
+    mcp/                    # MCP handler + per-task tunnel over the session's *ssh.Client (§4.17)
+  cmd/sessile-mcp/          # stdio ↔ socket bridge uploaded into task dirs (§4.17.3)
 frontend/                   # see §7
 Dockerfile
 docker-compose.yml
@@ -876,6 +930,969 @@ field rather than a second endpoint, since both are the same kind of change:
 metadata on a session, applied whatever its status, published to every
 attached browser over the event channel (§5.1).
 
+### 4.12 Tasks
+
+A **task** is a session set up for a piece of work: its own folder on the
+target, the main repo cloned into it, optionally a devcontainer, and the
+user's coding agent (Claude Code, Codex or Gemini) started in it. It's the
+one place a session runs something other than the target's configured
+shell, and even there the API never carries a command string (§1, §14.8).
+
+```
+  ┌──────────────────── Agent section (sidebar, below Hosts) ────────────────────┐
+  │  New task…   Notes (md)   Scripts (+ Examples, Configure)   Connections, profiles │
+  └───────────────────────────────────────────────────────────────────────────────┘
+
+  New task form: name · host · main repo (+ref) · agent profile · devcontainer · mode
+        │
+        ▼  POST /api/tasks
+  SFTP: task dir, task.json, instructions, notes/, .env, task.sh|ps1, sessile-mcp
+        │
+        ▼  session (group "Tasks"), fixed start command, SSH tunnel for MCP opened
+  clone main repo → devcontainer up → install agent if missing → agent in PLAN mode
+        │
+        ▼  one conversation, in the terminal; the user types the request there:
+  investigate (repo, notes, scripts via MCP, gh, web) → ask the user → plan
+  → user approves the plan in the CLI → implement → PR → check CI (scripts / gh) → …
+```
+
+A task is **one agent session from the first question to the merged PR**.
+There's no separate planner and no hand-over. The CLI's own plan
+mode and plan approval are the "plan, then go" step.
+
+The form sets the task up and has an **optional Request field** ("Fix
+DBG-142, the print crash on Android 14"). If it's filled in, it becomes the
+agent's first message. If it's empty, the agent starts in plan mode and
+waits, and the user types the request in the terminal. The task
+**name** (e.g. "DBG-142 print crash") is the session name, and it's in the
+agent's instructions as the task's title. The user picks the host and, for
+a devcontainer, the main repo, because the container config lives in the
+repo and has to exist before the container starts. The agent can clone
+further repos itself whenever it needs them.
+
+#### 4.12.1 TaskSpec
+
+```json
+{
+  "name": "DBG-142 print crash",
+  "hostId": "…",                      // or "target":"local"; preselected from the user's default task host
+  "repo": { "url": "https://github.com/moonlight-stream/moonlight-android", "ref": "main" },  // optional without devcontainer
+  "devcontainer": { "mode": "auto", "dockerSocket": false },   // omit for no devcontainer
+  "agent": { "profileId": "…", "model": "", "mode": "plan" },
+  "request": "Fix DBG-142, the print crash on Android 14"      // optional; written to PROMPT.md
+}
+```
+
+The Git account isn't a field. Sessile picks the user's account whose
+`host` matches the repo URL's host (§4.16), and the form shows which one
+it will use ("github.com as kmreisi" / "host's own credentials"). With no
+repo, the task gets all of the user's Git accounts, so the agent can clone
+whatever it decides it needs.
+
+The group is always `"Tasks"` (the user can re-group later with the
+existing PATCH). Validation happens server-side:
+- `name`: free text, 1–64 chars, the same rule as a session name, because
+  it **is** the session name (and a later rename is the existing session
+  PATCH). The task id is `<slug(name)>-<6 hex>`, e.g.
+  `dbg-142-print-crash-3f9a1c`. That's the folder name
+  `<tasksDir>/<task id>` and the id in `task.json`. The slug is lowercase
+  `[a-z0-9-]`, cut to 40 chars.
+- `repo.url`: `https://`, `ssh://` or `git@host:path` only, with no
+  whitespace and no leading `-`. `ref` must pass `git check-ref-format`
+  rules.
+- **`devcontainer` requires `repo`**: the container config lives in the
+  main repo, so it has to be cloned before the container can start. `mode`
+  is `auto|repo|generic`.
+- `model` is empty (default) or passes the model-id rule (§4.12.7). The
+  `agent.profileId` must belong to the caller. `mode` is `plan|normal`.
+  `request` is optional, ≤ 64 KiB.
+
+#### 4.12.2 Bootstrap: one template per platform
+
+Files written over the session's own SFTP connection (the §4.10
+`FileTransport`, no second dial):
+
+```
+<tasksDir>/<task-id>/                 # the agent's working directory
+  CLAUDE.md | AGENTS.md | GEMINI.md   # sessile's instructions for this task (§4.17.1), named for the agent
+  task.json          # the spec, for humans and restart
+  PROMPT.md          # the request, only if one was given
+  notes/             # copies of the user's notes (no secrets by design, §4.14)
+  .env               # KEY=VALUE: connection env + git credential env (§4.16) + MCP token — removed after load (§4.12.9)
+  task.sh | task.ps1 # rendered from the embedded template for targetOS
+  .tools/            # sessile-mcp helper (§4.17.3); the agent install inside containers (§4.12.5)
+  .agent/            # agent state inside containers (§4.12.3)
+  repo/              # the main repo, if given
+  repos/<name>/      # further repos the agent clones itself (told so in the instructions)
+```
+
+Both templates do the same steps, and each step is **idempotent**, so
+restart re-runs the whole thing:
+
+| Step | `task.sh` (Linux, local) | `task.ps1` (Windows) |
+|---|---|---|
+| env | `set -a; . ./.env; set +a; rm -f .env` | parse `.env` → `$env:K=V`; `Remove-Item .env` |
+| clone | if a repo is given: `[ -d repo/.git ] \|\| git clone -- "$URL" repo` (credentials from env, §4.16) | `if (-not (Test-Path repo\.git)) { git clone -- $Url repo }` |
+| identity | `git -C repo config user.name/user.email` from the Git account | same |
+| checkout | `git -C repo checkout "$REF"` | `git -C repo checkout $Ref` |
+| devcontainer | `devcontainer up --workspace-folder repo [--config generic]` + the fixed mounts of §4.12.3 | same CLI (Docker Desktop on the host) |
+| agent install | if the agent CLI isn't on `PATH`: run the registry's **user-space installer** (§4.12.5), inside the container when devcontainer is on | same, with the registry's Windows installer |
+| agent | cwd = task dir. First start: `<argv from registry>` for the mode, with the sessile MCP server configured (§4.17.3); `.agent-started` marker written. **Restart** (marker present): the registry's **resume** argv (§4.12.6). In `devcontainer exec` when on | same, `& <argv>` |
+| after the agent / on failure | print the failed step, `exec $SHELL -l` in the task dir | print the failed step, `powershell -NoExit` in the task dir |
+
+Start command: `sshpty.Target` and the local `terminal.Start` gain an
+optional `StartCommand`, set **only** by `internal/tasks`, to one of two
+constants:
+- `sh <dir>/task.sh`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File <dir>\task.ps1`
+
+The existing `wrapWithPIDRecording` wraps these like any shell, so the
+process tree keeps working on both OSes.
+
+Env is loaded **first** now, because the clone needs the git credential
+env.
+
+Windows notes:
+- SFTP returns `/C:/Users/x/…`, which the template converts to a native
+  path.
+- Git for Windows must be on `PATH`. A missing `git`, `devcontainer` or
+  agent CLI is reported by name, with the task left at a PowerShell prompt
+  in the task dir.
+
+#### 4.12.3 Devcontainers
+
+Devcontainers are a complete feature in v0.8, not a preview. The design
+makes the container **independent of who its user is**. Everything sessile
+brings (task files, agent login, agent binary, git credentials) sits at
+fixed `/sessile/...` paths or in env, so nothing depends on the
+container user's name or home. Any image works, and improvements build on
+top of that.
+
+**Which config.** `devcontainer: { mode: "auto" | "repo" | "generic", dockerSocket }`:
+- `repo`: the repo's own config (`.devcontainer/devcontainer.json`,
+  `.devcontainer.json`, or `.devcontainer/<name>/devcontainer.json`, where
+  the first one found wins, the same order as the CLI). If there is none,
+  the step fails.
+- `generic`: sessile's own config, embedded in the binary and written to
+  `<task dir>/.devcontainer-generic/devcontainer.json`, then passed with
+  `devcontainer up --config`. It's a general-purpose base image
+  (`mcr.microsoft.com/devcontainers/base:ubuntu`) with git, curl, and node
+  (for npm-based agents) as devcontainer features. It works for any repo,
+  including one with no devcontainer setup.
+- `auto` (the default): `repo` if the repo has a config, otherwise
+  `generic`. The task form shows which one was picked, after the clone.
+
+**Fixed mounts.** The repo is the workspace, mounted by the CLI as usual.
+Sessile adds its own `--mount` arguments. They're a fixed set, never taken
+from the user:
+
+| Mount | Source (host) | Target (container) | When |
+|---|---|---|---|
+| Task dir | `<tasksDir>/<task-id>` | `/sessile/task` | always: instructions, `task.json`, `notes/`, `.tools/`, the MCP socket |
+| Docker socket | `/var/run/docker.sock` (Windows: `//./pipe/docker_engine`) | `/var/run/docker.sock` | `dockerSocket: true` |
+
+The agent's working directory in the container is `/sessile/task`, the
+same task dir as on the host. The main repo appears there as `repo/`, and
+also at the CLI's usual workspace path (`/workspaces/repo`). Both are the
+same bind mount, so they show the same files. The instructions file says
+to run builds from the workspace path, where the repo's devcontainer config
+expects them.
+
+**Fixed env** (`devcontainer exec --remote-env`):
+
+| Variable | Purpose |
+|---|---|
+| `SESSILE_TASK_DIR=/sessile/task` | where the prompt is |
+| `PATH=/sessile/task/.tools/bin:$PATH` | agent installed per task (§4.12.5). It survives a container rebuild, because it lives in the task folder |
+| the agent's state-dir variable pointing into the task folder: `CLAUDE_CONFIG_DIR=/sessile/task/.agent/claude`, `CODEX_HOME=/sessile/task/.agent/codex`, `GEMINI_CLI_HOME=/sessile/task/.agent/gemini` (`CLAUDE_CONFIG_DIR` isn't formally documented; verify in M34) | the agent's history and settings live in the task folder, so resume survives a container rebuild, whatever the container user is |
+| connection env (§4.13), git credential env (§4.16), model env (§4.12.7) | as on a host |
+
+So there's no `read-configuration` lookup of the remote user and no guess
+at a home directory.
+
+**File ownership.** On Linux the devcontainer CLI remaps a non-root
+container user's UID to the host user's (`updateRemoteUserUID`, on by
+default), so files in the repo and the task dir stay owned by the host
+user. A container that runs as **root** would leave root-owned files on
+the host. The `generic` config uses a non-root user (`vscode`) for that
+reason. For a `repo` config that runs as root, the task form shows a hint.
+Docker Desktop (Windows) doesn't have this problem.
+
+**Docker socket.** It's **root on the host** for anything inside the
+container. It's off by default, a per-task checkbox with a warning, and
+meant for repos whose dev workflow runs `docker` itself.
+
+**Restart.** `devcontainer up` reuses an existing container. Mounts and the
+config only change when the container is recreated, so "Restart" offers
+**Rebuild container** (`--remove-existing-container`). The agent install
+in `.tools/` and the agent's history in `.agent/` both live in the task
+folder, so they survive a rebuild and resume (§4.12.6) keeps working.
+
+**Not in v0.8** (improvements on top): `git@`/`ssh://` remotes inside the
+container (SSH agent forwarding), extra user-defined mounts, and a
+per-user custom generic config.
+
+#### 4.12.4 Agent registry and modes
+
+The agent registry is **built in** (code, not config). Every argv is
+constant. The agent starts interactively in the task dir (`/sessile/task`
+inside a devcontainer) and reads sessile's instructions file on its own
+(§4.17.2).
+- **Without a request** it gets no prompt argument and waits for the user.
+- **With a request** it gets one constant first message, "Read PROMPT.md:
+  that's my request." The request text itself never goes on the command
+  line, which avoids quoting and argv limits, and PowerShell 5.1's
+  argument mangling.
+
+| Agent | plan (default) | normal | + request |
+|---|---|---|---|
+| `claude` | `claude --permission-mode plan` | `claude` | + `"Read PROMPT.md: …"` |
+| `gemini` | `gemini --approval-mode plan` | `gemini` | + `-i "Read PROMPT.md: …"` |
+| `codex` | `codex --sandbox read-only --ask-for-approval on-request` (codex has no plan flag; `/plan` is TUI-only) | `codex` | + `"Read PROMPT.md: …"` |
+
+Fixed extras per agent, independent of mode:
+- gemini gets `GEMINI_CLI_TRUST_WORKSPACE=true`. Without it, a fresh task
+  folder is an untrusted workspace and gemini exits.
+- codex with an API-key connection gets a constant provider override that
+  reads the key from env (§4.13).
+
+- **plan** (the default): the user describes the task in the terminal, and
+  the agent investigates and plans in the CLI's plan mode. When the user
+  approves the plan in the CLI, the same conversation goes on to implement
+  it.
+- **normal**: the agent starts with its default permissions and no plan
+  step.
+
+The flags were checked against the current docs and source on 2026-09-18
+(claude docs; openai/codex @7498521; google-gemini/gemini-cli 0.62). CLIs
+change, so they live in one table in code and get rechecked when M32 is
+built.
+
+#### 4.12.5 Deploying the agent
+
+A task never fails just because the agent CLI isn't there. The bootstrap
+checks for it (`command -v` / `Get-Command`) and, if it's missing, runs the
+installer from the registry: a fixed, per-agent, **user-space** install
+that needs no root or admin rights. On a host it installs into the login
+user's home. Inside a devcontainer it installs into the task's own
+`/sessile/task/.tools/`, so it survives container rebuilds and doesn't
+depend on the container user.
+
+| Agent | Linux (and in containers) | Windows |
+|---|---|---|
+| `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `irm https://claude.ai/install.ps1 \| iex` |
+| `codex` | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `irm https://chatgpt.com/codex/install.ps1 \| iex` (native Windows is still maturing upstream) |
+| `gemini` | `npm install -g --prefix ~/.local @google/gemini-cli` (needs Node ≥ 20) | same, with npm |
+
+- The installers are fixed URLs and package names in code, the same as the
+  argv. They get checked against each vendor's current instructions in M35.
+- They use the host's own proxy settings. A failed install (no network, no
+  node for an npm-based agent) prints what's missing and leaves the task at
+  a shell, as any failed step does.
+- Inside a devcontainer, the install lives in the task folder, so it
+  happens once per task, not once per container.
+- The task form shows "claude will be installed on linux-box", based on an
+  SFTP `Stat` of the usual install path. That's a hint only; the bootstrap
+  decides.
+
+#### 4.12.6 Recovering a task after a restart
+
+The task folder (`task.json`, instructions, the repo, and inside containers
+the agent's state) holds everything, so a task is recoverable from its
+folder alone. The sessile server needs to remember
+nothing except the `tasks` row.
+
+- Server restart: task sessions come back **stopped**, like every session
+  (§3). **Restart** re-runs the bootstrap. Clone, checkout and
+  install are skipped because they're done, the devcontainer is reused, and
+  the agent is started with its **resume** argv, so the conversation
+  continues where it left off instead of starting over.
+
+  | Agent | resume argv (verify in M32) |
+  |---|---|
+  | `claude` | `claude --continue` (most recent conversation in this directory) |
+  | `gemini` | `gemini --resume latest` |
+  | `codex` | `codex resume --last` |
+
+  The permission mode from the original start (plan/normal) is kept on
+  resume.
+- If resuming fails (the CLI's history is gone), the bootstrap falls back
+  to the first-start argv: a new conversation in the same task dir, where
+  the repo keeps whatever the agent already changed. The agent's last
+  `set_task_summary` goes into the instructions file, so it knows where
+  things stood.
+- **Restart fresh** (a menu action) deletes the `.agent-started` marker
+  first, so a new conversation starts even if resume would work.
+- The MCP tunnel (§4.17.3) is reopened on restart with a new token. The agent's
+  MCP config points at the same socket path, so resumed conversations keep
+  their tools.
+
+#### 4.12.7 Models
+
+When the user picks an agent (in a profile, or in the task form), sessile offers a **model list fetched with the user's own
+credentials** and shows **the user's current default**.
+
+**Available models**, fetched server-side with the connection's
+credentials, over plain HTTP :
+
+| Connection (§4.13) | List from |
+|---|---|
+| Claude API key | Anthropic `GET /v1/models` |
+| Claude via Bedrock | Bedrock `ListInferenceProfiles`, filtered to Anthropic (a Bedrock API key is accepted for it) |
+| Claude via Foundry | the resource's deployments if listable, otherwise the aliases |
+| Claude subscription token | **can't be listed**: Anthropic rejects subscription tokens for anything but Claude Code. Sessile shows Claude Code's model aliases (`default`, `sonnet`, `opus`, `haiku`, …), which is what a subscription uses anyway |
+| OpenAI API key (codex) | OpenAI `GET /v1/models`, filtered to the ones codex supports |
+| ChatGPT Business/Enterprise token (codex) | not listable; codex's known models |
+| Gemini API key | Gemini `GET /v1beta/models` (filtered on `generateContent`) |
+| Gemini via Vertex | built-in list (a Vertex listing endpoint is a later improvement) |
+
+Lists are cached per user and credential set for one hour, with a refresh
+button.
+
+**Current default**, shown as the first entry, e.g. *"Default: Sonnet 5
+(from ~/.claude/settings.json on linux-box)"*:
+- The profile's own model, if set, **else**
+- the connection's pinned model (Bedrock and Foundry need one, e.g. an
+  inference profile id), **else**
+- the agent's own settings on the chosen host, read over SFTP from a fixed
+  path per agent (`~/.claude/settings.json` → `model`,
+  `~/.gemini/settings.json`, `~/.codex/config.toml` → `model`; paths
+  verified in M35), **else**
+- "CLI default", when nothing is set and the CLI picks its own.
+
+**How a chosen model reaches the agent.** Through env, where the CLI
+supports it (`ANTHROPIC_MODEL` for claude, `GEMINI_MODEL` for gemini), so
+argv stays constant. Where a CLI only has a flag (codex `--model`), the
+flag is a constant in the registry and the model id is validated
+(`^[A-Za-z0-9._:/@\[\]-]{1,128}$`) and quoted. Only the model id is
+variable. "Default" means nothing is set, and the CLI decides.
+
+
+
+A **profile** is `{id, name, agent, connectionId, model?}`: an agent, the
+connection that authenticates it (§4.13), and optionally a model. For
+example "Claude (Bedrock, Opus)" or "Claude (my Max plan)".
+
+#### 4.12.8 Persistence and lifecycle
+
+- New SQLite table `tasks(id, session_id, user_id, host_id, dir, spec_json, created)`.
+  It's 1:1 with a session and scoped by `user_id`. Session JSON gains
+  `"taskId"`.
+- Group `"Tasks"` is set at creation. It's an ordinary §4.11 group label.
+- **Restart**: sessile rewrites `.env` and restarts. The template skips the
+  steps that are already done and resumes the agent (§4.12.6).
+- **Delete session**: the task row goes and the folder **stays**. v0.8 has
+  no automatic or offered remote deletion. The file browser's normal
+  `Delete(path)` is still there if the user wants it.
+- Host-key 409 responses are reused unchanged. A task never connects
+  silently.
+
+#### 4.12.9 Secrets on the host
+
+`Setenv` is refused by most sshd configs, and typing `export` into the PTY
+would leak into scrollback. So:
+- `.env` is written over SFTP. On Linux it's 0600. On Windows it relies on
+  the user-profile ACL.
+- The bootstrap loads it into the agent's environment and deletes it right
+  away.
+- Inside a devcontainer, the variables are passed with
+  `devcontainer exec --remote-env`.
+
+What's left is that the running agent's environment is readable by the same
+OS user on that host. That's accepted as the user's own host, and it gets
+documented next to the plaintext `hosts.yml` decision (§11).
+
+### 4.13 Agent connections and profiles: tokens and API keys only
+
+Every agent authenticates with a **token or API key that the user gives
+sessile**. There's no interactive login on hosts, no login check, and no
+login files to copy or mount. This makes tasks work the same on every
+host, in every container, and after every rebuild.
+
+A **connection** is one credential for one agent, created in a guided
+dialog (Agent section → Connections → **Add connection**). The user picks
+the agent and the kind of account they have. Sessile shows the steps to get
+the token, a paste field, and a **Test** button, then maps the result onto
+the env the CLI reads. The kinds are a fixed list in code:
+
+| Agent | Account kind | What the user does | Env for the session | Test |
+|---|---|---|---|---|
+| claude | **Pro / Max / Team / Enterprise subscription** | Run `claude setup-token` once on any machine with a browser (their laptop), and paste the printed token. It's valid for one year | `CLAUDE_CODE_OAUTH_TOKEN` | format check only: Anthropic accepts this token only from Claude Code itself, so sessile can't call the API with it. It's verified on first use |
+| claude | **Claude API (Console)** | Console → API keys → Create | `ANTHROPIC_API_KEY` | `GET /v1/models` |
+| claude | **Amazon Bedrock** (enterprise) | Bedrock console → API keys; region; inference-profile id(s) | `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION`, `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_*_MODEL` | `ListInferenceProfiles` |
+| claude | **Microsoft Foundry** (enterprise) | Azure portal → resource → keys | `CLAUDE_CODE_USE_FOUNDRY=1`, `ANTHROPIC_FOUNDRY_RESOURCE`, `ANTHROPIC_FOUNDRY_API_KEY` | a minimal request |
+| codex | **OpenAI API key** | platform → API keys | `OPENAI_API_KEY` + a constant provider override in argv that makes the interactive CLI read it from env (codex's TUI doesn't pick it up on its own) | `GET /v1/models` |
+| codex | **ChatGPT Business / Enterprise** | Workspace owner enables personal access tokens; the user creates one (expires after 1 to 90 days) | `CODEX_ACCESS_TOKEN` | the codex `whoami` endpoint |
+| gemini | **Gemini API key** (AI Studio) | aistudio → Get API key | `GEMINI_API_KEY` | `GET /v1beta/models` |
+| gemini | **Vertex AI** (enterprise) | GCP → API key for Vertex; project; location | `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | a minimal request |
+
+Every row was checked against current docs or source on 2026-09-18, and
+gets rechecked in M31.
+
+Details:
+- **Expiry.** A connection can carry an expiry: one year for a Claude
+  subscription token, the chosen lifetime for a ChatGPT access token.
+  Sessile warns 14 days before it runs out, and the task form refuses an
+  expired connection with a "renew" link to the same guided dialog.
+- **Not supported, because no token exists:**
+  - Personal **ChatGPT Plus/Pro** for codex: these plans only offer a
+    browser or device login.
+  - **Google-account** sign-in for gemini (Google AI Pro/Ultra, Code
+    Assist via Google login): no long-lived token is offered.
+
+  The dialog says so and points to the API-key kinds for those agents. A
+  per-host login fallback for them is on the Future list (§12e), if it's
+  missed.
+- **Vertex for claude** needs a service-account JSON file, not a token. It's
+  left out of v0.8 (Future list, §12e). Claude on Bedrock or Foundry covers the
+  enterprise case.
+- **Every kind works for the whole task, including a Claude
+  subscription.** Planning and work both happen in the user's agent CLI,
+  running with the connection's env. Sessile itself
+  never sends a model request with a connection. The only direct API calls
+  it makes are Test and the model list, and only for kinds whose vendor
+  allows it (not the Claude subscription token).
+
+#### Storage: `agent.yml`
+
+`users/<uid>/agent/agent.yml` holds connections, profiles, and the
+user's task defaults. Script credentials don't live here (§4.15). It's plaintext, with
+the same `// TODO(security):` as `hosts.yml`, and the API masks secret
+values.
+
+```yaml
+connections:
+  - id: c1
+    name: "Company Bedrock"
+    kind: claude-bedrock                 # one of the kinds in §4.13
+    fields: { region: eu-central-1, model: "eu.anthropic.claude-opus-5-…", token: { value: "…", secret: true } }
+  - id: c2
+    name: "My Max plan"
+    kind: claude-subscription
+    fields: { token: { value: "…", secret: true } }
+    expires: 2027-09-18T00:00:00Z
+profiles:
+  - { id: p1, name: "Claude (Bedrock)",  agent: claude, connectionId: c1 }
+  - { id: p2, name: "Claude (Max plan)", agent: claude, connectionId: c2, model: sonnet }
+taskDefaults:
+  hostId: "…"                            # preselected host in the New task form
+  profileId: p2                          # preselected profile
+```
+
+Who gets which values:
+- A script gets only its own settings.
+- A session gets only its profile's connection env.
+- A task's agent reaches scripts only through the MCP tunnel, never their
+  settings.
+- **No secret value is ever sent to the LLM.**
+
+### 4.14 Notes
+- `users/<uid>/agent/notes/<slug>.md`, hand-editable like `hosts.yml`.
+- REST CRUD and a plain markdown textarea. This is sessile's own per-user
+  data, not the §4.10 host-file editor (which stays out of scope).
+- Front-matter `context: always|on-demand`. `always` notes are inlined into
+  the task's instructions file (§4.17.1). All notes are copied into the
+  task's `notes/` folder, where the agent reads them with its own tools.
+- A save that looks like it contains a secret gets a warning (not a block).
+
+### 4.15 Scripts
+
+A script is **code plus a settings declaration**. The code and the values
+live in different places, so a script folder never contains a token and can
+be copied, shared or checked into git as it is.
+
+```
+users/<uid>/agent/scripts/<name>/          # the code, extracted from the zip, never holds a secret
+  meta.json   main.py   requirements.txt   # requirements optional; usually just "requests"
+users/<uid>/agent/settings/<name>.yml      # the values for this user, written by the Configure form
+```
+
+#### 4.15.1 Packaging: scripts are zip extensions
+
+A script is distributed as a **zip**, which makes it feel like an
+extension: install, configure, update, remove.
+
+```
+jira-1.2.0.zip
+  meta.json          # required, at the zip root (or in one top-level folder, which is stripped)
+  main.py            # the entry point meta.json names; main.py by default
+  requirements.txt   # optional
+  README.md          # optional, shown in the UI
+  …                  # further .py modules or data files are allowed
+```
+
+**Install / update** (Scripts → **Upload extension**, or drag and drop):
+1. The zip is uploaded (cap 5 MiB) and read in memory. Nothing is written
+   until it has passed validation.
+2. Validation:
+   - `meta.json` parses and passes the schema: `name` a slug, `version`
+     semver, functions with valid JSON Schemas, no `secret` setting with
+     `context: true`.
+   - Every entry path is relative, without `..`, and without absolute or
+     drive-letter paths (zip-slip).
+   - No symlinks, no device files. At most 200 entries and 20 MiB
+     uncompressed (zip-bomb guard).
+3. Extraction goes to a staging dir, which is then swapped in with a rename,
+   so a failed upload never leaves a half-installed script.
+4. The name comes from `meta.json`:
+   - **New name**: installed, and the Configure form opens.
+   - **Existing name**: the UI shows "Update jira 1.1.0 → 1.2.0?". On
+     confirm the code is replaced and **settings are kept**. Settings the
+     new version no longer declares are dropped, and new required ones put
+     the script back into "needs setup".
+   - Installing a copy side by side (for a second Jira server, §4.15.4)
+     means changing `name` in `meta.json`, or choosing "Install as…" in
+     the upload dialog, which rewrites `name`.
+5. The venv is built in the background right after install. The script
+   shows "preparing" until that's done.
+
+**Export**: every installed script has **Download zip**. The export is the
+extracted folder, which never contains settings, so it's safe to hand to
+someone else. That is how scripts are shared across users in v0.8.
+
+**Remove**: deletes the script folder and its settings file. The venv
+stays in the content-keyed cache until the sweep.
+
+In place of a code editor: download, edit locally, upload again. That's the
+extension workflow.
+
+#### 4.15.2 meta.json: settings, check, guidance, functions
+
+```json
+{
+  "name": "jira",
+  "runtime": "python3",
+  "version": "1.2.0",
+  "description": "Jira issue tracker",
+  "settings": [
+    { "name": "JIRA_URL",     "label": "Server URL",      "type": "url",    "required": true,  "context": true },
+    { "name": "JIRA_PROJECT", "label": "Default project", "type": "string",                    "context": true },
+    { "name": "JIRA_USER",    "label": "User / e-mail",   "type": "string" },
+    { "name": "JIRA_TOKEN",   "label": "API token",       "type": "secret", "required": true,
+      "help": "Profile → Personal Access Tokens → Create" }
+  ],
+  "check": "whoami",
+  "guidance": [ "Ticket keys look like DBG-123. Read the ticket before planning when the user names one." ],
+  "timeoutSeconds": 60,
+  "functions": [
+    { "name": "whoami", "effect": "read", "description": "Verify the connection; returns the user", "input": { "type": "object" } },
+    { "name": "read_ticket", "effect": "read", "description": "Summary, description, status, links",
+      "input": { "type": "object", "required": ["key"],
+                 "properties": { "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$" } } } },
+    { "name": "add_comment", "effect": "write", "description": "…", "input": { … } }
+  ]
+}
+```
+
+- **`settings`** is what the script needs to reach its service. Each one
+  becomes an env var of the same name when the script runs. The script
+  reads `os.environ["JIRA_TOKEN"]` and nothing else: there are no config
+  files and no arguments for credentials.
+  - `type`: `string | url | secret | bool | choice` (`choice` has
+    `options`). `secret` values are masked by the API and are write-only in
+    the UI. You can replace a secret but never read it back.
+  - **`context: true`** marks a *non-secret* setting as context for the
+    task agent. It gets written into the tool descriptions, for example
+    *"Jira at https://jira.example.com, default project DBG"*. A setting of
+    type `secret` can't set `context: true`, and the loader rejects the
+    combination.
+- **`guidance`** (optional) is a list of "when to use this" lines for the
+  task agent. They're copied into the task's instructions (§4.17.2).
+- **`check`** names a read function that answers "does this configuration
+  work?" The Configure form runs it on **Test connection**.
+- **`functions`** are the tools. Their `input` is a JSON Schema, and
+  `effect` marks the ones that need approval (§4.17).
+
+#### 4.15.3 Configuring a script (UI)
+
+Sidebar → Scripts → a script → **Configure**. The form is generated from
+`settings`:
+
+```
+ Jira  ·  not configured
+ ┌───────────────────────────────────────────────┐
+ │ Server URL        [https://jira.example.com ] │
+ │ Default project   [DBG                      ] │
+ │ User / e-mail     [me@example.com           ] │
+ │ API token         [••••••••••••  ] [Replace]  │
+ │                   Profile → Personal Access…  │
+ │                                               │
+ │ [Test connection]  ✓ connected as "me"        │
+ │                               [Cancel] [Save] │
+ └───────────────────────────────────────────────┘
+```
+
+- Save writes `settings/<name>.yml`. It's plaintext, per user, with the
+  same `// TODO(security):` as `hosts.yml`.
+- A secret field can also be set to **"use Git account: <host>"** instead of
+  its own value, for a script that talks to GitHub/GitLab with the same
+  token the tasks use (§4.16). That way the token is kept once.
+- A script whose required settings are missing shows **"needs setup"**, and
+  its functions are **not offered** to the task agent at all. So the agent
+  never tries a tool that can't work.
+- After a new install (upload or example), sessile opens the Configure form
+  straight away.
+
+#### 4.15.4 Two instances of the same service
+
+Two Jira servers are handled by installing the zip twice under two names
+("Install as…"): `jira` and `jira-oss`, each with its own settings file. Tool names then carry the
+instance (`jira_oss__read_ticket`), and the agent tells them apart by the
+`context: true` URL in the description. There's no extra "connections"
+concept. If that turns out to be too clumsy, a later version can add
+multiple settings sets per script without changing `meta.json`.
+
+#### 4.15.5 Runner
+
+`internal/scripts` is the "launch_script". It runs locally on the sessile
+server, before any session exists:
+1. Check that scripts are enabled (`allowAgentScripts`) and that required
+   settings are present. Validate the input against the function's schema.
+2. Get the venv from `cache/venvs/<sha256(runtime + requirements.txt)>/`
+   (`python3 -m venv` + `pip install -r`), creating it if it's missing,
+   with a **single-flight lock per key**. A changed `requirements.txt` means
+   a new hash, which means a fresh venv. Old ones get swept on startup.
+3. Run `venv/bin/python main.py <function>`:
+   - cwd set to the script dir
+   - env scrubbed to `PATH`/`HOME`/`LANG`, **sessile's own network
+     settings** passed through as they are (`HTTP_PROXY`, `HTTPS_PROXY`,
+     `NO_PROXY` and their lowercase forms, `SSL_CERT_FILE`,
+     `REQUESTS_CA_BUNDLE`, `PIP_INDEX_URL`, `PIP_CERT`), plus **this
+     script's own settings** (resolved, including "use Git account"
+     references), and nothing from any other script
+   - `pip install` for the venv gets the same network settings. Sessile is
+     expected to run with its proxies already set, and adds no proxy
+     configuration of its own. Model listing and Test use the same
+     environment
+   - input JSON on stdin
+   - `timeoutSeconds` enforced with a process-group kill
+   - stdout capped at 256 KiB, stderr kept for the UI
+4. **Redaction.** Before the output goes anywhere (LLM, UI, logs), every
+   secret value of that script is replaced with `«JIRA_TOKEN»` in stdout
+   and stderr. That covers a script that echoes its own auth header in an
+   error message.
+5. Stdout must be JSON. It goes to the LLM as **data**.
+
+**Contract for script authors** (documented, and followed by the examples):
+- Plain HTTP with `requests`, or stdlib `urllib`.
+- No vendor SDKs.
+- One file, readable top to bottom.
+- Credentials come only from env, and never get printed.
+
+#### 4.15.6 Example scripts
+
+The examples are zip extensions like any other, embedded in the binary
+(`internal/scripts/examples/*.zip`) and listed under Scripts →
+**Examples**:
+- **Install** goes through the same path as an upload and opens Configure.
+- **Download zip** gives the user a starting point to adapt and upload
+  under their own name.
+- An installed example belongs to the user. A newer example version in a
+  later sessile release shows up as "Update available", and the user
+  decides whether to take it. Nothing is updated automatically.
+
+| Example | Settings | Functions (check first) |
+|---|---|---|
+| `jira` | URL\*, default project\*, user, token (secret) | `whoami`, `read_ticket` (r), `search` (JQL, r), `add_comment` (w), `create_ticket` (w) |
+| `jenkins` | URL\*, user, API token (secret) | `whoami`, `job_status` (r), `build_log_tail` (r), `trigger_build` (w) |
+| `artifactory` | URL\*, default repo\*, token (secret) | `ping`, `search` (r), `artifact_info` (r), `list_path` (r) |
+
+\* = `context: true`
+
+The Jira example supports both Cloud (user + API token, basic auth) and
+Server/Data Center (PAT, bearer). A `choice` setting `JIRA_AUTH:
+cloud|server` picks between them.
+
+UI:
+- Scripts list with name, version and status (`preparing`, `ready`,
+  `needs setup`, `check failed`), plus Upload extension, Download zip,
+  Remove.
+- Configure form.
+- A "Test run" form per function, generated from its schema.
+- Venv status, with a rebuild button.
+
+There's no in-app code editor; the zip round trip replaces it. `runtime`
+exists so node can be added later without a schema change. v0.8 accepts
+`python3` only.
+
+The Docker runtime images add `python3` + `py3-virtualenv`/`python3-venv`.
+
+#### 4.15.7 What goes where
+
+| Kind of information | Where | Reaches the LLM? |
+|---|---|---|
+| Service URL, default project/repo | script setting, `context: true` | yes, in the tool description |
+| Tokens, passwords, user names | script setting (`secret`, or plain without `context`) | **never** (and redacted from output) |
+| Agent tokens and API keys (Claude, Bedrock, Foundry, OpenAI, Gemini, Vertex) | Connections (§4.13, §4.13) | never |
+| Git name, email, username, token | Git accounts (§4.16) | never |
+| Which repo is what, team conventions, Jira workflow ("Epic → Story, states …") | Notes | yes |
+
+That splits the original `jira.md`: the URL and project become Jira
+settings, the token becomes a secret setting, and the "structure" part
+stays a note.
+
+### 4.16 Git accounts
+
+The user can give sessile their git identity once, and every task uses it
+for cloning, committing and pushing. This works on hosts and in containers
+that have no git setup of their own.
+
+```yaml
+# users/<uid>/agent/agent.yml
+git:
+  - host: github.com                 # matched against the repo URL's host
+    name: "Karim Mreisi"             # user.name
+    email: "…"                       # user.email
+    username: "kmreisi"
+    token: { value: "…", secret: true }
+  - host: gitlab.example.com
+    …
+```
+
+**Settings UI** (Agent section → Git):
+- One entry per git host, with a **Test** button. For github.com it calls
+  `GET https://api.github.com/user` with the token, and for other hosts it
+  runs `git ls-remote` against a repo URL the user gives. Plain HTTP, no
+  SDK.
+- **Import from host…**: choose one of your hosts, and sessile reads what's
+  already configured there to fill the form:
+  - `git config --global user.name` and `user.email`
+  - `git credential fill` for the chosen git host, with
+    `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never` so that nothing
+    prompts, and a 10 s timeout
+
+  These are fixed command templates run over the host's SSH connection
+  (the same kind of typed internal call as `ProcessTree`, §4.10), with the
+  git host as the only, validated argument. The result pre-fills the form,
+  and nothing is saved until the user presses Save. The UI says plainly
+  that this copies the token into sessile.
+
+**How a task uses it** (only for `https://` repo URLs; `ssh://` and
+`git@` URLs keep using the host's SSH keys):
+- The matching account goes into the task's `.env` (§4.12.9) as
+  `SESSILE_GIT_USERNAME`, `SESSILE_GIT_TOKEN`, and for github.com also
+  `GH_TOKEN`, so the `gh` CLI works.
+- It also adds git's **environment-only configuration** (git ≥ 2.31):
+  ```
+  GIT_CONFIG_COUNT=2
+  GIT_CONFIG_KEY_0=credential.https://github.com.helper   GIT_CONFIG_VALUE_0=
+  GIT_CONFIG_KEY_1=credential.https://github.com.helper   GIT_CONFIG_VALUE_1=!f() { echo "username=$SESSILE_GIT_USERNAME"; echo "password=$SESSILE_GIT_TOKEN"; }; f
+  ```
+  The empty first value resets any helpers the host already has for that
+  URL. This config exists only in the environment of the task's processes:
+  the clone, the shell, and the agent. **Nothing is written to
+  `~/.gitconfig`, `.git/config`, or a credential store**, and the token is
+  never part of the clone URL (which would land in `.git/config` and the
+  process list).
+- The same variables go into a devcontainer with `--remote-env` (§4.12.3),
+  so pushing from inside the container works with no mount.
+- `user.name`/`user.email` are written to the **repo's** config
+  (`git -C repo config`). They aren't secret, and commits made later in any
+  shell get the right identity.
+- On Windows, Git for Windows runs `!`-helpers through its bundled `sh`,
+  so the same config works.
+- With no matching account, git behaves as it does on that host without
+  sessile, and the task form says "host's own credentials".
+
+### 4.17 The task agent: context and tools
+
+There's no separate Task Prompt. The task's own agent session, started in
+plan mode, is where the user describes, discusses and approves the work
+(§4.12). Sessile's job is to give that session the right **context** and
+**tools**.
+
+#### 4.17.1 Context
+
+The task dir is the agent's working directory. Sessile writes into it:
+- **Instructions** (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`, the same text
+  under the name the agent reads). It's rendered from an embedded template,
+  and it says:
+  - where the main repo is, and to clone further repos into `repos/`
+  - that git credentials are already set up for the user's Git accounts,
+    and `gh` for github.com
+  - that the user's notes are in `notes/`; `always` notes are inlined here
+  - that the `sessile` tools exist (§4.17.3), and which scripts they cover
+  - to plan first and ask the user when something is unclear
+  - on a devcontainer task: where to run builds
+  - the task's name, as its title, and the last saved summary
+  - to wait for the user's request
+- **`notes/`**: copies of the user's notes, refreshed on every restart.
+
+Instruction files in the repo itself (`repo/CLAUDE.md`, `repo/AGENTS.md`,
+…) keep working. The agents pick up nested instruction files when they work
+in that folder. Sessile's file only covers the task around the repo.
+
+#### 4.17.2 How the agent learns about the tools
+
+**All of it is automatic. The user configures nothing on the host.**
+Everything the agent needs is written into the task dir, or passed on its
+constant command line, by the bootstrap:
+
+| | claude | codex | gemini |
+|---|---|---|---|
+| MCP server registered | `--mcp-config <task>/.mcp.json`: loaded for this run only, with no project-trust prompt, next to the user's own MCP servers | `-c mcp_servers.sessile.command=…` / `.args=…` constants | `<task>/.gemini/settings.json` (workspace settings; the folder is trusted through `GEMINI_CLI_TRUST_WORKSPACE`) |
+| sessile tools pre-allowed | `--allowedTools mcp__sessile` | the approval policy for that server in the same `-c` overrides | `trust: true` on that server in the same settings |
+| instructions loaded | `CLAUDE.md` in cwd, read at start | `AGENTS.md` in cwd, read at start (to verify in M32 for a cwd that isn't a git repo; if not, the constant first message becomes "Read AGENTS.md …") | `GEMINI.md` in cwd, read at start |
+
+So the tools and their descriptions are **not** prepended to the request.
+They're in the instructions file, which the agent loads by itself, whether
+or not there's a request. That also means they survive a new conversation
+("Restart fresh", or `/clear`), which prepended text wouldn't.
+
+There are two layers, and both are needed:
+
+1. **MCP makes the tools callable.** At startup the CLI connects to the
+   `sessile` server configured in the task dir and asks for `tools/list`.
+   Every ready script function arrives as a real tool, with:
+   - its name (`jira__read_ticket`; Claude Code shows it as
+     `mcp__sessile__jira__read_ticket`)
+   - its description (function description + script description + the
+     `context` settings, e.g. "Jira at https://jira.example.com, default
+     project DBG")
+   - its input JSON Schema
+
+   The agent can call them from then on, without any prose. In Claude Code,
+   `/mcp` shows the server and its tools.
+2. **The instructions file says when to use them.** Tool lists alone
+   don't tell an agent that "DBG-142" is a Jira key, or that it should check
+   CI after pushing. So the instructions file has a generated **Tools**
+   section with one entry per ready script: what it's for, and its
+   `guidance`.
+
+**`guidance`** is a new optional field in `meta.json`: a few lines of
+"when to use this", written by the script's author and copied into the
+instructions file:
+
+```json
+"guidance": [
+  "Ticket keys look like DBG-123. Read the ticket before planning when the user names one.",
+  "Comment on the ticket when a PR is opened; that's a write and needs the user's approval."
+]
+```
+
+What the generated section looks like, for a user with jira and jenkins
+configured:
+
+```markdown
+## Tools from sessile
+
+Call these through the `sessile` MCP server. Results come from the user's
+own services. Calls marked (write) wait for the user's approval in sessile.
+
+### jira: Jira at https://jira.example.com, default project DBG
+- read_ticket, search, add_comment (write), create_ticket (write)
+- Ticket keys look like DBG-123. Read the ticket before planning when the
+  user names one.
+- Comment on the ticket when a PR is opened; that's a write and needs the
+  user's approval.
+
+### jenkins: Jenkins at https://ci.example.com
+- job_status, build_log_tail, trigger_build (write)
+- After pushing, check the job's status; on failure, read the log tail
+  before changing code.
+
+Also available: `gh` (authenticated as kmreisi on github.com),
+`set_task_summary` (keep it current: plan approved / PR open / CI state).
+```
+
+Scripts that are "needs setup" or "check failed" are left out of both
+layers, so the agent is never told about a tool it can't use.
+
+**When scripts change mid-task** (installed, configured, removed):
+- Sessile sends MCP's `notifications/tools/list_changed` on the open
+  connection, and CLIs that support it pick up the new list.
+- The instructions file is rewritten on every restart. So after a Restart
+  (which resumes the conversation), both layers are current in any CLI.
+- The task page shows "Tools changed, restart to update the agent's
+  instructions" when that's needed.
+
+#### 4.17.3 Tools: the `sessile` MCP server, tunnelled over SSH
+
+The agent reaches the user's scripts through **MCP**, which all three CLIs
+support.
+- The scripts keep running **on the sessile server** . Their tokens
+  never leave it and never enter the agent's context. Write actions still
+  need the user's approval in sessile.
+- The host needs no Python, and no network path back to the sessile
+  server either.
+
+**Transport:**
+- Sessile serves MCP from a small hand-written JSON-RPC handler
+  (`initialize`, `tools/list`, `tools/call`), with no new dependency.
+- It reaches the host over the **task session's own SSH connection**,
+  through a reverse forward opened on the same `*ssh.Client` (no new dial,
+  no new trust decision):
+  - Linux hosts: a Unix socket `<task dir>/.sessile.sock`
+    (`streamlocal-forward@openssh.com`, `ListenUnix` in `x/crypto/ssh`),
+    with mode 0600. It's inside the task dir, so a devcontainer sees it at
+    `/sessile/task/.sessile.sock` through the existing mount, with no extra
+    networking.
+  - Windows hosts: a TCP listener on `127.0.0.1:<random>` (`Listen`), since
+    OpenSSH for Windows' streamlocal support is unverified. Reaching it from
+    a Docker Desktop container is to be verified in M33.
+  - Local-host tasks: sessile listens on the socket path directly.
+- The agent's side is **`sessile-mcp`**, a tiny stdio ↔ socket bridge.
+  - It's written in Go in this repo and cross-compiled with CGO off for
+    linux/amd64, linux/arm64 and windows/amd64.
+  - The binaries are embedded in the server, and one is uploaded into
+    `.tools/` per task: the host's architecture, and additionally the Linux
+    one for its devcontainer.
+  - It's configured as an ordinary stdio MCP server in the agent's config,
+    written into the task dir: `.mcp.json` passed with `--mcp-config` for
+    claude, `-c mcp_servers.sessile.command=…` constants for codex, and
+    `.gemini/settings.json` for gemini.
+- **Auth**: a per-task random token in the task env
+  (`SESSILE_MCP_TOKEN`), which the bridge sends on connect. The token and
+  the forward die with the session. Restart opens new ones.
+- **The tunnel is tied to the session's connection.** If the connection
+  drops, the tools fail with "sessile connection lost", and the session
+  is marked stopped as usual.
+
+**Tools:**
+
+| Tool | Does |
+|---|---|
+| `<script>__<function>` | one tool per function of each ready script (§4.15): the schema from `meta.json`, the `context` settings in the description, and the output redacted |
+| `set_task_summary(text)` | a one-line status the agent keeps current ("Plan approved, implementing", "PR #412 open, CI running"). It's shown on the task in the sidebar and the dashboard |
+| `task_info()` | the task's spec and Git accounts (hosts and usernames, never tokens) |
+
+**Approvals:** a `write`-effect script call is held open while sessile
+shows an approval card. Approve runs it. Deny, or 5 minutes without an
+answer, returns "denied by user". The sessile tools are pre-allowed in the
+CLI's own permission settings, so the user isn't asked twice, and a yolo
+mode in the agent can't bypass the card.
+
+The agent's own tools (shell, edits, web, `gh`) keep the CLI's normal
+permission prompts in the terminal.
+
+#### 4.17.4 The task page
+
+The task page is the session's **terminal** next to a **side panel**:
+- task info (host, repo, devcontainer, Git account, model)
+- the agent's current summary
+- sessile tool activity
+- approval cards
+
+On a phone, the side panel collapses into a sheet with a badge while an
+approval is waiting.
+
+#### 4.17.5 Example
+
+Task "DBG-142 print crash", with host linux-box, repo moonlight-android,
+devcontainer on, and profile "Claude (Max plan)":
+1. Sessile clones, starts the devcontainer, and starts Claude Code in plan
+   mode. The task page opens on it.
+2. The user types "Fix DBG-142". The agent calls `jira__read_ticket(DBG-142)`, reads the code, and asks
+   "Android 14 only, or 13 too?" in the terminal. The user answers.
+3. The agent presents its plan, and the user approves it in Claude Code.
+4. The agent implements, runs the tests in the container, pushes a branch
+   and opens a PR with `gh`, and sets the summary to "PR #412 open, CI
+   running".
+5. It checks CI with `gh pr checks` (or a `jenkins__job_status` script),
+   fixes a failing stage, and pushes again.
+6. It asks before `jira__add_comment` ("PR #412 fixes this"), and the user
+   approves the card.
+
 ---
 
 ## 5. WebSocket Protocol (exact spec)
@@ -1011,6 +2028,18 @@ doesn't otherwise need at the sizes this feature targets.
 list poll exists — the socket being down should not mean the UI has no way
 to find out whether a delete finished.
 
+### 5.3 Task events
+
+Side-panel updates for a task page (§4.17.4) go out on the same `/ws/events`
+channel as §5.2 — more message types, not a new socket, and like every
+other message there, only the connecting user's own tasks:
+
+```json
+{"type":"taskTool","taskId":"…","callId":"…","name":"jira__read_ticket","status":"running"}
+{"type":"taskApproval","taskId":"…","callId":"…","name":"jira__add_comment","input":{…}}
+{"type":"taskSummary","taskId":"…","summary":"PR #412 open, CI running"}
+```
+
 ---
 
 ## 6. REST API (exact spec)
@@ -1043,7 +2072,7 @@ never trusts a client-supplied user id.
 | `GET /api/admin/users` | List users | Admin only. No password hashes |
 | `DELETE /api/admin/users/:id` | Remove a user | Admin only. 409 `conflict` if `id` is the last admin |
 | `PATCH /api/admin/users/:id` | Promote/demote (`{"isAdmin":bool}`) | Admin only. Same 409 guard |
-| `GET /api/hosts` | List the caller's hosts | Secrets masked (`hasPassword`/`hasPrivateKey`); host-key fingerprint fields included (not secret) |
+| `GET /api/hosts` | List the caller's hosts | Secrets masked (`hasPassword`/`hasPrivateKey`); host-key fingerprint fields included (not secret); `tasksDir` (§4.12, default `.sessile/tasks`) |
 | `POST /api/hosts` | Create a host | Body: `Host` fields (§9) minus id/timestamps |
 | `GET /api/hosts/:id` | Get one host | Owner-scoped; 404 if not the caller's |
 | `PUT /api/hosts/:id` | Update a host | Omitted secret fields mean "leave unchanged"; changing `authMethod` drops the other method's secret |
@@ -1067,6 +2096,35 @@ never trusts a client-supplied user id.
 | `GET /api/sessions/:id/hostops/ops/:opId` | Poll a `delete`/`copy` op | `{"opId":"…","kind":"delete","done":12,"total":47,"status":"running"}`. Poll fallback for §5.2 |
 | `GET /api/sessions/:id/hostops/download?path=` | Download one file from the target | Streamed body, `Content-Disposition: attachment`, `Content-Length` when known |
 | `POST /api/sessions/:id/hostops/upload?path=` | Upload one file to the target | Raw streamed body, not multipart — staged into `<path>.part` via `FileTransport.Create`, committed onto `path` (overwriting) only once fully written with no error. No size cap — not the 32 KiB JSON-endpoint cap, and no cap of its own either (§11) |
+| `POST /api/tasks` | Create a task (§4.12) | Create a task from a `TaskSpec` → 201 session JSON (`taskId`, group "Tasks"). Host-key 409s as for sessions. 409 `connection_expired` when the profile's connection has expired |
+| `GET /api/agent/connection-kinds` | Connection kinds | The fixed kinds of §4.13: fields, instructions, whether Test and model listing are possible |
+| `POST /api/agent/connections/test` | Test a connection | `{kind, fields}` (an omitted secret means the saved one) → `{ok, detail\|error}` |
+| `GET /api/agent/connections/:id/models` | Models for a connection | Model list + resolved default (§4.12.7), 1 h cache, `?refresh=1` |
+| `GET /api/tasks/:id` | Get one task | Spec + dir |
+| `GET/PUT/DELETE /api/agent/notes[/:slug]` | Notes (§4.14) | Notes CRUD |
+| `GET /api/agent/scripts` | List scripts (§4.15) | Scripts, functions, settings status (`ready`/`needs_setup`/`check_failed`), venv status |
+| `GET/PUT /api/agent/scripts/:name/settings` | A script's settings | Settings values; secrets returned as `{"set":true}` only, and an omitted secret means "leave unchanged" (same rule as host credentials) |
+| `POST /api/agent/scripts/:name/check` | Test a script's connection | Run the `check` function with the saved settings, or with unsaved ones from the body for Test connection → `{ok, output\|error}` (redacted) |
+| `POST /api/agent/scripts?as=` | Install/update a script zip | Upload a zip extension (raw body, 5 MiB cap) → validated, extracted, 201 script. 409 `script_exists` with `{installed, uploaded}` versions unless `?update=true`. `as` installs under another name |
+| `GET /api/agent/scripts/:name/zip` | Export a script | Download the installed script as a zip (never includes settings) |
+| `DELETE /api/agent/scripts/:name` | Remove a script | Remove the script and its settings |
+| `GET /api/agent/scripts/examples` | List built-in examples | Built-in example zips, with version and "update available" against installed copies |
+| `POST /api/agent/scripts/examples/:name/install` | Install an example | `{as?}` → same path as an upload |
+| `GET /api/agent/scripts/examples/:name/zip` | Download an example | Download an example to adapt |
+| `POST /api/agent/scripts/:name/run` | Run one function | `{function, input}` → `{output, stderr}` ("Test run") |
+| `POST /api/agent/scripts/:name/rebuild` | Rebuild the venv | Drop + rebuild the venv |
+| `GET/PUT /api/agent/settings` | Agent settings (§4.13, §4.16) | Connections (secrets masked, expiry), profiles, task defaults, Git accounts (tokens masked) |
+| `POST /api/agent/git/test` | Test a Git account | `{host, username, token?}` (an omitted token means the saved one) → `{ok, login\|error}` |
+| `POST /api/agent/git/import` | Import a Git identity from a host | `{hostId, gitHost}` → `{name, email, username, token?}` read from that host, **not saved**. Same host-key 409s as sessions |
+| `POST /api/tasks/:id/approvals/:callId` | Approve/deny a held tool call | `{approve: bool}` for a held write-effect script call (§4.17.3) |
+
+Every `/api/tasks*` and `/api/agent*` route is owner-scoped exactly like
+sessions and hosts: a task, note, script, connection or Git account is only
+ever looked up under the caller's own user id, and someone else's is
+indistinguishable from one that doesn't exist. Script and agent routes
+return 403 while `allowAgentScripts` is off (§9) only where they run code on
+the server (script run/check/rebuild, upload); reading and editing one's own
+settings stays available.
 
 Every `hostops` route resolves the same `mgr.Get(id, userID)` every other
 `/api/sessions/:id/*` route does (§4.3) before reaching the session's
@@ -1094,9 +2152,13 @@ Session JSON shape (single source of truth — mirror in TS types):
   "status":"running","pid":12345,
   "created":"2026-07-16T12:00:00Z","lastActivity":"2026-07-16T12:34:56Z",
   "rows":32,"cols":120,"clientCount":2,
-  "command":"claude","cwd":"project-a/backend","title":"claude — sessile"
+  "command":"claude","cwd":"project-a/backend","title":"claude — sessile",
+  "taskId":null
 }
 ```
+`taskId` is the task (§4.12) this session belongs to, `null` for an ordinary
+session. It's persisted (the `tasks` table, §8), unlike the three fields
+below.
 An SSH session instead carries `"targetType":"ssh","directory":null,
 "shell":null,"hostId":"…","hostDisplayName":"prod-db"` and `pid` is always
 `0` (§4.2's `Backend.Pid()`).
@@ -1135,12 +2197,15 @@ frontend/src/
                 # auth.ts: current user, login/logout/bootstrap/register
                 # hosts.ts: per-user host CRUD, host-key probe/trust
                 # admin.ts: admin user list/delete/promote
-  components/   # Sidebar.vue, SessionListItem.vue, NewSessionDialog.vue,
+  components/   # TaskForm.vue, TaskSidePanel.vue, ConnectionDialog.vue,
+                # ScriptConfigureDialog.vue (§4.12–§4.17)
+                # Sidebar.vue, SessionListItem.vue, NewSessionDialog.vue,
                 # TerminalView.vue, StatusDot.vue, TabBar.vue,
                 # HostDialog.vue, HostKeyTrustDialog.vue,
                 # ProcessTreePanel.vue, FileBrowserPanel.vue (§4.10, §12c)
   pages/        # DashboardPage.vue, TerminalPage.vue, SettingsPage.vue,
-                # LoginPage.vue, HostsPage.vue, UsersPage.vue (admin-only)
+                # LoginPage.vue, HostsPage.vue, UsersPage.vue (admin-only),
+                # NotesPage.vue, ScriptsPage.vue, AgentSettingsPage.vue (§4.13–§4.16)
   router/       # beforeEach guard: redirect to /login when unauthenticated,
                 # redirect away from adminOnly routes when not an admin
 ```
@@ -1228,6 +2293,19 @@ frontend/src/
   is told the new column count), and to the app's other tabs through the
   `storage` event — tabs mirror a session (§5), so one of them staying at the
   old size reads as the setting not having taken.
+
+- **Agent section** (sidebar, below Hosts; v0.8): **New task…** (the task
+  form, §4.12.1), **Notes** (`/agent/notes`, §4.14), **Scripts**
+  (`/agent/scripts`: installed extensions, Upload, Examples, Configure,
+  §4.15), **Git accounts** and **Connections & profiles**
+  (`/agent/settings`, §4.16, §4.13). Labels are text only, no symbol
+  glyphs.
+- **Task page**: a task session opens in the ordinary Terminal page, with
+  `TaskSidePanel.vue` beside the terminal: task info, the agent's summary,
+  sessile tool activity and approval cards (§4.17.4), fed by §5.3's events.
+  On a phone the panel is a sheet with a badge while an approval waits.
+  Task sessions carry a "task" badge in lists and an "Open task folder"
+  action (the §4.10 file browser).
 
 ### Terminal behavior (`useTerminal`)
 - Create `Terminal` with `scrollback: 5000`, load fit + web-links addons.
@@ -1337,6 +2415,13 @@ of it ever written into SQLite:
   users.yml                  # []auth.User — id, username, bcrypt hash, isAdmin
   users/<user-id>/
     hosts.yml                 # []hosts.Host — SSH targets, credentials, host-key pin
+    agent/                    # v0.8 (§4.13–§4.16)
+      agent.yml                 # connections, profiles, task defaults, Git accounts
+      notes/<slug>.md           # notes
+      scripts/<name>/           # installed script extensions (code only, never secrets)
+      settings/<name>.yml       # that user's values for script <name>
+  cache/venvs/<sha256>/        # script venvs, keyed by runtime + requirements.txt;
+                               # disposable, shared across users, swept on startup
   sessions.db
   scrollback/<session-id>.bin
   history/<session-id>
@@ -1379,6 +2464,24 @@ consequence of adding auth to a previously single-tenant table.
 
 Web login sessions are **not** persisted anywhere (§10) — they live only in
 an in-memory token store, by design.
+
+Tasks (§4.12) add one table, 1:1 with a session and owner-scoped like it
+(`M32`/§12e):
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+  id          TEXT PRIMARY KEY,           -- <slug(name)>-<6 hex>
+  session_id  TEXT NOT NULL UNIQUE,
+  user_id     TEXT NOT NULL,
+  host_id     TEXT NOT NULL DEFAULT '',   -- '' for a local-host task
+  dir         TEXT NOT NULL,              -- the task folder on the target
+  spec_json   TEXT NOT NULL,              -- the TaskSpec, as validated
+  summary     TEXT NOT NULL DEFAULT '',   -- the agent's last set_task_summary
+  created     TEXT NOT NULL               -- RFC 3339 UTC
+);
+```
+Deleting the session deletes the row; the folder on the target stays
+(§4.12.8).
 
 On startup: `UPDATE sessions SET status='stopped' WHERE status='running';`
 
@@ -1510,7 +2613,20 @@ on first run, admin-editable afterward via `PUT /api/admin/config` (§6):
 displayName: ""            # shown on the login page; empty = generic title
 allowRegistration: false   # self-service signup on the login page
 allowLocalHost: false      # permit local-shell sessions on this server
+allowAgentScripts: true    # v0.8: users may install and run scripts on this
+                           # server (§4.15) — equal to shell access here; the
+                           # operator's off switch (§11)
 ```
+
+`hosts.yml` gains `tasksDir` per host (v0.8, §4.12): where task folders go
+on that target, default `.sessile/tasks`, relative to the SSH login
+directory. A local-host task's folder is `<workspace>/.sessile/tasks`,
+validated by §4.5 like every local path.
+
+Sessile is expected to run with its network settings already in its
+environment (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`,
+`PIP_INDEX_URL`, …). Scripts, `pip` and connection tests inherit them; there
+is no proxy configuration of sessile's own (§4.15.5).
 
 `users.yml` (`internal/auth`) and each user's `users/<id>/hosts.yml`
 (`internal/hosts`) are the other two hand-editable YAML files — see §8 for
@@ -1693,6 +2809,56 @@ layout and §11 for what they do and don't encrypt.
   response (download) or the next read of the aborted request body
   (upload) fails on its own, `io.Copy` returns, and the deferred `Close`
   runs.
+- **Tasks, agents and scripts (v0.8, §4.12–§4.17):**
+  - No command string reaches the API. Bootstrap templates are fixed
+    (`internal/tasks/templates`), every field is validated and quoted,
+    agent argv is a constant from the built-in registry, and the request
+    and env go to files, never onto a command line.
+  - **Scripts are code execution on the sessile server, for every user.**
+    Uploading a zip lets a user run any code as sessile's OS user. That code
+    can read every file sessile can read: all users' `hosts.yml`,
+    `agent.yml`, script settings, and `sessions.db`. Per-user storage keeps
+    users apart in the API, **not** against one another's scripts. This is
+    accepted: sessile's users are trusted like colleagues on a shared build
+    server. An operator with users they don't trust sets
+    `allowAgentScripts: false` (§9). Confining a script's file access
+    without root (Landlock) is on the future list (§12e).
+  - Zip install validates before it writes (schema, zip-slip, symlinks,
+    entry count and size) and swaps in atomically.
+  - Secret values (script settings of type `secret`, connection tokens,
+    Git tokens) are never returned by the API, never reach an LLM through
+    sessile, never go into scrollback, and are redacted from script output
+    before it reaches the agent, the UI or the logs. Each script sees only
+    its own settings. Script code and script credentials are stored apart
+    (`scripts/<name>/` vs `settings/<name>.yml`), so an exported zip can't
+    leak a token.
+  - On a host, a task's connection env and Git tokens exist only between
+    the SFTP write of `.env` (0600 on Linux, the profile ACL on Windows)
+    and the bootstrap loading it, and afterwards only in the environment of
+    the task's processes, which the same OS user on that host can read.
+    That's accepted as the user's own host, like `hosts.yml`'s plaintext
+    credentials. Git tokens are never written to git config, a credential
+    store or a clone URL.
+  - Agents run **on the task's host** (local-host tasks: on the server,
+    under the existing `allowLocalHost` gate), never as a sessile-side
+    service. They authenticate only with tokens and keys the user gave
+    sessile; nothing reads, copies or mounts login files from hosts.
+  - The MCP tunnel rides the task session's own, already-trusted SSH
+    connection: no new dial, no new host-key decision. On Linux it's a 0600
+    Unix socket in the task dir, and on Windows a loopback-only TCP port.
+    Each task has its own token, a task only reaches its own user's
+    scripts, and the agent sees script **results**, never settings.
+  - Write-effect script calls wait for approval in sessile's side panel.
+    Pre-allowing the tools in the CLI doesn't skip that. Tool output is
+    untrusted data (prompt injection through fetched tickets is the case
+    this exists for).
+  - With a Claude subscription, sessile only ever runs Claude Code
+    **interactively** for a person at the terminal. It never calls the API
+    with the subscription token and never runs `claude -p` for itself —
+    Anthropic accepts that token only from Claude Code.
+  - The Docker socket mount is root on the host: per-task opt-in, off by
+    default, with a warning.
+  - The default agent mode is **plan**.
 - Rate limiting: still deferred — not added in this pass either. Login
   brute-forcing is the main gap this leaves open; worth revisiting before a
   wider deployment than "an admin who trusts their own users."
@@ -2027,6 +3193,141 @@ groups sees exactly the layout they saw before this feature.
 
 ---
 
+## 12e. Milestones — Tasks, Agents and Tools (v0.8)
+
+Tasks with the user's own coding agent (§4.12–§4.17). Three phases, each
+usable on its own: manual tasks first, then the context (notes, scripts),
+then the tools tunnel that joins them. Every milestone runs the CLAUDE.md
+verification (`gofmt -l`, `go vet`, `go test`, `npm run build`).
+
+**Phase A — Tasks**
+
+### M30 — Re-scope the docs
+Move the accepted proposal into this plan (§1, §2, §4.1, §4.12–§4.17, §5.3,
+§6, §7, §8, §9, §11, §12e, §13, §14) and CLAUDE.md's hard rules. No code.
+✅ *Verify:* the plan and CLAUDE.md agree with each other and with
+`docs/dev/proposals/0.8-tasks-and-agents.md`'s decisions; no section still
+describes tasks, agents or scripts as out of scope.
+
+### M31 — Agent settings
+`agent.yml` (`internal/agents`): connections with the guided dialog for
+every kind in §4.13 (instructions, Test, expiry warnings), profiles, task
+defaults, Git accounts with Test; model lists per kind (plain HTTP, 1 h
+cache) and the default resolution of §4.12.7. Backend and UI.
+✅ *Verify:* add one connection of each kind the tester has access to, Test
+each, see a fetched model list for an API-key connection and the alias list
+for a Claude subscription token; a connection's secret never comes back
+from the API; an expired connection shows its warning.
+
+### M32 — Tasks backend, Linux and local
+`tasksDir`, `TaskSpec` validation, the `task.sh` template with golden tests,
+`StartCommand` plumbing in `sshpty`/`terminal`, the `tasks` table,
+`POST /api/tasks`, group "Tasks", idempotent restart with resume, the agent
+registry (argv, resume, per-agent env), the Git credential env and repo
+identity (§4.16), and the task dir context (instructions template, notes
+copy, optional `PROMPT.md`, §4.17.1). Check whether codex reads `AGENTS.md`
+from a working folder that isn't a git repo.
+✅ *Verify:* create a task on a Linux host with an untrusted key — the trust
+prompt appears; a private https repo clones with a sessile Git account; the
+agent starts in plan mode and has read the instructions; restart the server,
+Restart the task, and the conversation resumes; "Restart fresh" starts a new
+one.
+
+### M33 — Windows bootstrap
+`task.ps1` with golden tests, SFTP path conversion, and a smoke test against
+an OpenSSH-for-Windows host.
+✅ *Verify:* the M32 walkthrough on a Windows host.
+
+### M34 — Devcontainers
+Both templates: `auto`/`repo`/`generic` config (embedded generic
+`devcontainer.json`), `up --config`/`exec`, the fixed `/sessile/...` mounts
+and env (task dir, agent state dir, per-task `.tools`, Docker socket
+opt-in), Git credentials via `--remote-env`, "Rebuild container" on
+restart, the root-user hint, and a clear failure path. Verify
+`CLAUDE_CONFIG_DIR` and Docker Desktop's reach to a loopback port.
+✅ *Verify:* one repo with its own config, one without (generic), a push
+from inside the container, and a rebuild followed by resume.
+
+### M35 — Agent deploy
+Per-agent user-space installers (Linux, Windows, containers) and the fixed
+per-agent env (gemini workspace trust, codex provider override), rechecked
+against the current CLIs.
+✅ *Verify:* on a host without the agent, a task installs it and starts it,
+for each of claude, codex and gemini.
+
+### M36 — Task form and Git import
+The task form (and the "Task" checkbox in NewSessionDialog), model picker,
+task badge, "Open task folder", and "Import from host" for Git accounts.
+✅ *Verify:* create a task from the form with and without a Request; import
+a Git identity from a host that has one, and confirm nothing is saved until
+Save.
+
+**Phase B — Context**
+
+### M37 — Notes
+Backend CRUD, the Notes page, `context: always|on-demand`, the secret-lint
+warning.
+✅ *Verify:* an `always` note appears in a new task's instructions, an
+`on-demand` one only in `notes/`.
+
+### M38 — Script extensions and runner
+Zip upload, validation and atomic install; update with kept settings;
+export; remove; `meta.json` validation (settings, check, guidance,
+functions); the settings store, Configure form and Test connection; output
+redaction; the content-keyed venv cache (single-flight) with proxy
+passthrough; timeout and process-group kill; output cap; test-run UI;
+`python3` + venv in both runtime images.
+✅ *Verify:* a zip with `..` in an entry, a symlink, or too many entries is
+refused with nothing written; an update keeps settings; a script that
+prints its token shows `«NAME»` instead; two scripts with the same
+requirements share one venv.
+
+### M39 — Example extensions
+Jira (Cloud and Server auth), Jenkins and Artifactory with plain
+`requests`, including `guidance`, as embedded zips with install, download,
+and "update available".
+✅ *Verify:* install each example, configure it against a real or test
+instance, and run its check.
+
+**Phase C — Agent tools**
+
+### M40 — MCP tunnel
+The hand-written MCP handler; the `sessile-mcp` bridge (cross-compiled and
+embedded for linux/amd64, linux/arm64, windows/amd64); reverse forwards on
+the session's `*ssh.Client` (Unix socket on Linux, loopback TCP on Windows,
+a direct socket for local tasks); per-task tokens; script tools,
+`set_task_summary`, `task_info`; held write calls; the MCP config per CLI;
+the Tools section of the instructions (§4.17.2); `tools/list_changed`.
+✅ *Verify:* with a fake MCP client first, then by hand with Claude Code on
+a subscription, codex and gemini, on a host and inside a devcontainer: the
+agent lists and calls a read tool; a write call waits for the approval
+card; the tunnel is back after Restart.
+
+### M41 — Task page
+`TaskSidePanel.vue` (task info, summary, tool activity, approvals), the
+phone sheet, and §5.3's events.
+✅ *Verify:* approve and deny a write call from a second browser; the
+summary updates live on the dashboard card.
+
+### Future (post-v0.8, do not start now)
+- A task-folder cleanup cycle (age or size based, with a preview).
+- An in-app editor for scripts (the zip round trip covers v0.8).
+- Confining script file access without root (Linux Landlock, pure Go, no
+  CGO), which would make scripts safe with untrusted users too.
+- `git@`/`ssh://` repos inside a devcontainer (SSH agent forwarding).
+- Node (and other) script runtimes.
+- Admin-published scripts shared across users, each configured with the
+  user's own settings.
+- Encryption-at-rest for `agent.yml` and `hosts.yml`.
+- Bedrock SigV4 (IAM keys); Claude on Vertex (service-account JSON) and a
+  Vertex model listing.
+- Starting a task from a sentence alone, with sessile suggesting the host
+  and repo from notes.
+- A per-host login fallback for agents with no token option (personal
+  ChatGPT Plus/Pro, Google-account gemini).
+
+---
+
 ## 13. Testing Strategy
 
 - **Unit (Go):** RingBuffer (wraparound, exact-boundary), workspace path
@@ -2043,6 +3344,13 @@ groups sees exactly the layout they saw before this feature.
   SSH-backend tests already use — since `FileTransport`'s SSH
   implementation is a real `pkg/sftp` client and a fake wire response would
   not catch what an actual `sftp-server` disagrees with the library about.
+- **Tasks, scripts, MCP (v0.8):** golden-file tests for `task.sh`,
+  `task.ps1` and the instructions template (quoting of every field
+  included); `TaskSpec` validation tables; zip-install rejection cases
+  (zip-slip, symlinks, bombs); secret redaction in script output; the venv
+  cache's single-flight; the MCP handler against a fake client, including
+  a held write call. The tunnel gets the same real-SSH integration pass as
+  `internal/hostops`.
 - **Frontend:** keep it light — `vitest` for the API layer and the WS
   message codec; no E2E framework in v0.x.
 - CI (GitHub Actions): `go vet`, `go test ./...`, `npm run build`,
@@ -2088,3 +3396,11 @@ groups sees exactly the layout they saw before this feature.
 7. Decisions in this spec are final for the milestones they cover; do not
    introduce alternative libraries or extra features without updating this
    document.
+8. No caller-supplied command strings, ever. Tasks (§4.12) are typed specs
+   rendered into fixed templates; agents come from a built-in registry with
+   constant argv; host operations are named methods (§4.10). Anything that
+   would need "run this string on host X" is out of scope.
+9. A task's agent runs where the task's code is — on the task's host, or
+   in its devcontainer — never on the sessile server. Secrets that belong
+   to sessile (script settings) stay on the server and reach the agent only
+   as tool results, through the task's own connection (§4.17).
