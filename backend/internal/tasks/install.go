@@ -8,4 +8,9 @@ func installFor(binary string) string {
 	return ""
 }
 
+// installForPS is installFor for task.ps1.
+func installForPS(binary string) string {
+	return ""
+}
+
 func osMode(perm uint32) os.FileMode { return os.FileMode(perm) }

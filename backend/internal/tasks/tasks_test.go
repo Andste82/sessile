@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"encoding/json"
 	"flag"
 	"io"
 	"log/slog"
@@ -129,7 +130,7 @@ func TestRenderGolden(t *testing.T) {
 	task := goldenTask()
 	ln, _ := resolveLaunch(agents.AgentClaude, "claude-subscription", ModePlan, "", true)
 	acct := agents.GitAccount{Host: "github.com", Name: "O'Brien", Email: "ob@example.com", Username: "ob", Token: "ghp_x"}
-	files, err := buildFiles(task, "/home/ob/.sessile/tasks/"+task.ID, ln, acct, []agents.GitAccount{acct},
+	files, err := buildFiles(task, "/home/ob/.sessile/tasks/"+task.ID, false, ln, acct, []agents.GitAccount{acct},
 		append(agents.Connection{Kind: "claude-subscription", Fields: map[string]string{"token": "oat-'x'"}}.Env(), gitEnv([]agents.GitAccount{acct})...),
 		[]Note{{Slug: "repos", Title: "repos", Body: "- moonlight-android: the Android client\n", Always: true}}, "")
 	if err != nil {
@@ -348,5 +349,81 @@ func TestGitEnvHelper(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(home); len(entries) != 1 {
 		t.Errorf("git wrote into HOME: %v", entries)
+	}
+}
+
+func TestRenderWindowsGolden(t *testing.T) {
+	task := goldenTask()
+	ln, _ := resolveLaunch(agents.AgentCodex, "codex-api", ModePlan, "", true)
+	acct := agents.GitAccount{Host: "github.com", Name: "O'Brien", Email: "ob@example.com", Username: "ob", Token: "ghp_x"}
+	dir := windowsPath("/C:/Users/ob/.sessile/tasks/" + task.ID)
+	if dir != `C:\Users\ob\.sessile\tasks\`+task.ID {
+		t.Fatalf("windowsPath = %q", dir)
+	}
+	files, err := buildFiles(task, dir, true, ln, acct, []agents.GitAccount{acct},
+		append(agents.Connection{Kind: "codex-api", Fields: map[string]string{"apiKey": `sk-"x'`}}.Env(), gitEnv([]agents.GitAccount{acct})...),
+		nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]file{}
+	for _, f := range files {
+		byName[f.name] = f
+	}
+	if _, ok := byName["task.sh"]; ok {
+		t.Fatal("a Windows task must not get task.sh")
+	}
+	for _, name := range []string{"task.ps1", "AGENTS.md", ".env.json"} {
+		f, ok := byName[name]
+		if !ok {
+			t.Fatalf("no %s", name)
+		}
+		golden := filepath.Join("testdata", "windows-"+strings.TrimPrefix(name, ".")+".golden")
+		if *update {
+			if err := os.WriteFile(golden, f.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatalf("%v (run go test -update)", err)
+		}
+		if string(want) != string(f.data) {
+			t.Errorf("%s differs from %s:\n%s", name, golden, f.data)
+		}
+	}
+	var env map[string]string
+	if err := json.Unmarshal(byName[".env.json"].data, &env); err != nil {
+		t.Fatalf(".env.json is not JSON: %v", err)
+	}
+	if env["OPENAI_API_KEY"] != `sk-"x'` {
+		t.Errorf("OPENAI_API_KEY = %q", env["OPENAI_API_KEY"])
+	}
+}
+
+func TestPSArg(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":              `'plain'`,
+		"it's":               `'it''s'`,
+		`model_provider="x"`: `('model_provider=' + $q + 'x' + $q + '')`,
+		`a "b c" 'd'`:        `('a ' + $q + 'b c' + $q + ' ''d''')`,
+	} {
+		if got := psArg(in); got != want {
+			t.Errorf("psArg(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestSFTPPath(t *testing.T) {
+	for in, want := range map[string]string{
+		".sessile/tasks": ".sessile/tasks",
+		"/srv/tasks":     "/srv/tasks",
+		`C:\work\tasks`:  "/C:/work/tasks",
+		"D:/tasks":       "/D:/tasks",
+		"/C:/x":          "/C:/x",
+	} {
+		if got := sftpPath(in); got != want {
+			t.Errorf("sftpPath(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

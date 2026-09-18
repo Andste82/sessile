@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -113,13 +114,37 @@ func (s *Service) Check(userID string, spec Spec) (hosts.Host, error) {
 }
 
 // supportedOS: the POSIX bootstrap runs on Linux and macOS, and on a host
-// whose OS was never set (most of them). Windows gets its own bootstrap.
+// whose OS was never set (most of them); Windows gets task.ps1. "other" has
+// no bootstrap.
 func supportedOS(os hosts.TargetOS) bool {
 	switch os {
-	case hosts.OSLinux, hosts.OSDarwin, "":
+	case hosts.OSLinux, hosts.OSDarwin, hosts.OSWindows, "":
 		return true
 	}
 	return false
+}
+
+// winDriveRe matches a Windows drive path as SFTP spells it (/C:/…) or as a
+// user types it (C:/…, C:\…).
+var winDriveRe = regexp.MustCompile(`^/?[A-Za-z]:[/\\]`)
+
+// sftpPath turns a user-typed tasksDir into SFTP's form: an absolute Windows
+// path C:/x becomes /C:/x, which Win32-OpenSSH's SFTP server expects.
+func sftpPath(p string) string {
+	p = strings.ReplaceAll(p, `\`, "/")
+	if winDriveRe.MatchString(p) && !strings.HasPrefix(p, "/") {
+		return "/" + p
+	}
+	return p
+}
+
+// windowsPath turns an SFTP path (/C:/Users/x/…) into the native one
+// (C:\Users\x\…) that PowerShell and the agents see.
+func windowsPath(p string) string {
+	if winDriveRe.MatchString(p) {
+		p = strings.TrimPrefix(p, "/")
+	}
+	return strings.ReplaceAll(p, "/", `\`)
 }
 
 func resolveProfile(settings agents.Settings, profileID string) (agents.Profile, agents.Connection, error) {
@@ -217,8 +242,13 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 	}
 
 	env := append(append(conn.Env(), ln.env...), gitEnv(accounts)...)
-	files := func(dir string) ([]file, error) {
-		return buildFiles(t, dir, ln, identity, accounts, env, notes, tools)
+	// files renders the folder for one target; displayDir is the folder as
+	// the target itself names it, which is what the bootstrap and the
+	// instructions use.
+	files := func(displayDir string, windows bool) func(string) ([]file, error) {
+		return func(string) ([]file, error) {
+			return buildFiles(t, displayDir, windows, ln, identity, accounts, env, notes, tools)
+		}
 	}
 
 	if t.Spec.Target == "local" {
@@ -227,7 +257,7 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			LocalDir: rel,
 			LocalPrepare: func(absDir string) ([]string, []string, error) {
 				fs := localFS{}
-				if err := writeFiles(fs, absDir, files); err != nil {
+				if err := writeFiles(fs, absDir, files(absDir, false)); err != nil {
 					return nil, nil, err
 				}
 				s.recordDir(t.ID, absDir)
@@ -249,13 +279,14 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 	}
 	target := host.SSHTarget()
 	tasksDir := host.EffectiveTasksDir()
+	windows := host.TargetOS == hosts.OSWindows
 	target.Task = func(client *ssh.Client) (string, error) {
 		fs, err := newSFTPFS(client)
 		if err != nil {
 			return "", err
 		}
 		defer fs.Close()
-		base := tasksDir
+		base := sftpPath(tasksDir)
 		if !strings.HasPrefix(base, "/") {
 			home, err := fs.Home()
 			if err != nil {
@@ -264,7 +295,17 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			base = fs.Join(home, base)
 		}
 		dir := fs.Join(base, t.ID)
-		if err := writeFiles(fs, dir, files); err != nil {
+		if windows {
+			native := windowsPath(dir)
+			if err := writeFiles(fs, dir, files(native, true)); err != nil {
+				return "", err
+			}
+			s.recordDir(t.ID, native)
+			// Run by Win32-OpenSSH's own shell (cmd.exe or PowerShell), both of
+			// which take a double-quoted path; tasksDir can't contain a quote.
+			return `powershell -NoProfile -ExecutionPolicy Bypass -File "` + native + `\task.ps1"`, nil
+		}
+		if err := writeFiles(fs, dir, files(dir, false)); err != nil {
 			return "", err
 		}
 		s.recordDir(t.ID, dir)
@@ -312,12 +353,16 @@ func writeFiles(fs FS, dir string, build func(string) ([]file, error)) error {
 }
 
 // buildFiles renders every file of a task folder for one start (§4.12.2).
-func buildFiles(t Task, dir string, ln launch, identity agents.GitAccount, accounts []agents.GitAccount,
+func buildFiles(t Task, dir string, windows bool, ln launch, identity agents.GitAccount, accounts []agents.GitAccount,
 	env [][2]string, notes []Note, tools string) ([]file, error) {
-	boot, err := render("task.sh.tmpl", bootstrapData{
+	bootName, bootTemplate, envName, renderEnvFile := "task.sh", "task.sh.tmpl", ".env", renderEnv
+	if windows {
+		bootName, bootTemplate, envName, renderEnvFile = "task.ps1", "task.ps1.tmpl", ".env.json", renderEnvJSON
+	}
+	boot, err := render(bootTemplate, bootstrapData{
 		ID: t.ID, Dir: dir, Repo: t.Spec.Repo,
 		GitName: identity.Name, GitEmail: identity.Email,
-		Agent: ln.def.Binary, Install: installFor(ln.def.Binary),
+		Agent: ln.def.Binary, Install: installFor(ln.def.Binary), InstallPS: installForPS(ln.def.Binary),
 		First: ln.first, Resume: ln.resume,
 	})
 	if err != nil {
@@ -339,7 +384,7 @@ func buildFiles(t Task, dir string, ln launch, identity agents.GitAccount, accou
 	if err != nil {
 		return nil, err
 	}
-	envFile, err := renderEnv(env)
+	envFile, err := renderEnvFile(env)
 	if err != nil {
 		return nil, err
 	}
@@ -350,8 +395,8 @@ func buildFiles(t Task, dir string, ln launch, identity agents.GitAccount, accou
 	files := []file{
 		{"task.json", append(spec, '\n'), 0o600},
 		{ln.def.InstructionsFile, instr, 0o600},
-		{".env", envFile, 0o600},
-		{"task.sh", boot, 0o700},
+		{envName, envFile, 0o600},
+		{bootName, boot, 0o700},
 	}
 	if t.Spec.Request != "" {
 		files = append(files, file{"PROMPT.md", []byte(t.Spec.Request + "\n"), 0o600})
