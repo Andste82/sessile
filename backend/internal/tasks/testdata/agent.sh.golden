@@ -29,7 +29,7 @@ if [ -n "$SESSILE_IN_CONTAINER" ]; then
 	# Inside the container everything sessile brings lives in the task folder,
 	# whoever the container's user is (§4.12.3): the agent install survives a
 	# rebuild, and so does its history, which is what makes resume work.
-	export PATH="$PATH:$TASK_DIR/.tools/bin:$HOME/.local/bin"
+	export PATH="$PATH:$TASK_DIR/.tools/bin:$TASK_DIR/.tools/home/.local/bin:$HOME/.local/bin"
 	export CLAUDE_CONFIG_DIR="$TASK_DIR/.agent/claude"
 	export CODEX_HOME="$TASK_DIR/.agent/codex"
 	export GEMINI_CLI_HOME="$TASK_DIR/.agent/gemini"
@@ -43,7 +43,11 @@ else
 fi
 
 if ! command -v 'claude' >/dev/null 2>&1; then
-	stay 'claude is not installed here.'
+	say 'installing claude'
+	command -v curl >/dev/null 2>&1 || stay "installing claude needs curl."
+	mkdir -p "$TASK_DIR/.tools/home"
+	curl -fsSL https://claude.ai/install.sh | HOME="$TASK_DIR/.tools/home" bash || stay 'installing claude failed; see above.'
+	command -v 'claude' >/dev/null 2>&1 || stay 'claude was installed but isn'\''t on PATH.'
 fi
 
 if [ -f .restart-fresh ]; then

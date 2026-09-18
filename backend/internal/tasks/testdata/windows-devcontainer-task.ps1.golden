@@ -72,7 +72,10 @@ exit
 # Where the user-space installers put agents; after the user's own Path.
 $env:Path = "$env:Path;$env:USERPROFILE\.local\bin"
 if (-not (Get-Command 'claude' -ErrorAction SilentlyContinue)) {
-	Stay 'claude is not installed on this host.'
+	Say 'installing claude for this user'
+	irm https://claude.ai/install.ps1 | iex
+	$env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ";$env:Path"
+	if (-not (Get-Command 'claude' -ErrorAction SilentlyContinue)) { Stay 'installing claude failed; see above.' }
 }
 
 if (Test-Path -LiteralPath '.restart-fresh') {

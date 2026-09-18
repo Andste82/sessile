@@ -49,7 +49,10 @@ git -C repo config user.email 'ob@example.com'
 # Where the user-space installers put agents; after the user's own Path.
 $env:Path = "$env:Path;$env:USERPROFILE\.local\bin"
 if (-not (Get-Command 'codex' -ErrorAction SilentlyContinue)) {
-	Stay 'codex is not installed on this host.'
+	Say 'installing codex for this user'
+	irm https://chatgpt.com/codex/install.ps1 | iex
+	$env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ";$env:Path"
+	if (-not (Get-Command 'codex' -ErrorAction SilentlyContinue)) { Stay 'installing codex failed; see above.' }
 }
 
 if (Test-Path -LiteralPath '.restart-fresh') {
