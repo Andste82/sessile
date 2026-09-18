@@ -19,6 +19,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/hosts"
+	"github.com/Andste82/sessile/backend/internal/notes"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/sshpty"
@@ -121,8 +122,11 @@ func run(args []string) error {
 	srv := api.NewServer(cfg, manager, wsHandler, log, cfg.WorkspaceDir, serverCfg, users, webSessions, hostsRegistry)
 	agentsRegistry := agents.NewRegistry(cfg.DataDir)
 	srv.SetAgents(agentsRegistry, agents.NewProber())
+	notesStore := notes.New(cfg.DataDir)
+	srv.SetNotes(notesStore)
 	taskService := &tasks.Service{
 		DB: store, Agents: agentsRegistry, Hosts: hostsRegistry, Log: log,
+		Notes:             notesStore,
 		WorkspaceTasksDir: ".sessile/tasks",
 	}
 	manager.SetTaskLauncher(taskService)

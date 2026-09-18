@@ -6,7 +6,10 @@ import { RouterLink, useRoute } from 'vue-router'
 // "Agent" entry in its bottom nav — still reaches every one of them.
 const route = useRoute()
 
-const tabs = [{ to: '/agent/settings', name: 'agent-settings', label: 'Connections & Git' }]
+const tabs = [
+  { to: '/agent/settings', name: 'agent-settings', label: 'Connections & Git' },
+  { to: '/agent/notes', name: 'agent-notes', label: 'Notes' },
+]
 </script>
 
 <template>

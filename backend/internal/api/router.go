@@ -17,6 +17,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/hosts"
+	"github.com/Andste82/sessile/backend/internal/notes"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/tasks"
@@ -70,6 +71,8 @@ type Server struct {
 	tasks *tasks.Service
 	// imports holds tokens read by "Import from host" until saved (§4.16).
 	imports gitImports
+	// notes is the per-user notes store (§4.14).
+	notes *notes.Store
 
 	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
 	// opId. Entries are removed once a client has had a chance to observe
@@ -170,6 +173,10 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.GET("/agent/connections/:id/models", s.listConnectionModels)
 		authGroup.POST("/agent/git/test", s.testGitAccount)
 		authGroup.POST("/agent/git/import", s.importGitIdentity)
+		authGroup.GET("/agent/notes", s.listNotes)
+		authGroup.GET("/agent/notes/:slug", s.getNote)
+		authGroup.PUT("/agent/notes/:slug", s.putNote)
+		authGroup.DELETE("/agent/notes/:slug", s.deleteNote)
 		authGroup.POST("/tasks", s.createTask)
 		authGroup.GET("/tasks/:id", s.getTask)
 	}

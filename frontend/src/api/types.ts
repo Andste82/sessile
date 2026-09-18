@@ -356,3 +356,16 @@ export interface GitImportResponse {
   hasToken: boolean
   tokenImportId?: string
 }
+
+// ---- Notes (PROJECT_PLAN.md §4.14) ----
+
+export type NoteContext = 'always' | 'on-demand'
+
+export interface Note {
+  slug: string
+  title: string
+  context: NoteContext
+  body?: string // only on a single note
+  updated: string
+  warnings?: string[] // secret-lint findings
+}

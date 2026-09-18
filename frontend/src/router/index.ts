@@ -42,6 +42,12 @@ const routes = [
     meta: { title: 'Agent' },
   },
   {
+    path: '/agent/notes',
+    name: 'agent-notes',
+    component: () => import('@/pages/NotesPage.vue'),
+    meta: { title: 'Notes' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/pages/SettingsPage.vue'),

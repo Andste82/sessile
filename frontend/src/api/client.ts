@@ -5,6 +5,8 @@ import type {
   AgentSettingsBody,
   ConnectionKind,
   GitImportResponse,
+  Note,
+  NoteContext,
   ModelsResponse,
   RestartOptions,
   Task,
@@ -202,6 +204,15 @@ export const api = {
     request<TestResult>('/api/agent/connections/test', { method: 'POST', body: JSON.stringify(body) }),
   connectionModels: (id: string, refresh = false) =>
     request<ModelsResponse>(`/api/agent/connections/${id}/models${refresh ? '?refresh=1' : ''}`),
+  listNotes: () => request<Note[]>('/api/agent/notes'),
+  getNote: (slug: string) => request<Note>(`/api/agent/notes/${encodeURIComponent(slug)}`),
+  putNote: (slug: string, context: NoteContext, body: string) =>
+    request<Note>(`/api/agent/notes/${encodeURIComponent(slug)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ context, body }),
+    }),
+  deleteNote: (slug: string) =>
+    request<void>(`/api/agent/notes/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
   importGitIdentity: (hostId: string, gitHost: string) =>
     request<GitImportResponse>('/api/agent/git/import', {
       method: 'POST',
