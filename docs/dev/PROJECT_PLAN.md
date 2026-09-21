@@ -1981,7 +1981,7 @@ orchestrator gets the scripts and:
 | `task_status(taskId)` | one task: state, summary, session status, last question | no |
 | `task_output(taskId, lines?)` | the tail of that task's terminal, escape sequences stripped | no |
 | `restart_task(taskId, fresh?, rebuildContainer?)` | restart a stopped task | no |
-| `send_to_task(taskId, text)` | type a line into a task's terminal | only when that task isn't **blocked**: answering a task that asked is the point, nudging one that didn't is not |
+| `send_to_task(taskId, text)` | type a message into a task's terminal: the user's follow-up instruction, or an answer | **no** — the same reason as `create_task`: the orchestrator passes on what the user said in the conversation. (It first asked for approval unless the task was blocked; in use that put a click between the user and their own instruction, and was dropped.) |
 | `wait_for_events(since?, timeoutSeconds?)` | block until something happens (§4.18.2) | no |
 
 The user's ready scripts are in both scopes, so the orchestrator can read a

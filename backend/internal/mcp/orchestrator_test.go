@@ -270,6 +270,24 @@ func TestOrchestratorCreatesAndWatchesATask(t *testing.T) {
 		t.Errorf("answering a blocked task should un-block it: %+v", after)
 	}
 
+	// A follow-up instruction reaches a task that is working, with no
+	// approval in between: the user said it to the orchestrator already.
+	sessions.mu.Lock()
+	sessions.typed = nil
+	sessions.mu.Unlock()
+	if text, isErr := callTool(t, c, "send_to_task", map[string]any{"taskId": taskID, "text": "also run it twice"}); isErr {
+		t.Fatalf("send_to_task to a working task: %s", text)
+	}
+	sessions.mu.Lock()
+	typed = string(sessions.typed)
+	sessions.mu.Unlock()
+	if typed != "also run it twice\r" {
+		t.Errorf("typed %q into a working task, want the instruction delivered at once", typed)
+	}
+	if pending := s.Pending("u1", taskID); len(pending) != 0 {
+		t.Errorf("a follow-up instruction must not wait for approval: %v", pending)
+	}
+
 	// restart_task goes through the manager.
 	if text, isErr := callTool(t, c, "restart_task", map[string]any{"taskId": taskID, "fresh": true}); isErr {
 		t.Fatalf("restart_task: %s", text)

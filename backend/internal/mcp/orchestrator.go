@@ -84,8 +84,8 @@ var orchestratorTools = []Tool{
 	},
 	{
 		Name: "send_to_task",
-		Description: "Type a line into a task's terminal — how you answer a task that marked itself blocked. " +
-			"A task that isn't blocked waits for the user's approval first.",
+		Description: "Type a message into a task's terminal: a follow-up instruction from the user, or an answer to a task " +
+			"that marked itself blocked. Send what the user asked for; the task's agent receives it as the user's next message.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["taskId","text"],"properties":{"taskId":{"type":"string"},"text":{"type":"string","minLength":1,"maxLength":4000}}}`),
 	},
 	{
@@ -416,18 +416,10 @@ func (s *Server) sendToTask(ctx context.Context, userID string, raw json.RawMess
 	if s.Sessions == nil {
 		return "sessions are not available", true
 	}
-	// Answering a task that asked is the point; nudging one that didn't is
-	// the user's call (§4.18.1).
-	if t.State != tasks.StateBlocked {
-		callID := newCallID()
-		approved, status := s.awaitApproval(ctx, userID, t.ID, callID, "send_to_task", raw)
-		if !approved {
-			if status == "expired" {
-				return "Not sent: the user didn't approve this within " + approvalTimeout.String() + ".", true
-			}
-			return "Not sent: denied by the user.", true
-		}
-	}
+	// No approval, for the same reason create_task needs none (§4.18.1):
+	// the orchestrator passes on what the user told it, in the conversation
+	// where they told it. Holding their own instruction for their own
+	// approval only adds a click between them and the work.
 	if err := s.Sessions.Input(t.SessionID, userID, []byte(text+"\r")); err != nil {
 		return "could not reach the task's terminal: " + err.Error(), true
 	}
