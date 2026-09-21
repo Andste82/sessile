@@ -25,7 +25,9 @@ var templates = template.Must(template.New("tasks").Funcs(template.FuncMap{
 
 // instructionsData fills instructions.md.tmpl.
 type instructionsData struct {
-	Name, Dir    string
+	Name, Dir string
+	// Host is the machine the work is on, as the user named it.
+	Host         string
 	Repo         *Repo
 	Devcontainer bool
 	GitHosts     string

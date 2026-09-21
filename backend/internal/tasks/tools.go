@@ -36,6 +36,12 @@ type toolsSetup struct {
 	files []file
 }
 
+// deniedBuiltins are the agent's own tools that would act on the sessile
+// server rather than on the task's host. Its own folder stays writable
+// through them for notes and scratch — only the tools that would mistake
+// this machine for the work are off.
+var deniedBuiltins = []string{"Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit"}
+
 func newToken() string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
@@ -59,8 +65,14 @@ func mcpFiles(a agents.Agent, t toolsSetup) []file {
 		// open its first-run wizard — a theme picker in front of the work,
 		// on every task. Sessile answers it once, here.
 		cfg, _ := json.MarshalIndent(map[string]any{"mcpServers": map[string]any{"sessile": server}}, "", "  ")
+		// The work is on the host, so the agent's own file and shell tools
+		// have nothing to act on here: they are denied, and a slip fails
+		// loudly instead of quietly editing the wrong machine (E13, M46).
 		settings, _ := json.MarshalIndent(map[string]any{
-			"permissions": map[string]any{"allow": []string{"mcp__sessile"}},
+			"permissions": map[string]any{
+				"allow": []string{"mcp__sessile"},
+				"deny":  deniedBuiltins,
+			},
 		}, "", "  ")
 		// Two first-run questions stand between the agent and the work: the
 		// theme picker, and the trust prompt for a directory it has not seen.

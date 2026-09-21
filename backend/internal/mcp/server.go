@@ -261,8 +261,9 @@ func instructions(scope string) string {
 			"start one, read its state and terminal, restart it, answer it — and their own scripts " +
 			"(tickets, CI, artifacts). wait_for_events tells you when something happens."
 	}
-	return "Tools from sessile: the user's own scripts (tickets, CI, artifacts) and this task's status line. " +
-		"Calls marked as writes wait for the user's approval in sessile."
+	return "Tools from sessile. The work is on this task's host, not on this machine: read_file, write_file, " +
+		"edit_file, list_dir, glob, grep and run reach it. Also the user's own scripts (tickets, CI, artifacts) " +
+		"and this task's status line. Calls marked as writes wait for the user's approval in sessile."
 }
 
 // Tool is one MCP tool.
@@ -354,6 +355,9 @@ func (s *Server) tools(userID, scope string) []Tool {
 	if scope == tasks.ScopeOrchestrator {
 		out = append(out, orchestratorTools...)
 	} else {
+		// A task's agent runs on the server; these are how it reaches the
+		// machine its work is on (§4.12.4).
+		out = append(out, hostTools...)
 		out = append(out, builtins...)
 	}
 	for _, r := range s.readyScripts(userID) {
@@ -437,9 +441,15 @@ func (s *Server) call(ctx context.Context, userID, taskID, scope, name string, a
 		if orchestratorToolNames[name] {
 			return s.callOrchestrator(ctx, userID, name, args)
 		}
+		if hostToolNames[name] {
+			// The orchestrator manages tasks; it does not do their work.
+			return "unknown tool " + name + " — start a task for work on a host", true
+		}
 	} else if orchestratorToolNames[name] {
 		// A task's agent gets its own task's tools, never sessile's (§4.18.1).
 		return "unknown tool " + name, true
+	} else if hostToolNames[name] {
+		return s.callHost(ctx, userID, taskID, name, args)
 	}
 	switch name {
 	case "set_task_state":

@@ -342,7 +342,8 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 				launchFor.first, launchFor.resume = ln.argv(toolArgs(ln.agent, absDir, tools.bridge, false))
 				text = toolsText
 			}
-			files, err := buildFiles(t, absDir, launchFor, identity, accounts, notes, text)
+			hostName, hostDir := s.hostNaming(userID, t)
+			files, err := buildFiles(t, absDir, hostName, hostDir, launchFor, identity, accounts, notes, text)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -473,7 +474,7 @@ func writeFiles(fs FS, dir string, build func(string) ([]file, error)) error {
 // instructions, the request, and copies of the user's notes. There is no
 // bootstrap any more — sessile starts the CLI itself, and the host is
 // prepared over SSH (§4.12.2, v0.9).
-func buildFiles(t Task, dir string, ln launch, identity agents.GitAccount, accounts []agents.GitAccount,
+func buildFiles(t Task, dir, hostName, hostDir string, ln launch, identity agents.GitAccount, accounts []agents.GitAccount,
 	notes []Note, tools string) ([]file, error) {
 	gitHosts, github := gitHostsList(accounts)
 	var always []Note
@@ -483,7 +484,7 @@ func buildFiles(t Task, dir string, ln launch, identity agents.GitAccount, accou
 		}
 	}
 	instructions, err := render("instructions.md.tmpl", instructionsData{
-		Name: t.Spec.Name, Dir: dir, Repo: t.Spec.Repo,
+		Name: t.Spec.Name, Dir: hostDir, Host: hostName, Repo: t.Spec.Repo,
 		Devcontainer: t.Spec.Devcontainer != nil,
 		GitHosts:     gitHosts, GitHub: github,
 		Notes: len(notes) > 0, AlwaysNotes: always,

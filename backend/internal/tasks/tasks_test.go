@@ -131,7 +131,8 @@ func TestRenderInstructionsGolden(t *testing.T) {
 	task := goldenTask()
 	ln, _ := resolveLaunch(agents.AgentClaude, "claude-subscription", ModePlan, "", true)
 	acct := agents.GitAccount{Host: "github.com", Name: "O'Brien", Email: "ob@example.com", Username: "ob", Token: "ghp_x"}
-	files, err := buildFiles(task, "/srv/sessile/users/u1/tasks/"+task.ID, ln, acct, []agents.GitAccount{acct},
+	files, err := buildFiles(task, "/srv/sessile/users/u1/tasks/"+task.ID, "build-01", "/home/ob/sessile-tasks/"+task.ID,
+		ln, acct, []agents.GitAccount{acct},
 		[]Note{{Slug: "repos", Title: "repos", Body: "- moonlight-android: the Android client\n", Always: true}}, "")
 	if err != nil {
 		t.Fatal(err)

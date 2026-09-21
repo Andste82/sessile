@@ -383,11 +383,10 @@ func (c *Client) command(r RunRequest) string {
 	if r.Dir != "" {
 		fmt.Fprintf(&b, "cd %s && ", shQuote(r.Dir))
 	}
+	// Exported, not prefixed: a prefix would only reach the first command of
+	// `make && make test`, and the credential has to reach all of it.
 	for _, kv := range r.Env {
-		fmt.Fprintf(&b, "%s=%s ", kv[0], shQuote(kv[1]))
-	}
-	if len(r.Env) > 0 {
-		b.WriteString("env ")
+		fmt.Fprintf(&b, "export %s=%s; ", kv[0], shQuote(kv[1]))
 	}
 	b.WriteString(inner)
 	return fmt.Sprintf("sh -lc %s", shQuote(b.String()))

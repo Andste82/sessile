@@ -254,6 +254,45 @@ func (s *Service) hostShellTarget(userID string, t Task) (sshpty.Target, hosts.H
 	return target, host, nil
 }
 
+// hostNaming is how the instructions refer to the task's host and its folder
+// there. Both are best-effort: the folder is known once the host has been
+// dialled, and until then the instructions name the host alone.
+func (s *Service) hostNaming(userID string, t Task) (name, dir string) {
+	if t.Spec.Target == "local" {
+		return "this server", s.AgentDir(userID, t.ID)
+	}
+	name = "the task's host"
+	if store, err := s.Hosts.For(userID); err == nil {
+		if h, ok := store.Get(t.HostID); ok {
+			name = h.Name
+		}
+	}
+	return name, s.taskDirOf(t)
+}
+
+// GitEnv is the task's Git credential environment, for one command on its
+// host: the helper answers from it, so nothing is written there and the token
+// is never part of a URL (§4.16). Empty when the user has no Git account for
+// the task's repo.
+func (s *Service) GitEnv(userID, taskID string) [][2]string {
+	t, err := s.Get(userID, taskID)
+	if err != nil {
+		return nil
+	}
+	store, err := s.Agents.For(userID)
+	if err != nil {
+		return nil
+	}
+	settings := store.Get()
+	if t.Spec.Repo != nil {
+		if g, ok := settings.GitFor(t.Spec.Repo.URL); ok {
+			return gitEnv([]agents.GitAccount{g})
+		}
+		return nil
+	}
+	return gitEnv(settings.Git)
+}
+
 // ShellLaunch is the user's pane on a task's host (session.TaskLauncher):
 // the host's own terminal, started in the task folder.
 func (s *Service) ShellLaunch(userID, taskID string) (session.TaskShell, error) {
