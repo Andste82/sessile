@@ -35,14 +35,30 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
   **v0.8 widened the scope on purpose** (plan §1, §4.12–§4.17): tasks,
   agent connections, notes, script extensions, Git accounts, and the
   `sessile` MCP tunnel are in. The boundary above still holds inside them:
-  - A task is a typed `TaskSpec` rendered into the fixed templates in
-    `internal/tasks/templates`, with every field validated and quoted.
-    Agents come from the built-in registry with **constant argv**; the
-    request and env go to files. No API field ever becomes a command line.
+  - A task is a typed `TaskSpec`. Agents come from the built-in registry
+    with **constant argv**; the request and the env go to files and to the
+    process environment. No API field ever becomes a command line.
+  - **`run` is the one exception, and it is an agent tool, not an API.**
+    An agent may run a command on **the host of the task it belongs to**:
+    one host, never a caller-chosen one, never a list; owner-scoped;
+    logged with its exit code; reachable only through that task's own MCP
+    socket. Sessile's HTTP API still takes no command string — the typed
+    `hostops` operations remain the only file and process surface it
+    exposes. Widening that (a host id in the call, a fan-out, an HTTP
+    route) is the thing to stop at.
   - Devcontainers are *used* through the host's `devcontainer` CLI
     (`up`/`exec`, a fixed set of mounts), never managed.
-  - Agents run on the task's host (or its devcontainer), **never on the
-    sessile server**, and sessile never drives a host from the server.
+  - **Agents run on the sessile server** (v0.9), one per task, and reach
+    their host through the task's own SSH connection — SFTP for files,
+    exec channels for commands. Nothing is installed on a host and no
+    agent token is delivered there. A task also opens the user's own shell
+    on its host; the two sessions share a task id.
+  - **A task's agent is confined** (`internal/confine`, Landlock): its own
+    folder and the programs it needs, nothing else — never `--data-dir`.
+    Where the kernel cannot enforce it, a task refuses to start unless the
+    operator passes `--allow-unconfined-agents`. Don't widen the ruleset
+    to make something convenient work; find what the agent actually needs
+    and allow exactly that (§4.12.9).
   - Sessile has **no LLM client**. The only vendor calls it makes are a
     connection Test and a model list, over plain HTTP. A Claude
     subscription token is only ever used by Claude Code running
@@ -93,15 +109,15 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
   `russh`-based helper), and deliberately kept as-is for now; not a bug to
   silently "fix" by swapping the SSH client. See PROJECT_PLAN.md §11.1.
   No LLM or MCP SDK: the MCP server is a small hand-written JSON-RPC handler
-  (`internal/mcp`) plus the `cmd/sessile-mcp` stdio bridge, cross-compiled
-  with CGO off and embedded. User scripts are plain-HTTP Python
-  (`requests`/`urllib`), no vendor SDKs.
+  (`internal/mcp`); the agent's stdio end is a mode of the server binary.
+  User scripts are plain-HTTP Python (`requests`/`urllib`), no vendor SDKs.
+  Confinement uses `golang.org/x/sys/unix` (Landlock syscalls) — no new
+  dependency for it.
 - **Protocol:** Binary WS frames = terminal bytes; text frames = JSON control
   messages exactly as specified in PROJECT_PLAN.md §5 (task events: §5.3).
-  Never change the wire format without updating the plan. The MCP tunnel is
-  not a WS protocol: it rides the task session's own `*ssh.Client` as a
-  reverse forward (a 0600 Unix socket in the task dir on Linux, a loopback
-  TCP port on Windows) — no second dial, no new trust decision.
+  Never change the wire format without updating the plan. MCP is not a WS
+  protocol: since v0.9 it is a 0600 Unix socket in the agent's own folder on
+  the server, with a per-start token, reached by `sessile mcp-bridge <dir>`.
 - **Security:** Every path an API caller supplies **for the local host** must
   pass the workspace validation in `internal/session/workspace.go` (plan §4.5)
   — a session's starting directory, the directory browser, every local file
@@ -120,15 +136,16 @@ Frontend: Vue 3 + TS + Vite + Tailwind + @xterm/xterm.
   bounds the API.
   Shells only from the allowlist (local-host sessions only). Host keys are
   pinned per-host; changes require explicit user confirmation (see above).
-  A local-host task's folder (`<workspace>/.sessile/tasks/…`) passes the
-  same workspace validation; an SSH task's `tasksDir` is exempt for the same
-  reason every SSH path is.
+  A task agent's folder (`<data-dir>/users/<uid>/tasks/<id>`) is sessile's
+  own path, not a caller's, so it does not go through that check — what
+  bounds it is Landlock (§4.12.9). An SSH task's `tasksDir` is exempt for
+  the same reason every SSH path is.
 - **Concurrency:** Exactly one writer goroutine per WebSocket connection.
   Broadcasts must never block on a slow client. This applies equally to
   SSH-backed sessions — they reuse the same `Manager`/`ws.Client` machinery as
   local sessions, not a parallel implementation.
-- Follow the milestone order in plan §12/§12b/§12c/§12d/§12e. Finish + verify
-  a milestone before starting the next.
+- Follow the milestone order in plan §12/§12b/§12c/§12d/§12e/§12f/§12g.
+  Finish + verify a milestone before starting the next.
 
 ## Commands
 ```bash
@@ -149,10 +166,14 @@ make docker          # multi-stage image build
   `./data` → add an SSH host → confirm the host-key trust prompt appears on
   first connect, not a silent connection.
 - Manual smoke test for task changes: create a task on a host with a repo →
-  the clone runs with the sessile Git account → the agent starts in plan mode
-  having read the task instructions → a script tool call works through the
-  tunnel, and a write call waits for approval → restart the server, Restart
-  the task, and the agent's conversation resumes.
+  sessile clones it there with the Git account → the agent starts on the
+  server in plan mode, having read its instructions → it reads and edits
+  files on the host and runs its tests through `run` → `ask` reaches the
+  task panel and the answer comes back → restart the server, Restart the
+  task, and the agent's conversation resumes.
+- After a confinement change, run `go test ./internal/confine/` and then a
+  real task: a ruleset that is too tight shows up as a CLI that will not
+  start (no temp dir) or hangs (no DNS), not as a test failure.
 
 ## Conventions
 - Go: stdlib `log/slog`, wrapped errors (`fmt.Errorf("…: %w", err)`), table-

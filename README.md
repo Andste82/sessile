@@ -46,21 +46,30 @@ specification, the development setup and the project layout live there.
   can fold away. There is nothing to manage: a group exists while a session
   names it and is gone with its last member. Leave the field empty and the
   list looks exactly as it did before.
-- **Tasks with your coding agent.** Start a task and sessile sets a session
-  up for it on the host you pick: its own folder, the main repo cloned with
-  your Git account, optionally the repo's devcontainer, and your agent
-  (Claude Code, Codex or Gemini — installed if it's missing) started in plan
-  mode. You say what to do in the terminal; the agent plans, you approve,
-  it works — in one conversation that resumes after a restart. Agents log in
-  with tokens you give sessile once (a Claude subscription's
-  `claude setup-token`, an API key, or Bedrock/Foundry/Vertex for
-  enterprises).
+- **Tasks with your coding agent.** Start a task and sessile sets the work
+  up on the host you pick — its own folder, the main repo cloned with your
+  Git account, optionally the repo's devcontainer — and starts your agent
+  (Claude Code, Codex or Gemini) **on the sessile server**, working on that
+  host through its own SSH connection. You authenticate once, on the
+  server: nothing is installed on your hosts and no token is sent to them,
+  so a locked-down build box with no npm and no writable home runs tasks
+  like any other. The task page shows both halves side by side: the agent's
+  conversation, and your own shell on the host. You say what to do, the
+  agent plans, you approve, it works — in one conversation that resumes
+  after a restart. When it needs a decision it asks, and the question waits
+  for you in the task panel. Agents log in with tokens you give sessile
+  once (a Claude subscription's `claude setup-token`, an API key, or
+  Bedrock/Foundry/Vertex for enterprises).
 - **Notes and scripts as the agent's context and tools.** Markdown notes
   ("which repo is what") go into every task. Scripts — zip extensions with
   Jira, Jenkins and Artifactory examples — run on the sessile server with
-  your settings, and reach the agent as tools through the task's own SSH
-  connection; their tokens never leave the server, and anything that changes
-  a service waits for your approval in the task's side panel.
+  your settings and reach the agent as tools; their tokens never leave the
+  server, and anything that changes a service waits for your approval in
+  the task's side panel.
+- **An orchestrator to run them.** One agent session per user, on the
+  server, whose tools are sessile itself: tell it what you want done and it
+  starts the task, watches it, and answers it when it gets stuck. Related
+  tasks share an epic, and the sidebar folds them together.
 - **Persistent sessions.** Once connected, PTYs are owned by the backend and
   survive browser disconnects, refreshes and closed tabs.
 - **Scrollback restoration.** Each session keeps a ring buffer of its raw
@@ -296,9 +305,15 @@ Everything server- and account-level lives in hand-editable YAML under
   off in Settings (`allowAgentScripts: false`).
 - **Agent credentials** (connections, Git accounts, script settings) are
   plaintext in each user's `agent.yml` and `settings/`, like `hosts.yml`,
-  and are never returned by the API. A task hands them to its host in a
-  0600 `.env` that the bootstrap loads and deletes; while the agent runs,
-  they are in its environment on that host.
+  and are never returned by the API. Your agent token stays on the server;
+  a Git token reaches a host only in the environment of the one command
+  that needs it, never written there.
+- **Agents are confined.** A task's agent runs on the server, so it is held
+  to its own folder with Linux Landlock: it cannot read sessile's data
+  directory, another task's folder, or the operator's home. On a kernel
+  without Landlock (below 5.13) a task refuses to start unless you pass
+  `--allow-unconfined-agents` and accept that an agent can then read
+  anything sessile can.
 
 ## License
 
