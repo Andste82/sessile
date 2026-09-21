@@ -62,13 +62,16 @@ type Devcontainer struct {
 type AgentSpec struct {
 	ProfileID string `json:"profileId"`
 	Model     string `json:"model,omitempty"`
-	Mode      string `json:"mode,omitempty"` // plan (default) | normal
+	Mode      string `json:"mode,omitempty"` // plan (default) | normal | auto
 }
 
-// Agent modes (§4.12.4).
+// Agent modes (§4.12.4b). Plan is the default: the agent investigates, the
+// user approves its plan, then it works. Auto is for a task too small to
+// need that — the agent works without stopping to ask for approval.
 const (
 	ModePlan   = "plan"
 	ModeNormal = "normal"
+	ModeAuto   = "auto"
 )
 
 // Task states (§4.18.2): what a task's agent says it is doing. "" until it
@@ -179,9 +182,9 @@ func (s Spec) Validate() error {
 		return invalid("invalid model id")
 	}
 	switch s.Agent.Mode {
-	case ModePlan, ModeNormal:
+	case ModePlan, ModeNormal, ModeAuto:
 	default:
-		return invalid("mode must be plan or normal")
+		return invalid("mode must be plan, normal or auto")
 	}
 	if len(s.Request) > maxRequest {
 		return invalid("the request is longer than 64 KiB")

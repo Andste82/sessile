@@ -1183,6 +1183,17 @@ nothing can interrupt an agent sitting at its prompt.
 
 #### 4.12.4b Agent registry and modes
 
+**Modes.** `plan` is the default: the agent investigates, proposes a plan,
+and waits for the user to approve it before changing anything. `auto` is for
+a task too small to need that — look something up, run a check, a one-line
+fix: the agent does the work without stopping for a plan or for each
+command, and still `ask`s before anything destructive or shared. The
+orchestrator never picks `auto` on its own: when a task looks small and
+low-risk it asks the user whether to start it in auto mode (§4.18.1).
+`normal` is the CLI's own default between the two. Sessile's approval gate
+for write-effect script calls applies in every mode — it is enforced by
+sessile, not by the agent's permission mode.
+
 
 The agent registry is **built in** (code, not config). Every argv is
 constant. The agent starts interactively in the task dir (`/sessile/task`

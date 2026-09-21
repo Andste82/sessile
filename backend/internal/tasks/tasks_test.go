@@ -116,6 +116,29 @@ func TestResolveLaunch(t *testing.T) {
 	}
 }
 
+// Auto mode starts each CLI in its own no-prompt mode, and plan and normal
+// are untouched by it (§4.12.4b).
+func TestResolveLaunchAutoMode(t *testing.T) {
+	tests := map[agents.Agent]string{
+		agents.AgentClaude: "--permission-mode auto",
+		agents.AgentCodex:  "--sandbox workspace-write --ask-for-approval never",
+		agents.AgentGemini: "--approval-mode yolo",
+	}
+	for agent, want := range tests {
+		ln, ok := resolveLaunch(agent, "", ModeAuto, "", false)
+		if !ok {
+			t.Fatalf("%s: not in the registry", agent)
+		}
+		if got := strings.Join(ln.first, " "); !strings.Contains(got, want) {
+			t.Errorf("%s auto = %q, want it to contain %q", agent, got, want)
+		}
+		plan, _ := resolveLaunch(agent, "", ModePlan, "", false)
+		if strings.Contains(strings.Join(plan.first, " "), want) {
+			t.Errorf("%s plan mode must not carry the auto flags", agent)
+		}
+	}
+}
+
 func goldenTask() Task {
 	return Task{
 		ID: "dbg-142-print-crash-3f9a1c",

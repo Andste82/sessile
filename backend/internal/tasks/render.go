@@ -37,6 +37,8 @@ type instructionsData struct {
 	Tools        string
 	HasRequest   bool
 	Summary      string
+	// Mode is the agent's mode, which decides whether it plans first.
+	Mode string
 }
 
 // orchestratorData fills orchestrator.md.tmpl (§4.18).

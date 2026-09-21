@@ -69,8 +69,16 @@ there is nothing of the project in it.
 - When a decision is the user's, call `ask` and wait for the answer. Do not
   ask in this terminal: nobody may be watching it, while `ask` reaches them
   in sessile and can also be answered by their orchestrator.
+{{- if eq .Mode "auto"}}
+- This task runs in **auto mode**: the user judged it small and clear enough
+  to go ahead without approving a plan. Do the work, check it, and report.
+  Still `ask` before anything destructive or irreversible — deleting data,
+  force-pushing, changing something shared — or if the task turns out to
+  be bigger than it looked.
+{{- else}}
 - Present a plan and wait for the user to approve it before you change
   anything.
+{{- end}}
 - Keep `set_task_state` current — `working`, `blocked` with the question you
   need answered, or `done`. It is how the user and their orchestrator know
   where you are without reading this terminal.

@@ -535,6 +535,7 @@ func buildFiles(t Task, dir, hostName, hostDir string, ln launch, identity agent
 		GitHosts:     gitHosts, GitHub: github,
 		Notes: len(notes) > 0, AlwaysNotes: always,
 		Tools: tools, HasRequest: t.Spec.Request != "", Summary: t.Summary,
+		Mode: t.Spec.Agent.Mode,
 	})
 	if err != nil {
 		return nil, err

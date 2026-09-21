@@ -49,7 +49,7 @@ var orchestratorTools = []Tool{
 			"epic":{"type":"string","maxLength":64,"description":"Groups tasks that belong together"},
 			"profileId":{"type":"string","description":"One of list_profiles' ids; default: the user's default profile"},
 			"model":{"type":"string","description":"Optional model id for this task"},
-			"mode":{"type":"string","enum":["plan","normal"],"description":"plan (default): the task's agent plans before it acts"},
+			"mode":{"type":"string","enum":["plan","auto","normal"],"description":"plan (default): the agent plans and the user approves before it acts. auto: it just does the work — only for small, clear, low-risk tasks, and only when the user said yes to auto"},
 			"repo":{"type":"object","properties":{"url":{"type":"string"},"ref":{"type":"string"}},"description":"Main repository to clone"},
 			"devcontainer":{"type":"object","properties":{"mode":{"type":"string","enum":["auto","repo","generic"]},"dockerSocket":{"type":"boolean"}},"description":"Run the task in the repo's devcontainer; needs repo"}}}`),
 	},

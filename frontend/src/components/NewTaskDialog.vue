@@ -34,7 +34,7 @@ const useDevcontainer = ref(false)
 const dcMode = ref<'auto' | 'repo' | 'generic'>('auto')
 const dockerSocket = ref(false)
 const profileId = ref('')
-const mode = ref<'plan' | 'normal'>('plan')
+const mode = ref<'plan' | 'normal' | 'auto'>('plan')
 const model = ref('')
 const submitting = ref(false)
 const error = ref<string | null>(null)
@@ -262,6 +262,9 @@ const inputCls =
           <div class="flex gap-4 text-sm text-slate-200">
             <label class="flex items-center gap-2"><input v-model="mode" type="radio" value="plan" class="accent-emerald-400" /> Plan first</label>
             <label class="flex items-center gap-2"><input v-model="mode" type="radio" value="normal" class="accent-emerald-400" /> Normal</label>
+            <label class="flex items-center gap-2" title="For small, clear tasks: the agent works without asking you to approve a plan or its commands">
+              <input v-model="mode" type="radio" value="auto" class="accent-emerald-400" /> Auto
+            </label>
           </div>
         </div>
         <div v-if="profile" :class="labelCls">

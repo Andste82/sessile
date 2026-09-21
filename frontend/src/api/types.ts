@@ -336,7 +336,7 @@ export interface TaskSpec {
   target?: 'local'
   repo?: { url: string; ref?: string }
   devcontainer?: { mode: 'auto' | 'repo' | 'generic'; dockerSocket: boolean }
-  agent: { profileId: string; model?: string; mode?: 'plan' | 'normal' }
+  agent: { profileId: string; model?: string; mode?: 'plan' | 'normal' | 'auto' }
   request?: string
 }
 

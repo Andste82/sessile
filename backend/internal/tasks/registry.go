@@ -22,6 +22,10 @@ type agentDef struct {
 	InstructionsFile string
 	// PlanArgs start the agent in its plan (or closest read-only) mode.
 	PlanArgs []string
+	// AutoArgs start it working without stopping for approval (§4.12.4b).
+	// Sessile's own gate on write-effect script calls still applies: it is
+	// enforced by sessile, not by the agent's mode.
+	AutoArgs []string
 	// RequestFlag precedes the first message, "" when it is positional.
 	RequestFlag string
 	// ResumeArgs continue the latest conversation in the working directory.
@@ -41,15 +45,21 @@ var registry = map[agents.Agent]agentDef{
 		Binary:           "claude",
 		InstructionsFile: "CLAUDE.md",
 		PlanArgs:         []string{"--permission-mode", "plan"},
-		ResumeArgs:       []string{"--continue"},
-		ModelEnv:         "ANTHROPIC_MODEL",
+		// Claude Code's auto mode has a classifier review every action
+		// instead of the user: safe ones run, destructive, credential and
+		// deployment ones are still blocked or asked about.
+		AutoArgs:   []string{"--permission-mode", "auto"},
+		ResumeArgs: []string{"--continue"},
+		ModelEnv:   "ANTHROPIC_MODEL",
 	},
 	agents.AgentCodex: {
 		Binary:           "codex",
 		InstructionsFile: "AGENTS.md",
 		// codex has no plan flag (/plan is TUI-only); a read-only sandbox that
 		// asks before acting is the closest start.
-		PlanArgs:   []string{"--sandbox", "read-only", "--ask-for-approval", "on-request"},
+		PlanArgs: []string{"--sandbox", "read-only", "--ask-for-approval", "on-request"},
+		// No prompts, with codex's own sandbox holding writes to its folder.
+		AutoArgs:   []string{"--sandbox", "workspace-write", "--ask-for-approval", "never"},
 		ResumeArgs: []string{"resume", "--last"},
 		ModelFlag:  "-m",
 	},
@@ -57,9 +67,13 @@ var registry = map[agents.Agent]agentDef{
 		Binary:           "gemini",
 		InstructionsFile: "GEMINI.md",
 		PlanArgs:         []string{"--approval-mode", "plan"},
-		RequestFlag:      "-i",
-		ResumeArgs:       []string{"--resume", "latest"},
-		ModelEnv:         "GEMINI_MODEL",
+		// gemini has no reviewed middle ground (auto_edit covers edits only,
+		// not tool calls), so auto is yolo. What bounds it is what bounds
+		// every agent here: Landlock on the server and sessile's approvals.
+		AutoArgs:    []string{"--approval-mode", "yolo"},
+		RequestFlag: "-i",
+		ResumeArgs:  []string{"--resume", "latest"},
+		ModelEnv:    "GEMINI_MODEL",
 		// A fresh task folder is an untrusted workspace, and gemini exits in
 		// one rather than asking.
 		Env: map[string]string{"GEMINI_CLI_TRUST_WORKSPACE": "true"},
@@ -104,8 +118,11 @@ func resolveLaunch(a agents.Agent, connKind, mode, model string, hasRequest bool
 		return launch{}, false
 	}
 	common := []string{}
-	if mode == ModePlan {
+	switch mode {
+	case ModePlan:
 		common = append(common, def.PlanArgs...)
+	case ModeAuto:
+		common = append(common, def.AutoArgs...)
 	}
 	var env [][2]string
 	if model != "" {
