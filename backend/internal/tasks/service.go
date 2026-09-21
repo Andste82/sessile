@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Andste82/sessile/backend/internal/agents"
+	"github.com/Andste82/sessile/backend/internal/confine"
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/storage"
@@ -53,6 +54,13 @@ type Service struct {
 	// means they are. Checked in Create, so the form, the orchestrator and
 	// create_task all honour the setting.
 	AllowLocal func() bool
+	// AllowUnconfined starts agents even where Landlock is unavailable
+	// (§4.12.9, E14). Off by default: sessile refuses instead.
+	AllowUnconfined bool
+	// SelfExe is the sessile binary, which an agent start re-execs to apply
+	// its confinement. Set once at startup; empty means confinement cannot
+	// be applied, which is refused like a kernel without Landlock.
+	SelfExe string
 	// WorkspaceTasksDir is a local-host task's folder root relative to the
 	// workspace (§4.12).
 	WorkspaceTasksDir string
@@ -335,6 +343,9 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 				// the work on the host stays.
 				_ = os.RemoveAll(filepath.Join(absDir, agentStateDir))
 			}
+			for _, sub := range []string{"tmp", ".cache", ".config", "run"} {
+				_ = os.MkdirAll(filepath.Join(absDir, sub), 0o700)
+			}
 			tools := s.localTools(userID, t.ID, absDir, scope)
 			launchFor := ln
 			text := ""
@@ -373,6 +384,10 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			_, seen := os.Stat(marker)
 			argv := append([]string{binary}, launchFor.start(seen == nil)...)
 			_ = os.WriteFile(marker, nil, 0o600)
+			argv, err = s.confined(absDir, binary, argv)
+			if err != nil {
+				return nil, nil, err
+			}
 			env := agentEnv(absDir, conn, ln, model)
 			return argv, env, nil
 		},
@@ -383,17 +398,52 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 // it never touches the server user's home (§4.12.9).
 const agentStateDir = ".agent"
 
+// confined wraps an agent's argv in the confinement step (§4.12.9, E13): the
+// agent may touch its own folder and the programs it needs, and nothing else
+// on this machine — not --data-dir, not another task, not the operator's
+// home. Where the kernel cannot enforce that, the task refuses to start
+// unless the operator has said otherwise (E14).
+func (s *Service) confined(dir, binary string, argv []string) ([]string, error) {
+	if !confine.Supported() || s.SelfExe == "" {
+		if !s.AllowUnconfined {
+			return nil, fmt.Errorf("this agent cannot be confined (Landlock needs Linux 5.13+); " +
+				"start sessile with --allow-unconfined-agents to run agents anyway, " +
+				"knowing an agent can then read anything sessile can")
+		}
+		s.warn("starting an agent unconfined", nil)
+		return argv, nil
+	}
+	self := s.SelfExe
+	rules, err := json.Marshal(confine.AgentRules(dir, binary, self))
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{self, "confine-exec", string(rules), "--"}, argv...), nil
+}
+
 // agentEnv is the environment the agent CLI starts with: its connection's
 // credentials, the agent's own arguments-as-env, and state directories inside
 // the task folder. Nothing of the server's own is inherited (serverEnvBlocked).
 func agentEnv(dir string, conn agents.Connection, ln launch, model string) []string {
 	pairs := append(conn.Env(), ln.env...)
 	state := filepath.Join(dir, agentStateDir)
+	// A confined agent may write only inside its own folder, so its temp
+	// directory goes there too — and every CLI is told where it is, because
+	// one that cannot write to /tmp refuses to start at all (§4.12.9).
+	tmp := filepath.Join(dir, "tmp")
 	pairs = append(pairs,
 		[2]string{"CLAUDE_CONFIG_DIR", filepath.Join(state, "claude")},
 		[2]string{"CODEX_HOME", filepath.Join(state, "codex")},
 		[2]string{"GEMINI_CLI_HOME", filepath.Join(state, "gemini")},
 		[2]string{"HOME", dir},
+		[2]string{"TMPDIR", tmp},
+		[2]string{"TMP", tmp},
+		[2]string{"TEMP", tmp},
+		[2]string{"CLAUDE_CODE_TMPDIR", tmp},
+		[2]string{"XDG_CACHE_HOME", filepath.Join(dir, ".cache")},
+		[2]string{"XDG_CONFIG_HOME", filepath.Join(dir, ".config")},
+		[2]string{"XDG_DATA_HOME", filepath.Join(dir, ".local", "share")},
+		[2]string{"XDG_RUNTIME_DIR", filepath.Join(dir, "run")},
 	)
 	out := make([]string, 0, len(pairs))
 	for _, kv := range pairs {

@@ -18,6 +18,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/api"
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/confine"
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/mcp"
 	"github.com/Andste82/sessile/backend/internal/notes"
@@ -59,6 +60,15 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "mcp-bridge" {
 		if err := runMCPBridge(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "sessile mcp-bridge:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// Confinement is applied in a re-exec of this binary, between fork and
+	// exec, which Go gives no other hook for (§4.12.9).
+	if len(os.Args) > 1 && os.Args[1] == "confine-exec" {
+		if err := runConfineExec(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "sessile:", err)
 			os.Exit(1)
 		}
 		return
@@ -154,6 +164,21 @@ func run(args []string) error {
 	taskService.Tools = mcpServer
 	taskService.Sessions = manager
 	taskService.AllowLocal = func() bool { return serverCfg.Get().AllowLocalHost }
+	taskService.AllowUnconfined = cfg.AllowUnconfinedAgents
+	if self, err := os.Executable(); err == nil {
+		taskService.SelfExe = self
+	} else {
+		log.Error("cannot find the sessile binary; agents cannot be confined", "err", err)
+	}
+	if !confine.Supported() {
+		if cfg.AllowUnconfinedAgents {
+			log.Warn("agents run unconfined: this kernel has no Landlock, and --allow-unconfined-agents is set. " +
+				"An agent can read anything sessile can, including every user's host credentials")
+		} else {
+			log.Warn("agents will not start: this kernel has no Landlock (Linux 5.13+). " +
+				"Start with --allow-unconfined-agents to run them anyway, knowing an agent can read anything sessile can")
+		}
+	}
 	manager.SetTaskEvents(mcpServer)
 	srv.SetMCP(mcpServer)
 	manager.SetTaskLauncher(taskService)

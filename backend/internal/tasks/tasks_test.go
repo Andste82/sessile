@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"encoding/json"
 	"flag"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Andste82/sessile/backend/internal/agents"
+	"github.com/Andste82/sessile/backend/internal/confine"
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/storage"
@@ -194,7 +196,10 @@ func TestAgentRunsOnTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, DataDir: dataDir}
+	// No sessile binary under `go test`, so the confinement re-exec cannot
+	// run here; TestAgentArgvIsConfined covers that it is asked for.
+	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, DataDir: dataDir,
+		AllowUnconfined: true}
 	mgr := session.NewManager(root, []string{"sh"}, 1<<16, dataDir, db, log)
 	mgr.SetTaskLauncher(svc)
 	svc.Sessions = mgr
@@ -355,7 +360,10 @@ func TestOrchestratorEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, DataDir: dataDir}
+	// No sessile binary under `go test`, so the confinement re-exec cannot
+	// run here; TestAgentArgvIsConfined covers that it is asked for.
+	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, DataDir: dataDir,
+		AllowUnconfined: true}
 	mgr := session.NewManager(root, []string{"sh"}, 1<<16, dataDir, db, log)
 	mgr.SetTaskLauncher(svc)
 	svc.Sessions = mgr
@@ -399,5 +407,42 @@ func TestOrchestratorEndToEnd(t *testing.T) {
 	list, err := svc.List("u1")
 	if err != nil || len(list) != 1 {
 		t.Fatalf("tasks = %d (%v), want the one orchestrator", len(list), err)
+	}
+}
+
+// An agent's argv goes through the confinement step, and a task refuses to
+// start rather than running an agent that cannot be confined (§4.12.9, E14).
+func TestAgentArgvIsConfined(t *testing.T) {
+	if !confine.Supported() {
+		t.Skip("this kernel has no Landlock")
+	}
+	dir := t.TempDir()
+	svc := &Service{SelfExe: "/usr/local/bin/sessile"}
+	argv, err := svc.confined(dir, "/usr/bin/claude", []string{"/usr/bin/claude", "--continue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argv[0] != "/usr/local/bin/sessile" || argv[1] != "confine-exec" || argv[3] != "--" {
+		t.Fatalf("argv = %v", argv)
+	}
+	var rules confine.Rules
+	if err := json.Unmarshal([]byte(argv[2]), &rules); err != nil {
+		t.Fatal(err)
+	}
+	if len(rules.ReadWrite) == 0 || rules.ReadWrite[0] != dir {
+		t.Errorf("the task folder must be writable: %v", rules.ReadWrite)
+	}
+	for _, p := range append(rules.ReadWrite, rules.ReadOnly...) {
+		if strings.HasPrefix(p, "/root/.claude") || strings.Contains(p, "/data/users") {
+			t.Errorf("%s must not be reachable by an agent", p)
+		}
+	}
+	if argv[len(argv)-1] != "--continue" {
+		t.Errorf("the agent's own arguments were lost: %v", argv)
+	}
+
+	// Without a binary to re-exec, a task refuses rather than running free.
+	if _, err := (&Service{}).confined(dir, "/usr/bin/claude", []string{"/usr/bin/claude"}); err == nil {
+		t.Error("an agent that cannot be confined must not start")
 	}
 }
