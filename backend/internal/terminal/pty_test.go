@@ -94,3 +94,44 @@ func TestShellEnvExtraOverridesParent(t *testing.T) {
 		t.Errorf("last HISTFILE = %q, want %q", last, want)
 	}
 }
+
+// TestStartArgsDropsBlockedEnvironment: a task's agent must not inherit the
+// server's own agent environment (§4.12.9), while everything else — PATH, a
+// proxy, the locale — still reaches it, and the task's own values still win.
+func TestStartArgsDropsBlockedEnvironment(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "the-operator's-session")
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-operator")
+	t.Setenv("HTTPS_PROXY", "http://proxy.example:3128")
+
+	dir := t.TempDir()
+	p, err := StartArgs("/bin/sh", []string{"-c", "env; exit 0"}, dir, 24, 80,
+		[]string{"CLAUDE_CODE_OAUTH_TOKEN=oat-from-the-task"},
+		"CLAUDE", "ANTHROPIC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []byte
+	buf := make([]byte, 4096)
+	for {
+		n, err := p.Read(buf)
+		out = append(out, buf[:n]...)
+		if err != nil {
+			break
+		}
+	}
+	p.Wait()
+	p.CloseFile()
+	got := string(out)
+
+	for _, unwanted := range []string{"CLAUDE_CODE_SESSION_ID=", "CLAUDECODE=", "ANTHROPIC_API_KEY="} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("%s reached the task's environment:\n%s", unwanted, got)
+		}
+	}
+	for _, want := range []string{"CLAUDE_CODE_OAUTH_TOKEN=oat-from-the-task", "HTTPS_PROXY=http://proxy.example:3128", "PATH="} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%s is missing from the task's environment:\n%s", want, got)
+		}
+	}
+}

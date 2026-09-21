@@ -196,3 +196,35 @@ func gitHostsList(accounts []agents.GitAccount) (string, bool) {
 	sort.Strings(parts)
 	return strings.Join(parts, ", "), github
 }
+
+// serverEnvBlocked names, by prefix, what a local task's agent must not
+// inherit from the sessile server's own process environment (§4.12.9).
+//
+// A local task is the one case where sessile's environment becomes an
+// agent's: an SSH task gets its user's login environment on their own host,
+// but a task on the server starts as a child of sessile. Whatever the
+// operator's shell held when they started sessile would otherwise configure
+// the agent — and silently win over the task's own connection, since a CLI
+// that finds ANTHROPIC_API_KEY or AWS credentials in its environment uses
+// them. It also hands the agent credentials that are not the user's to have.
+//
+// The same applies to an agent harness that started sessile: a Claude Code
+// session exports CLAUDE_CODE_* (a session id, a messaging socket and its
+// token), and an agent inheriting them believes it is a child of that
+// session and tries to talk to it.
+//
+// Everything else is inherited on purpose: PATH, HOME, the locale, and the
+// proxy variables an operator behind a corporate proxy relies on. sessile's
+// own values are appended after this and so are unaffected.
+var serverEnvBlocked = []string{
+	"CLAUDE", // CLAUDECODE, CLAUDE_CODE_*, CLAUDE_PID, CLAUDE_CONFIG_DIR…
+	"ANTHROPIC",
+	"AWS_",    // Bedrock
+	"GOOGLE_", // Vertex
+	"GEMINI",
+	"OPENAI",
+	"CODEX",
+	"GIT_", // the credential config sessile renders per task
+	"GH_TOKEN",
+	"GITHUB_TOKEN",
+}

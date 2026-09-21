@@ -34,6 +34,10 @@ type TaskLaunch struct {
 	// extra environment.
 	LocalDir     string
 	LocalPrepare func(absDir string) (argv []string, env []string, err error)
+	// LocalDropEnv names, by prefix, the environment a local task must not
+	// inherit from the sessile server process (§4.12.9). Set by
+	// internal/tasks, which is what knows how an agent is configured.
+	LocalDropEnv []string
 }
 
 // TaskLauncher resolves a task to a TaskLaunch. Implemented by
@@ -196,7 +200,7 @@ func (m *Manager) spawnLocalTask(id, userID, name, taskID string, launch TaskLau
 	if len(argv) == 0 {
 		return nil, errors.New("local task launch has no command")
 	}
-	pty, err := terminal.StartArgs(argv[0], argv[1:], absDir, defaultRows, defaultCols, env)
+	pty, err := terminal.StartArgs(argv[0], argv[1:], absDir, defaultRows, defaultCols, env, launch.LocalDropEnv...)
 	if err != nil {
 		return nil, err
 	}

@@ -1306,6 +1306,21 @@ What's left is that the running agent's environment is readable by the same
 OS user on that host. That's accepted as the user's own host, and it gets
 documented next to the plaintext `hosts.yml` decision (§11).
 
+**A local-host task inherits nothing that configures an agent.** It is the
+one case where sessile's own process environment would become an agent's —
+an SSH task gets its user's login environment on their own host, but a task
+on the server starts as a child of sessile. So a fixed prefix list
+(`CLAUDE`, `ANTHROPIC`, `AWS_`, `GOOGLE_`, `GEMINI`, `OPENAI`, `CODEX`,
+`GIT_`, `GH_TOKEN`, `GITHUB_TOKEN`) is stripped from what the bootstrap
+inherits, and the task's own `.env` supplies the rest. Two reasons, both
+real: a CLI that finds `ANTHROPIC_API_KEY` or AWS credentials in its
+environment uses them over the task's connection, silently and as someone
+else's credentials; and an agent harness that started sessile exports its
+own session id, messaging socket and token, which makes the task's agent
+believe it is that session's child and try to talk to it. Everything else
+is inherited on purpose — `PATH`, `HOME`, the locale, and the proxy
+variables an operator behind a corporate proxy relies on.
+
 ### 4.13 Agent connections and profiles: tokens and API keys only
 
 Every agent authenticates with a **token or API key that the user gives

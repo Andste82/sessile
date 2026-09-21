@@ -358,8 +358,9 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			rel = ".sessile/orchestrator/" + t.ID
 		}
 		return session.TaskLaunch{
-			Group:    taskGroup(t),
-			LocalDir: rel,
+			Group:        taskGroup(t),
+			LocalDir:     rel,
+			LocalDropEnv: serverEnvBlocked,
 			LocalPrepare: func(absDir string) ([]string, []string, error) {
 				fs := localFS{}
 				tools := s.localTools(userID, t.ID, absDir, scope, inContainer)
