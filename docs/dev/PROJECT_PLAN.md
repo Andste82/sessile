@@ -1321,6 +1321,17 @@ believe it is that session's child and try to talk to it. Everything else
 is inherited on purpose — `PATH`, `HOME`, the locale, and the proxy
 variables an operator behind a corporate proxy relies on.
 
+`HOME` is inherited, but the agent's **state** is not left in it. On a real
+host `~/.claude`, `~/.codex` and `~/.gemini` are the user's own, and their
+settings and resume history belong there. On the sessile server that home
+is the server's OS user's, shared with the operator and with every other
+sessile user, so a local task exports `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and
+`GEMINI_CLI_HOME` into its own `.agent/` instead — the same isolation a
+devcontainer already gets (§4.12.3). Without it the agent reads the
+operator's settings: one of them, `remoteControlAtStartup`, makes it try a
+claude.ai login the task's token cannot satisfy, and the task dies at
+startup.
+
 ### 4.13 Agent connections and profiles: tokens and API keys only
 
 Every agent authenticates with a **token or API key that the user gives

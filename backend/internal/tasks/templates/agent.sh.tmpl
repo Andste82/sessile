@@ -40,6 +40,17 @@ if [ -n "$SESSILE_IN_CONTAINER" ]; then
 else
 	# Where the user-space installers put agents; after the user's own PATH.
 	export PATH="$PATH:$HOME/.local/bin"
+{{- if .Local}}
+	# This task runs on the sessile server, so $HOME is the server's OS user's
+	# — shared with the operator and with every other sessile user. The agent's
+	# own state belongs to the task instead (§4.12.9): its settings, its login
+	# and the history that makes resume work. On a real host it stays in the
+	# user's own home, where it is theirs.
+	export CLAUDE_CONFIG_DIR="$TASK_DIR/.agent/claude"
+	export CODEX_HOME="$TASK_DIR/.agent/codex"
+	export GEMINI_CLI_HOME="$TASK_DIR/.agent/gemini"
+	mkdir -p "$CLAUDE_CONFIG_DIR" "$CODEX_HOME" "$GEMINI_CLI_HOME"
+{{- end}}
 fi
 
 if ! command -v {{q .Agent}} >/dev/null 2>&1; then

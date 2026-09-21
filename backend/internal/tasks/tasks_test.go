@@ -267,6 +267,11 @@ func TestLocalTaskEndToEnd(t *testing.T) {
 	waitStopped(t, mgr, "s1")
 
 	dir := filepath.Join(root, ".sessile", "tasks", taskID)
+	// A task on the server keeps the agent's state to itself: $HOME there is
+	// the server's OS user's, shared with the operator (§4.12.9).
+	if _, err := os.Stat(filepath.Join(dir, ".agent", "claude")); err != nil {
+		t.Errorf("the agent's config dir is not in the task folder: %v", err)
+	}
 	for _, name := range []string{"task.sh", "CLAUDE.md", "PROMPT.md", "task.json", ".agent-started"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("%s: %v", name, err)

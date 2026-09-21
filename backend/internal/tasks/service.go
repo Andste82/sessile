@@ -505,6 +505,7 @@ func buildFiles(t Task, dir string, windows bool, ln launch, identity agents.Git
 		GitName: identity.Name, GitEmail: identity.Email,
 		Agent: ln.def.Binary, Install: installFor(ln.def.Binary, dc != nil), InstallPS: installForPS(ln.def.Binary),
 		First: ln.first, Resume: ln.resume, Devcontainer: dc,
+		Local: t.Spec.Target == "local",
 	}
 	var files []file
 	add := func(name, tmpl string, perm uint32) error {

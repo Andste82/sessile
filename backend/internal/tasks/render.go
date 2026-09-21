@@ -73,6 +73,9 @@ type bootstrapData struct {
 	InstallPS         string // the same for Windows (PowerShell)
 	First, Resume     []string
 	Devcontainer      *Devcontainer
+	// Local marks a task running on the sessile server itself, where $HOME
+	// is the server's OS user's, not the task user's (§4.12.9).
+	Local bool
 }
 
 // instructionsData fills instructions.md.tmpl.
