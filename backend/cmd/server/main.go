@@ -163,7 +163,6 @@ func run(args []string) error {
 	mcpServer.Hosts, mcpServer.Agents, mcpServer.Notes, mcpServer.Sessions = hostsRegistry, agentsRegistry, notesStore, manager
 	taskService.Tools = mcpServer
 	taskService.Sessions = manager
-	taskService.AllowLocal = func() bool { return serverCfg.Get().AllowLocalHost }
 	taskService.AllowUnconfined = cfg.AllowUnconfinedAgents
 	if self, err := os.Executable(); err == nil {
 		taskService.SelfExe = self

@@ -50,10 +50,6 @@ type Service struct {
 	// DataDir is sessile's data directory: a task's agent lives under
 	// <DataDir>/users/<uid>/tasks/<taskID> and nowhere else (§4.12.9).
 	DataDir string
-	// AllowLocal reports whether local-host sessions are enabled (§4.6); nil
-	// means they are. Checked in Create, so the form, the orchestrator and
-	// create_task all honour the setting.
-	AllowLocal func() bool
 	// AllowUnconfined starts agents even where Landlock is unavailable
 	// (§4.12.9, E14). Off by default: sessile refuses instead.
 	AllowUnconfined bool

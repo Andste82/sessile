@@ -237,7 +237,10 @@ func (s *Server) runOnHost(ctx context.Context, userID, taskID string, client *h
 	if res.Truncated {
 		text = "... earlier output dropped ...\n" + text
 	}
-	return fmt.Sprintf("exit %d\n%s", res.ExitCode, text), false
+	// The directory is on the line, because a command that assumed a
+	// different one ("cd repo" when it is already in the repo) otherwise
+	// fails with no clue why.
+	return fmt.Sprintf("exit %d (in %s)\n%s", res.ExitCode, cwd, text), false
 }
 
 // outputPump coalesces a command's output into one message per tick.

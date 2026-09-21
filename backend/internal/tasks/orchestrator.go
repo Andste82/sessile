@@ -29,10 +29,6 @@ type Sessions interface {
 // ErrNoSessions is returned when the service was built without a manager.
 var ErrNoSessions = errors.New("sessions are not available")
 
-// ErrLocalDisabled is returned when local-host sessions are off (§4.6) and a
-// task — or the orchestrator — wants to run on the server.
-var ErrLocalDisabled = errors.New("local-host sessions are disabled")
-
 // Create validates a spec, stores the task and starts its session. Both the
 // task form and the orchestrator's create_task go through here, so they
 // can't drift apart (§4.18.1).
@@ -41,9 +37,11 @@ func (s *Service) Create(userID string, spec Spec) (session.Info, error) {
 		return session.Info{}, ErrNoSessions
 	}
 	spec.Normalize()
-	if spec.Target == "local" && s.AllowLocal != nil && !s.AllowLocal() {
-		return session.Info{}, ErrLocalDisabled
-	}
+	// allowLocalHost governs *shells* on the sessile server (§4.6). A task's
+	// agent is not one: since v0.9 every agent runs here, confined to its own
+	// folder with its own shell denied (§4.12.9), so gating a task on that
+	// switch would gate every task — and would say "local-host sessions are
+	// disabled" about something that is not a local-host session.
 	if _, err := s.Check(userID, spec); err != nil {
 		return session.Info{}, err
 	}

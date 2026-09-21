@@ -40,7 +40,16 @@ type toolsSetup struct {
 // server rather than on the task's host. Its own folder stays writable
 // through them for notes and scratch — only the tools that would mistake
 // this machine for the work are off.
-var deniedBuiltins = []string{"Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit"}
+//
+// AskUserQuestion is denied for a different reason: it asks in the terminal,
+// where the question is invisible to everything else. Sessile's own `ask`
+// puts it in the task panel and in the orchestrator's event stream, so it
+// can be answered by whoever is there (§4.12.4a) — and a task that asks
+// where nobody is looking is a task that has quietly stopped.
+var deniedBuiltins = []string{
+	"Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit",
+	"AskUserQuestion",
+}
 
 func newToken() string {
 	b := make([]byte, 24)

@@ -31,10 +31,6 @@ func (s *Server) createTask(c *gin.Context) {
 		return
 	}
 	spec.Normalize()
-	if spec.Target == "local" && !s.serverConfig.Get().AllowLocalHost {
-		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
-		return
-	}
 	info, err := s.tasks.Create(userID, spec)
 	if err != nil {
 		var ve *tasks.ValidationError
@@ -110,11 +106,6 @@ func (s *Server) getOrchestrator(c *gin.Context) {
 func (s *Server) openOrchestrator(c *gin.Context) {
 	if s.tasks == nil {
 		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, "tasks are not available")
-		return
-	}
-	// It runs on the server itself, like any local-host session (§4.5).
-	if !s.serverConfig.Get().AllowLocalHost {
-		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
 		return
 	}
 	var body struct {
