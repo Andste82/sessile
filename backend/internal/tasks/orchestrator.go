@@ -2,7 +2,6 @@ package tasks
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/google/uuid"
 
@@ -58,6 +57,23 @@ func (s *Service) Create(userID string, spec Spec) (session.Info, error) {
 	return info, nil
 }
 
+// defaultProfile is the profile the orchestrator starts with when the caller
+// names none: the user's task default, or their only profile.
+func (s *Service) defaultProfile(userID string) string {
+	store, err := s.Agents.For(userID)
+	if err != nil {
+		return ""
+	}
+	settings := store.Get()
+	if id := settings.TaskDefaults.ProfileID; id != "" {
+		return id
+	}
+	if len(settings.Profiles) == 1 {
+		return settings.Profiles[0].ID
+	}
+	return ""
+}
+
 // Orchestrator returns the user's orchestrator task (§4.18), if it exists.
 func (s *Service) Orchestrator(userID string) (Task, bool, error) {
 	row, found, err := s.DB.OrchestratorTask(userID)
@@ -97,7 +113,10 @@ func (s *Service) OpenOrchestrator(userID, profileID string) (session.Info, erro
 		}
 	}
 	if profileID == "" {
-		return session.Info{}, fmt.Errorf("pick an agent profile for the orchestrator")
+		profileID = s.defaultProfile(userID)
+	}
+	if profileID == "" {
+		return session.Info{}, invalid("set up an agent profile first: the orchestrator is an agent session")
 	}
 	return s.Create(userID, Spec{
 		Name: "Orchestrator", Kind: KindOrchestrator, Target: "local",

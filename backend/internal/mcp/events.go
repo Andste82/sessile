@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/Andste82/sessile/backend/internal/tasks"
 )
 
 // The per-user event ring (§4.18.2). The orchestrator watches its user's
@@ -120,13 +122,21 @@ func (s *Server) pushEvent(userID string, e Event) {
 }
 
 // TaskExited records that a task's session stopped (§4.18.2). Called by the
-// session manager's task hook, for every task alike — the orchestrator is how
-// the user hears that an agent finished.
+// session manager's task hook — the orchestrator is how the user hears that
+// an agent finished. Its own exit is not an event: nothing is listening then.
 func (s *Server) TaskExited(userID, taskID, name string) {
+	if t, err := s.Tasks.Get(userID, taskID); err == nil && t.Kind == tasks.KindOrchestrator {
+		return
+	}
 	s.pushEvent(userID, Event{Type: "taskExited", TaskID: taskID, Name: name})
 }
 
-// TaskCreated records a task started by the form; create_task records its own.
+// TaskCreated records a task the user started. The orchestrator's own
+// session is not one of them: it is the reader of these events, not a task
+// it watches.
 func (s *Server) TaskCreated(userID, taskID, sessionID, name string) {
+	if t, err := s.Tasks.Get(userID, taskID); err == nil && t.Kind == tasks.KindOrchestrator {
+		return
+	}
 	s.pushEvent(userID, Event{Type: "taskCreated", TaskID: taskID, SessionID: sessionID, Name: name})
 }

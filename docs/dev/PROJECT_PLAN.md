@@ -1838,7 +1838,10 @@ support.
   - Windows hosts: a TCP listener on `127.0.0.1:<random>` (`Listen`), since
     OpenSSH for Windows' streamlocal support is unverified. Reaching it from
     a Docker Desktop container is to be verified in M33.
-  - Local-host tasks: sessile listens on the socket path directly.
+  - Local-host tasks: sessile listens on the socket path directly, falling
+    back to a loopback TCP port and `.sessile-port` where the socket cannot
+    be bound — most often because the workspace path is longer than the
+    ~107 bytes a Unix socket address holds.
 - The agent's side is **`sessile-mcp`**, a tiny stdio ↔ socket bridge.
   - It's written in Go in this repo and cross-compiled with CGO off for
     linux/amd64, linux/arm64 and windows/amd64.
@@ -2210,7 +2213,7 @@ never trusts a client-supplied user id.
 | `POST /api/agent/git/import` | Import a Git identity from a host | `{hostId, gitHost}` → `{name, email, username, token?}` read from that host, **not saved**. Same host-key 409s as sessions |
 | `POST /api/tasks/:id/approvals/:callId` | Approve/deny a held tool call | `{approve: bool}` for a held write-effect script call (§4.17.3) |
 | `GET /api/tasks` | List tasks | Each task with its pending `approvals`, for summaries and badges |
-| `GET/POST /api/orchestrator` | The caller's orchestrator (§4.18) | GET: `{sessionId, taskId}` or `{}`. POST `{profileId}`: create it, or reopen/restart the one that exists → session JSON |
+| `GET/POST /api/orchestrator` | The caller's orchestrator (§4.18) | GET: `{sessionId, taskId}` or `{}`. POST `{profileId}` (optional; defaults to the task default, or the caller's only profile): create it, or reopen/restart the one that exists → session JSON |
 | `GET /api/tasks/:id/approvals` | Pending approvals | A task's held write calls, for a page opened after the request |
 | `POST /api/agent/git/import` | Read a host's git identity | `{hostId, gitHost}` → `{name, email, username, hasToken, tokenImportId?}`; the token stays on the server (§4.16) |
 

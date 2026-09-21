@@ -138,9 +138,12 @@ func bridgeFiles(ts ToolServer, goos, goarch string, windows bool) (hostName str
 	return name, []file{{".tools/" + name, b, 0o700}}, true
 }
 
-// localListener is a local-host task's tunnel: a Unix socket in its folder
-// on the server itself. The previous start's listener is closed first.
-func (s *Service) localListener(taskID, dir string) (net.Listener, error) {
+// localListener is a local-host task's tunnel: a Unix socket in its folder on
+// the server itself, or — where the socket cannot be bound, most often
+// because the folder's path is longer than the ~107 bytes a Unix socket
+// address holds — a loopback port, with the file the bridge finds it by. The
+// previous start's listener is closed first.
+func (s *Service) localListener(taskID, dir string) (net.Listener, []file, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.local == nil {
@@ -151,13 +154,23 @@ func (s *Service) localListener(taskID, dir string) (net.Listener, error) {
 	}
 	sock := dir + "/.sessile.sock"
 	_ = os.Remove(sock)
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		return nil, err
+	_ = os.Remove(dir + "/.sessile-port")
+	if l, err := net.Listen("unix", sock); err == nil {
+		_ = os.Chmod(sock, 0o600)
+		s.local[taskID] = l
+		return l, nil, nil
 	}
-	_ = os.Chmod(sock, 0o600)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, nil, err
+	}
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		l.Close()
+		return nil, nil, errors.New("the tools tunnel has no port")
+	}
 	s.local[taskID] = l
-	return l, nil
+	return l, []file{{".sessile-port", []byte(fmt.Sprintf("%d\n", addr.Port)), 0o600}}, nil
 }
 
 // sshTools sets up one SSH start's tools (§4.17.3): the bridge for wherever
@@ -216,14 +229,14 @@ func (s *Service) localTools(userID, taskID, dir, scope string, inContainer bool
 		s.warn("tools unavailable: no bridge for this server", nil)
 		return toolsSetup{}
 	}
-	l, err := s.localListener(taskID, dir)
+	l, portFiles, err := s.localListener(taskID, dir)
 	if err != nil {
 		s.warn("tools unavailable", err)
 		return toolsSetup{}
 	}
 	token := newToken()
 	go s.Tools.Serve(l, userID, taskID, token, scope)
-	t := toolsSetup{enabled: true, files: append(bins, file{".sessile-token", []byte(token + "\n"), 0o600})}
+	t := toolsSetup{enabled: true, files: append(append(bins, portFiles...), file{".sessile-token", []byte(token + "\n"), 0o600})}
 	if inContainer {
 		t.agentDir, t.bridge = "/sessile/task", "/sessile/task/.tools/"+name
 	} else {

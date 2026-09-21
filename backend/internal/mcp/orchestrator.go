@@ -144,7 +144,10 @@ func (s *Server) listHosts(userID string) (string, bool) {
 		return "could not read the hosts", true
 	}
 	type hostJSON struct {
-		ID, Name, Group, OS string
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Group string `json:"group,omitempty"`
+		OS    string `json:"os,omitempty"`
 	}
 	out := []hostJSON{}
 	for _, h := range store.List() {
@@ -163,8 +166,11 @@ func (s *Server) listProfiles(userID string) (string, bool) {
 	}
 	settings := store.Get()
 	type profileJSON struct {
-		ID, Name, Agent, Model string
-		Default                bool
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Agent   string `json:"agent"`
+		Model   string `json:"model,omitempty"`
+		Default bool   `json:"default,omitempty"`
 	}
 	out := []profileJSON{}
 	for _, p := range settings.Profiles {
@@ -231,6 +237,10 @@ func (s *Server) createTask(userID string, raw json.RawMessage) (string, bool) {
 			}
 		}
 	}
+	mode := spec.Agent.Mode
+	if mode == "" {
+		mode = tasks.ModePlan
+	}
 	info, err := s.Tasks.Create(userID, spec)
 	if err != nil {
 		return "could not start the task: " + err.Error(), true
@@ -238,7 +248,7 @@ func (s *Server) createTask(userID string, raw json.RawMessage) (string, bool) {
 	// The manager already pushed taskCreated.
 	return asJSON(map[string]any{
 		"taskId": info.TaskID, "sessionId": info.ID, "name": info.Name, "epic": info.Group,
-		"note": "The task is running. Its agent starts in " + spec.Agent.Mode + " mode; watch it with wait_for_events or task_status.",
+		"note": "The task is running. Its agent starts in " + mode + " mode; watch it with wait_for_events or task_status.",
 	})
 }
 
@@ -420,7 +430,12 @@ func (s *Server) waitForEvents(ctx context.Context, userID string, raw json.RawM
 		events = []Event{}
 	}
 	note := ""
-	if len(events) == 0 {
+	switch {
+	case a.Since == nil:
+		// Without a cursor there is nothing to wait for yet, so this call
+		// returns the current position rather than sitting for the timeout.
+		note = fmt.Sprintf("This is where the user's tasks are now. Call again with since=%d to wait for what happens next.", cursor)
+	case len(events) == 0:
 		note = fmt.Sprintf("Nothing happened in %s. Call again with since=%d to keep waiting.", timeout, cursor)
 	}
 	return asJSON(map[string]any{"events": events, "cursor": cursor, "note": note})
