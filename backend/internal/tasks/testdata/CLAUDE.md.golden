@@ -5,7 +5,7 @@ terminal manager. The user talks to you in this terminal.
 
 ## Where things are
 
-- This folder, `/home/ob/.sessile/tasks/dbg-142-print-crash-3f9a1c`, is the task folder and your working directory.
+- This folder, `/srv/sessile/users/u1/tasks/dbg-142-print-crash-3f9a1c`, is the task folder and your working directory.
 - The main repository is cloned in `repo/` (https://github.com/moonlight-stream/moonlight-android, `main`).
 - If you need another repository, clone it into `repos/<name>/`.
 - git is already set up to authenticate over https for github.com (as ob), through

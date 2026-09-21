@@ -59,6 +59,10 @@ type Session struct {
 	// grouping (§4.11).
 	Group string
 
+	// AgentDir is a task agent's own folder on the server, "" for every other
+	// session. Runtime only: a restart resolves it from the task again.
+	AgentDir string
+
 	// TaskID is the task (§4.12) this session runs, "" for an ordinary
 	// session. Persisted, so a restart finds its way back to the task.
 	TaskID string
@@ -126,12 +130,15 @@ type Info struct {
 	HostDisplayName string
 	Group           string
 	TaskID          string
-	Status          Status
-	PID             int
-	Created         time.Time
-	LastActivity    time.Time
-	Rows, Cols      uint16
-	ClientCount     int
+	// AgentDir is a task agent's folder on the server; "" for every other
+	// session. Not persisted: a restart resolves it from the task again.
+	AgentDir     string
+	Status       Status
+	PID          int
+	Created      time.Time
+	LastActivity time.Time
+	Rows, Cols   uint16
+	ClientCount  int
 
 	// Derived, never persisted (§4.7, §4.8). Empty for a stopped session, and
 	// where they cannot be determined.
@@ -165,6 +172,7 @@ func (s *Session) infoLocked() Info {
 		HostDisplayName: s.HostDisplayName,
 		Group:           s.Group,
 		TaskID:          s.TaskID,
+		AgentDir:        s.AgentDir,
 		Status:          s.Status,
 		PID:             s.PID,
 		Created:         s.Created,

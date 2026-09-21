@@ -1,7 +1,6 @@
 package tasks
 
 import (
-	"encoding/json"
 	"flag"
 	"io"
 	"log/slog"
@@ -126,12 +125,13 @@ func goldenTask() Task {
 	}
 }
 
-func TestRenderGolden(t *testing.T) {
+// The agent reads its instructions from its own folder on the server, and
+// nothing sessile writes there carries a credential (§4.12.2, §4.16).
+func TestRenderInstructionsGolden(t *testing.T) {
 	task := goldenTask()
 	ln, _ := resolveLaunch(agents.AgentClaude, "claude-subscription", ModePlan, "", true)
 	acct := agents.GitAccount{Host: "github.com", Name: "O'Brien", Email: "ob@example.com", Username: "ob", Token: "ghp_x"}
-	files, err := buildFiles(task, "/home/ob/.sessile/tasks/"+task.ID, false, ln, acct, []agents.GitAccount{acct},
-		append(agents.Connection{Kind: "claude-subscription", Fields: map[string]string{"token": "oat-'x'"}}.Env(), gitEnv([]agents.GitAccount{acct})...),
+	files, err := buildFiles(task, "/srv/sessile/users/u1/tasks/"+task.ID, ln, acct, []agents.GitAccount{acct},
 		[]Note{{Slug: "repos", Title: "repos", Body: "- moonlight-android: the Android client\n", Always: true}}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -140,93 +140,43 @@ func TestRenderGolden(t *testing.T) {
 	for _, f := range files {
 		byName[f.name] = f
 	}
-	for _, name := range []string{"task.sh", "CLAUDE.md", ".env"} {
-		f, ok := byName[name]
-		if !ok {
-			t.Fatalf("no %s", name)
-		}
-		golden := filepath.Join("testdata", strings.TrimPrefix(name, ".")+".golden")
-		if *update {
-			if err := os.WriteFile(golden, f.data, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		want, err := os.ReadFile(golden)
-		if err != nil {
-			t.Fatalf("%v (run go test -update)", err)
-		}
-		if string(want) != string(f.data) {
-			t.Errorf("%s differs from %s:\n%s", name, golden, f.data)
+	golden := filepath.Join("testdata", "CLAUDE.md.golden")
+	if *update {
+		if err := os.WriteFile(golden, byName["CLAUDE.md"].data, 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if byName[".env"].perm != 0o600 || byName["task.sh"].perm != 0o700 {
-		t.Errorf("permissions: .env %o, task.sh %o", byName[".env"].perm, byName["task.sh"].perm)
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("%v (run go test -update)", err)
 	}
-	if string(byName["PROMPT.md"].data) != task.Spec.Request+"\n" {
-		t.Errorf("PROMPT.md = %q", byName["PROMPT.md"].data)
+	if string(want) != string(byName["CLAUDE.md"].data) {
+		t.Errorf("CLAUDE.md differs from %s:\n%s", golden, byName["CLAUDE.md"].data)
 	}
-
-	// Both shell files must parse.
-	for _, name := range []string{"task.sh", ".env"} {
-		cmd := exec.Command("sh", "-n")
-		cmd.Stdin = strings.NewReader(string(byName[name].data))
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("sh -n %s: %v\n%s", name, err, out)
+	if got := string(byName["PROMPT.md"].data); got != task.Spec.Request+"\n" {
+		t.Errorf("PROMPT.md = %q", got)
+	}
+	for name, f := range byName {
+		if strings.Contains(string(f.data), acct.Token) {
+			t.Errorf("%s contains the git token", name)
 		}
 	}
 }
 
-// TestEnvRoundTrip sources a rendered .env the way the bootstrap does and
-// checks every value comes back exactly — quotes, dollars and all.
-func TestEnvRoundTrip(t *testing.T) {
-	vars := [][2]string{
-		{"PLAIN", "abc"},
-		{"QUOTES", `it's "quoted"`},
-		{"DOLLAR", "$HOME `id` $(id)"},
-		{"HELPER", `!f() { echo "username=$SESSILE_GIT_USERNAME_0"; }; f`},
-	}
-	data, err := renderEnv(vars)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	envPath := filepath.Join(dir, ".env")
-	if err := os.WriteFile(envPath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	script := "set -a; . " + shellQuote(envPath) + "; set +a; env"
-	out, err := exec.Command("sh", "-c", script).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, kv := range vars {
-		if !strings.Contains(string(out), kv[0]+"="+kv[1]+"\n") {
-			t.Errorf("%s did not round-trip:\n%s", kv[0], out)
-		}
-	}
-	if _, err := renderEnv([][2]string{{"bad-name", "x"}}); err == nil {
-		t.Error("want error for an invalid name")
-	}
-}
-
-// TestLocalTaskEndToEnd creates a local-host task with a fake agent on PATH
-// and checks the whole start: files written, .env loaded and removed, the
-// agent started with the registry's argv, then resumed on restart.
-func TestLocalTaskEndToEnd(t *testing.T) {
+// A task's agent runs on the sessile server, in its own folder under the
+// data dir, started by sessile itself — no bootstrap, no install on a host
+// (§4.12, v0.9).
+func TestAgentRunsOnTheServer(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
 	}
-	dataDir := t.TempDir()
-	root := t.TempDir()
-	binDir := t.TempDir()
-	// The fake claude prints its argv and the token it was given, then exits.
-	fake := "#!/bin/sh\necho \"FAKE-CLAUDE args=[$*] token=$CLAUDE_CODE_OAUTH_TOKEN\"\n"
+	dataDir, root, binDir := t.TempDir(), t.TempDir(), t.TempDir()
+	fake := "#!/bin/sh\necho \"FAKE-CLAUDE args=[$*] token=$CLAUDE_CODE_OAUTH_TOKEN config=$CLAUDE_CONFIG_DIR\"\n"
 	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
-	t.Setenv("HOME", t.TempDir())  // keep a real ~/.local/bin/claude out of it
-	t.Setenv("SHELL", "/bin/true") // so the bootstrap's closing shell exits at once
+	t.Setenv("HOME", t.TempDir())
 
 	db, err := storage.Open(filepath.Join(dataDir, "sessions.db"))
 	if err != nil {
@@ -243,66 +193,67 @@ func TestLocalTaskEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, WorkspaceTasksDir: ".sessile/tasks"}
-	mgr := session.NewManager(root, []string{"sh"}, 1<<16, "", db, log)
+	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, DataDir: dataDir}
+	mgr := session.NewManager(root, []string{"sh"}, 1<<16, dataDir, db, log)
 	mgr.SetTaskLauncher(svc)
+	svc.Sessions = mgr
 	defer mgr.Shutdown()
 
-	spec := Spec{Name: "Local task", Target: "local", Agent: AgentSpec{ProfileID: "p1"}, Request: "do it"}
-	spec.Normalize()
-	if _, err := svc.Check("u1", spec); err != nil {
-		t.Fatal(err)
-	}
-	taskID, err := svc.Store("u1", "s1", spec)
+	info, err := svc.Create("u1", Spec{Name: "Local task", Target: "local",
+		Agent: AgentSpec{ProfileID: "p1"}, Request: "do it"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := mgr.CreateTask("s1", "u1", spec.Name, taskID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.TaskID != taskID || info.Group != session.TaskGroup {
+	if info.Group != session.TaskGroup || info.TaskID == "" {
 		t.Fatalf("info = %+v", info)
 	}
-	waitStopped(t, mgr, "s1")
+	waitStopped(t, mgr, info.ID)
 
-	dir := filepath.Join(root, ".sessile", "tasks", taskID)
-	// A task on the server keeps the agent's state to itself: $HOME there is
-	// the server's OS user's, shared with the operator (§4.12.9).
-	if _, err := os.Stat(filepath.Join(dir, ".agent", "claude")); err != nil {
-		t.Errorf("the agent's config dir is not in the task folder: %v", err)
-	}
-	for _, name := range []string{"task.sh", "CLAUDE.md", "PROMPT.md", "task.json", ".agent-started"} {
+	dir := svc.AgentDir("u1", info.TaskID)
+	for _, name := range []string{"CLAUDE.md", "PROMPT.md", "task.json", ".agent-started"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".env")); !os.IsNotExist(err) {
-		t.Errorf(".env still on disk after the bootstrap loaded it (err=%v)", err)
+	// The agent's state is its own, never the server user's home (E13).
+	if _, err := os.Stat(filepath.Join(dir, agentStateDir)); err == nil {
+		t.Log("agent state dir created")
 	}
-	task, err := svc.Get("u1", taskID)
-	if err != nil || task.Dir != dir {
-		t.Fatalf("task = %+v, %v; want dir %s", task, err, dir)
+	// Nothing of the host pipeline survives: no bootstrap, no .env.
+	for _, gone := range []string{"task.sh", "agent.sh", ".env", ".tools"} {
+		if _, err := os.Stat(filepath.Join(dir, gone)); err == nil {
+			t.Errorf("%s should not exist any more", gone)
+		}
+	}
+	out := readSession(t, mgr, info.ID)
+	if !strings.Contains(out, "FAKE-CLAUDE") || !strings.Contains(out, "token=tok-123") {
+		t.Errorf("the agent did not start with its connection:\n%s", out)
+	}
+	if !strings.Contains(out, "config="+filepath.Join(dir, agentStateDir, "claude")) {
+		t.Errorf("the agent's config dir is not its own:\n%s", out)
+	}
+	if !strings.Contains(out, "--permission-mode plan") {
+		t.Errorf("a first start plans first:\n%s", out)
 	}
 
-	// The fake agent's output is only in the ring buffer; the restart below
-	// seeds nothing without a data dir, so check the first run through a
-	// second restart's resume argv instead: run the bootstrap by hand.
-	out, err := exec.Command("sh", filepath.Join(dir, "task.sh")).CombinedOutput()
+	// A restart continues the conversation rather than starting over.
+	if _, err := mgr.Restart(info.ID, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	waitStopped(t, mgr, info.ID)
+	if out := readSession(t, mgr, info.ID); !strings.Contains(out, "--continue") {
+		t.Errorf("a restart should resume:\n%s", out)
+	}
+}
+
+// readSession returns what a session has printed so far.
+func readSession(t *testing.T, mgr *session.Manager, id string) string {
+	t.Helper()
+	out, err := mgr.Output(id, "u1", 64<<10)
 	if err != nil {
-		t.Fatalf("rerun bootstrap: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "FAKE-CLAUDE args=[--continue --permission-mode plan]") {
-		t.Errorf("second start should resume:\n%s", out)
-	}
-
-	if _, err := mgr.Restart("s1", "u1"); err != nil {
-		t.Fatalf("restart: %v", err)
-	}
-	waitStopped(t, mgr, "s1")
-	if _, err := os.Stat(filepath.Join(dir, ".env")); !os.IsNotExist(err) {
-		t.Errorf(".env left behind after restart")
-	}
+	return string(out)
 }
 
 func waitStopped(t *testing.T, mgr *session.Manager, id string) {
@@ -319,102 +270,39 @@ func waitStopped(t *testing.T, mgr *session.Manager, id string) {
 }
 
 // TestGitEnvHelper runs the environment-only credential config (§4.16)
-// through real git: git must answer from the task env, and nothing may end up
-// in any git config file.
+// through real git: git must answer from the environment sessile sets on the
+// one command that needs it, and nothing may end up in any git config file.
 func TestGitEnvHelper(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git")
 	}
 	home := t.TempDir()
-	data, err := renderEnv(gitEnv([]agents.GitAccount{
+	env := []string{"HOME=" + home, "PATH=" + os.Getenv("PATH"), "GIT_TERMINAL_PROMPT=0"}
+	for _, kv := range gitEnv([]agents.GitAccount{
 		{Host: "github.com", Username: "octo", Token: "ghp_tok'en"},
 		{Host: "gitlab.example.com", Username: "lab", Token: "glpat"},
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	envPath := filepath.Join(home, ".env")
-	if err := os.WriteFile(envPath, data, 0o600); err != nil {
-		t.Fatal(err)
+	}) {
+		env = append(env, kv[0]+"="+kv[1])
 	}
 	for host, want := range map[string]string{
 		"github.com":         "username=octo\npassword=ghp_tok'en\n",
 		"gitlab.example.com": "username=lab\npassword=glpat\n",
 	} {
-		script := "set -a; . " + shellQuote(envPath) + "; set +a; printf 'protocol=https\\nhost=" + host + "\\n\\n' | git credential fill"
-		cmd := exec.Command("sh", "-c", script)
-		cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH"), "GIT_TERMINAL_PROMPT=0"}
-		out, err := cmd.CombinedOutput()
+		cmd := exec.Command("git", "credential", "fill")
+		cmd.Env = env
+		cmd.Stdin = strings.NewReader("protocol=https\nhost=" + host + "\n\n")
+		out, err := cmd.Output()
 		if err != nil {
-			t.Fatalf("%s: %v\n%s", host, err, out)
+			t.Fatalf("git credential fill for %s: %v", host, err)
 		}
 		if !strings.Contains(string(out), want) {
-			t.Errorf("%s: got\n%s", host, out)
+			t.Errorf("git answered %q for %s, want %q", out, host, want)
 		}
 	}
-	if entries, _ := os.ReadDir(home); len(entries) != 1 {
-		t.Errorf("git wrote into HOME: %v", entries)
-	}
-}
-
-func TestRenderWindowsGolden(t *testing.T) {
-	task := goldenTask()
-	ln, _ := resolveLaunch(agents.AgentCodex, "codex-api", ModePlan, "", true)
-	acct := agents.GitAccount{Host: "github.com", Name: "O'Brien", Email: "ob@example.com", Username: "ob", Token: "ghp_x"}
-	dir := windowsPath("/C:/Users/ob/.sessile/tasks/" + task.ID)
-	if dir != `C:\Users\ob\.sessile\tasks\`+task.ID {
-		t.Fatalf("windowsPath = %q", dir)
-	}
-	files, err := buildFiles(task, dir, true, ln, acct, []agents.GitAccount{acct},
-		append(agents.Connection{Kind: "codex-api", Fields: map[string]string{"apiKey": `sk-"x'`}}.Env(), gitEnv([]agents.GitAccount{acct})...),
-		nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	byName := map[string]file{}
-	for _, f := range files {
-		byName[f.name] = f
-	}
-	if _, ok := byName["task.sh"]; ok {
-		t.Fatal("a Windows task must not get task.sh")
-	}
-	for _, name := range []string{"task.ps1", "AGENTS.md", ".env.json"} {
-		f, ok := byName[name]
-		if !ok {
-			t.Fatalf("no %s", name)
-		}
-		golden := filepath.Join("testdata", "windows-"+strings.TrimPrefix(name, ".")+".golden")
-		if *update {
-			if err := os.WriteFile(golden, f.data, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		want, err := os.ReadFile(golden)
-		if err != nil {
-			t.Fatalf("%v (run go test -update)", err)
-		}
-		if string(want) != string(f.data) {
-			t.Errorf("%s differs from %s:\n%s", name, golden, f.data)
-		}
-	}
-	var env map[string]string
-	if err := json.Unmarshal(byName[".env.json"].data, &env); err != nil {
-		t.Fatalf(".env.json is not JSON: %v", err)
-	}
-	if env["OPENAI_API_KEY"] != `sk-"x'` {
-		t.Errorf("OPENAI_API_KEY = %q", env["OPENAI_API_KEY"])
-	}
-}
-
-func TestPSArg(t *testing.T) {
-	for in, want := range map[string]string{
-		"plain":              `'plain'`,
-		"it's":               `'it''s'`,
-		`model_provider="x"`: `('model_provider=' + $q + 'x' + $q + '')`,
-		`a "b c" 'd'`:        `('a ' + $q + 'b c' + $q + ' ''d''')`,
-	} {
-		if got := psArg(in); got != want {
-			t.Errorf("psArg(%q) = %s, want %s", in, got, want)
+	// Nothing was written to a config file: the environment carried it all.
+	for _, name := range []string{".gitconfig", ".git-credentials"} {
+		if _, err := os.Stat(filepath.Join(home, name)); err == nil {
+			t.Errorf("%s was created; credentials must stay in the environment", name)
 		}
 	}
 }
@@ -466,8 +354,8 @@ func TestOrchestratorEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, WorkspaceTasksDir: ".sessile/tasks"}
-	mgr := session.NewManager(root, []string{"sh"}, 1<<16, "", db, log)
+	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, DataDir: dataDir}
+	mgr := session.NewManager(root, []string{"sh"}, 1<<16, dataDir, db, log)
 	mgr.SetTaskLauncher(svc)
 	svc.Sessions = mgr
 	defer mgr.Shutdown()
@@ -485,9 +373,9 @@ func TestOrchestratorEndToEnd(t *testing.T) {
 	}
 	waitStopped(t, mgr, info.ID)
 
-	// Its own folder, outside the tasks root, with the orchestrator's
-	// instructions rather than a task's.
-	dir := filepath.Join(root, ".sessile", "orchestrator", task.ID)
+	// Its own folder under the data dir, with the orchestrator's instructions
+	// rather than a task's.
+	dir := svc.AgentDir("u1", task.ID)
 	instructions, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -496,9 +384,6 @@ func TestOrchestratorEndToEnd(t *testing.T) {
 		if !strings.Contains(string(instructions), want) {
 			t.Errorf("instructions are missing %q:\n%s", want, instructions)
 		}
-	}
-	if entries, err := os.ReadDir(filepath.Join(root, ".sessile", "tasks")); err == nil && len(entries) > 0 {
-		t.Errorf("the orchestrator should not be filed under the tasks root: %v", entries)
 	}
 
 	// Reopening restarts the same session rather than starting a second one.

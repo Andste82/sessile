@@ -27,17 +27,24 @@ var tasksMigrationColumns = []struct{ name, ddl string }{
 	{"state", `ALTER TABLE tasks ADD COLUMN state TEXT NOT NULL DEFAULT ''`},
 	{"question", `ALTER TABLE tasks ADD COLUMN question TEXT NOT NULL DEFAULT ''`},
 	{"kind", `ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'`},
+	// v0.9: a task runs two sessions — its agent on the server (session_id)
+	// and the user's shell on its host (shell_session_id), which is "" for a
+	// task that has no host.
+	{"shell_session_id", `ALTER TABLE tasks ADD COLUMN shell_session_id TEXT NOT NULL DEFAULT ''`},
 }
 
 // TaskRow is one task as stored.
 type TaskRow struct {
-	ID        string
-	SessionID string
-	UserID    string
-	HostID    string // "" for a local-host task
-	Dir       string // absolute task folder on the target, known once it is created
-	SpecJSON  string
-	Summary   string
+	ID string
+	// SessionID is the agent session; ShellSessionID the user's shell on the
+	// host, "" for a task without one.
+	SessionID      string
+	ShellSessionID string
+	UserID         string
+	HostID         string // "" for a local-host task
+	Dir            string // absolute task folder on the target, known once it is created
+	SpecJSON       string
+	Summary        string
 	// State, Question and Kind are §4.18's: what the task's agent says it is
 	// doing, what it is waiting for, and whether this is a task or the
 	// user's orchestrator.
@@ -48,12 +55,12 @@ type TaskRow struct {
 }
 
 // taskColumns is every column the task queries read, in scan order.
-const taskColumns = `id, session_id, user_id, host_id, dir, spec_json, summary, state, question, kind, created`
+const taskColumns = `id, session_id, shell_session_id, user_id, host_id, dir, spec_json, summary, state, question, kind, created`
 
 func scanTask(sc interface{ Scan(...any) error }) (TaskRow, error) {
 	var t TaskRow
 	var created string
-	if err := sc.Scan(&t.ID, &t.SessionID, &t.UserID, &t.HostID, &t.Dir, &t.SpecJSON,
+	if err := sc.Scan(&t.ID, &t.SessionID, &t.ShellSessionID, &t.UserID, &t.HostID, &t.Dir, &t.SpecJSON,
 		&t.Summary, &t.State, &t.Question, &t.Kind, &created); err != nil {
 		return TaskRow{}, err
 	}
@@ -69,9 +76,9 @@ func (s *Store) InsertTask(t TaskRow) error {
 		t.Kind = "task"
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO tasks (id, session_id, user_id, host_id, dir, spec_json, summary, state, question, kind, created)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.SessionID, t.UserID, t.HostID, t.Dir, t.SpecJSON, t.Summary, t.State, t.Question, t.Kind,
+		`INSERT INTO tasks (id, session_id, shell_session_id, user_id, host_id, dir, spec_json, summary, state, question, kind, created)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.SessionID, t.ShellSessionID, t.UserID, t.HostID, t.Dir, t.SpecJSON, t.Summary, t.State, t.Question, t.Kind,
 		t.Created.UTC().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -89,6 +96,30 @@ func (s *Store) GetTask(id, userID string) (TaskRow, bool, error) {
 	}
 	if err != nil {
 		return TaskRow{}, false, fmt.Errorf("get task: %w", err)
+	}
+	return t, true, nil
+}
+
+// SetTaskShellSession records the task's shell pane, which is created after
+// the task row and can be replaced if the user closes and reopens it.
+func (s *Store) SetTaskShellSession(id, sessionID string) error {
+	if _, err := s.db.Exec(`UPDATE tasks SET shell_session_id=? WHERE id=?`, sessionID, id); err != nil {
+		return fmt.Errorf("set task shell session: %w", err)
+	}
+	return nil
+}
+
+// TaskBySession finds the task a session belongs to, whether it is the
+// agent's session or the shell's.
+func (s *Store) TaskBySession(sessionID, userID string) (TaskRow, bool, error) {
+	row := s.db.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE (session_id=? OR shell_session_id=?) AND user_id=?`,
+		sessionID, sessionID, userID)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskRow{}, false, nil
+	}
+	if err != nil {
+		return TaskRow{}, false, fmt.Errorf("task by session: %w", err)
 	}
 	return t, true, nil
 }

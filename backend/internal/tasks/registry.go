@@ -86,6 +86,15 @@ type launch struct {
 	resume     []string // argv to continue the conversation, without tools
 }
 
+// start is the argv for this start: continuing the conversation where the
+// agent has run before, a first start otherwise (§4.12.6).
+func (l launch) start(resumed bool) []string {
+	if resumed {
+		return l.resume
+	}
+	return l.first
+}
+
 // resolveLaunch builds the argv for an agent, mode, model and connection.
 func resolveLaunch(a agents.Agent, connKind, mode, model string, hasRequest bool) (launch, bool) {
 	def, ok := registry[a]

@@ -54,6 +54,15 @@ func (r *hostResolver) Resolve(userID, hostID string) (sshpty.Target, string, er
 }
 
 func main() {
+	// The agent's MCP bridge is a mode of this binary (§4.12.4): the agent
+	// runs on this machine, so there is nothing to deploy.
+	if len(os.Args) > 1 && os.Args[1] == "mcp-bridge" {
+		if err := runMCPBridge(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "sessile mcp-bridge:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(os.Args[1:]); err != nil {
 		// --version and --help are requests, not failures: they must exit 0 and
 		// must not be reported as "fatal". flag has already printed the usage
@@ -133,8 +142,10 @@ func run(args []string) error {
 	taskService := &tasks.Service{
 		DB: store, Agents: agentsRegistry, Hosts: hostsRegistry, Log: log,
 		Notes:             notesStore,
+		DataDir:           cfg.DataDir,
 		WorkspaceTasksDir: ".sessile/tasks",
 	}
+	defer taskService.CloseHosts()
 	mcpServer := mcp.New(scriptStore, scriptRunner, taskService, manager.PublishHostop, log)
 	mcpServer.Version = config.Version
 	mcpServer.AllowScripts = func() bool { return serverCfg.Get().ScriptsAllowed() }

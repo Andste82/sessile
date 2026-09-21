@@ -29,6 +29,11 @@ type TaskLaunch struct {
 	// (§4.18.3), or TaskGroup.
 	Group string
 
+	// AgentDir is the task agent's own folder on the server, absolute
+	// (§4.12.9). It is sessile's own path under --data-dir, not a caller's,
+	// and it is where the agent session starts.
+	AgentDir string
+
 	// LocalDir is a local-host task's folder, relative to the workspace root
 	// (§4.5). LocalPrepare writes it and returns the bootstrap's argv and any
 	// extra environment.
@@ -40,12 +45,24 @@ type TaskLaunch struct {
 	LocalDropEnv []string
 }
 
-// TaskLauncher resolves a task to a TaskLaunch. Implemented by
+// TaskShell is a task's shell pane: the user's own terminal on the task's
+// host, started in the task folder (§4.12, v0.9).
+type TaskShell struct {
+	Target          sshpty.Target
+	HostID          string
+	HostDisplayName string
+	Group           string
+}
+
+// TaskLauncher resolves a task to its sessions. Implemented by
 // internal/tasks, and consulted on every start — create and restart alike —
 // so a restart picks up the task's current connection, notes and scripts
 // rather than anything saved when it was created.
 type TaskLauncher interface {
+	// Launch is the agent session, which runs on the sessile server.
 	Launch(userID, taskID string) (TaskLaunch, error)
+	// ShellLaunch is the user's pane on the task's host.
+	ShellLaunch(userID, taskID string) (TaskShell, error)
 }
 
 // ErrNoTaskLauncher is returned for a task session when no launcher is wired.
@@ -102,6 +119,34 @@ func (m *Manager) CreateTask(id, userID, name, taskID string) (Info, error) {
 	if m.taskEvents != nil {
 		m.taskEvents.TaskCreated(userID, taskID, s.ID, name)
 	}
+	return info, nil
+}
+
+// CreateTaskShell opens the user's shell on a task's host, beside the agent
+// session (§4.12). It carries the same task id, so the two are one task in
+// the UI, and host-key errors come back unwrapped exactly as from CreateSSH.
+func (m *Manager) CreateTaskShell(id, userID, name, taskID string) (Info, error) {
+	if m.taskLauncher == nil {
+		return Info{}, ErrNoTaskLauncher
+	}
+	if !taskIDRe.MatchString(taskID) {
+		return Info{}, errors.New("invalid task id")
+	}
+	sh, err := m.taskLauncher.ShellLaunch(userID, taskID)
+	if err != nil {
+		return Info{}, err
+	}
+	s, err := m.spawnSSH(id, userID, name, sh.HostID, sh.HostDisplayName, sh.Target, timeNow())
+	if err != nil {
+		return Info{}, err
+	}
+	s.TaskID, s.Group, s.taskGroup = taskID, sh.Group, sh.Group
+	info, err := m.register(s)
+	if err != nil {
+		return Info{}, err
+	}
+	m.log.Info("task shell created", "id", s.ID, "taskId", taskID, "hostId", sh.HostID)
+	m.publishSession(info)
 	return info, nil
 }
 
@@ -183,14 +228,21 @@ func (m *Manager) spawnLocalTask(id, userID, name, taskID string, launch TaskLau
 	if l := len(name); l < 1 || l > 64 {
 		return nil, ErrInvalidName
 	}
-	if launch.LocalPrepare == nil || launch.LocalDir == "" {
+	if launch.LocalPrepare == nil || (launch.LocalDir == "" && launch.AgentDir == "") {
 		return nil, errors.New("local task launch is incomplete")
 	}
-	if err := os.MkdirAll(filepath.Join(m.root, launch.LocalDir), 0o700); err != nil {
-		return nil, err
-	}
-	absDir, err := resolveDir(m.root, launch.LocalDir)
-	if err != nil {
+	// A task agent's folder is sessile's own, under --data-dir, so it does not
+	// go through the workspace check that bounds caller-supplied paths (§4.5).
+	absDir := launch.AgentDir
+	if absDir == "" {
+		if err := os.MkdirAll(filepath.Join(m.root, launch.LocalDir), 0o700); err != nil {
+			return nil, err
+		}
+		var err error
+		if absDir, err = resolveDir(m.root, launch.LocalDir); err != nil {
+			return nil, err
+		}
+	} else if err := os.MkdirAll(absDir, 0o700); err != nil {
 		return nil, err
 	}
 	argv, env, err := launch.LocalPrepare(absDir)
@@ -211,6 +263,7 @@ func (m *Manager) spawnLocalTask(id, userID, name, taskID string, launch TaskLau
 		UserID:       userID,
 		TargetType:   TargetLocal,
 		Directory:    launch.LocalDir,
+		AgentDir:     launch.AgentDir,
 		Shell:        "sh",
 		Status:       StatusRunning,
 		PID:          pty.Pid(),

@@ -26,6 +26,7 @@ type fakeSessions struct {
 	output   []byte
 	typed    []byte
 	restarts int
+	shells   int
 }
 
 func (f *fakeSessions) CreateTask(id, userID, name, taskID string) (session.Info, error) {
@@ -36,6 +37,19 @@ func (f *fakeSessions) CreateTask(id, userID, name, taskID string) (session.Info
 		f.info = map[string]session.Info{}
 	}
 	f.info[id] = info
+	return info, nil
+}
+
+func (f *fakeSessions) CreateTaskShell(id, userID, name, taskID string) (session.Info, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	info := session.Info{ID: id, UserID: userID, Name: name, TaskID: taskID,
+		TargetType: session.TargetSSH, Status: session.StatusRunning, Group: "Tasks"}
+	if f.info == nil {
+		f.info = map[string]session.Info{}
+	}
+	f.info[id] = info
+	f.shells++
 	return info, nil
 }
 

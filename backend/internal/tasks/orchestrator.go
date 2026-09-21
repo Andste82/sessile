@@ -15,10 +15,13 @@ const (
 )
 
 // Sessions is the part of session.Manager tasks needs to start and reach a
-// task's session. An interface so internal/session stays unaware of tasks
+// task's sessions. An interface so internal/session stays unaware of tasks
 // beyond its TaskLauncher.
 type Sessions interface {
+	// CreateTask starts the agent session, on the sessile server.
 	CreateTask(id, userID, name, taskID string) (session.Info, error)
+	// CreateTaskShell starts the user's shell on the task's host.
+	CreateTaskShell(id, userID, name, taskID string) (session.Info, error)
 	Get(id, userID string) (session.Info, error)
 	Restart(id, userID string) (session.Info, error)
 }
@@ -53,6 +56,52 @@ func (s *Service) Create(userID string, spec Spec) (session.Info, error) {
 	if err != nil {
 		s.Discard(taskID)
 		return session.Info{}, err
+	}
+	// The user's own shell on the host, beside the agent (§4.12, E10). A task
+	// on the server has none, and a host that refuses a second connection
+	// costs the task nothing: the agent is already running.
+	if spec.Target != "local" {
+		shellID := uuid.NewString()
+		if _, err := s.Sessions.CreateTaskShell(shellID, userID, spec.Name+" (shell)", taskID); err != nil {
+			s.warn("the task's shell pane could not be opened", err)
+		} else if err := s.DB.SetTaskShellSession(taskID, shellID); err != nil {
+			s.warn("could not record the task's shell session", err)
+		}
+	}
+	return info, nil
+}
+
+// OpenShell starts (or restarts) a task's shell pane on demand, for a task
+// whose pane was closed or never opened.
+func (s *Service) OpenShell(userID, taskID string) (session.Info, error) {
+	if s.Sessions == nil {
+		return session.Info{}, ErrNoSessions
+	}
+	t, err := s.Get(userID, taskID)
+	if err != nil {
+		return session.Info{}, err
+	}
+	if t.Spec.Target == "local" {
+		return session.Info{}, ErrLocalTask
+	}
+	if t.ShellSessionID != "" {
+		info, err := s.Sessions.Get(t.ShellSessionID, userID)
+		switch {
+		case err == nil && info.Status == session.StatusRunning:
+			return info, nil
+		case err == nil:
+			return s.Sessions.Restart(t.ShellSessionID, userID)
+		case !errors.Is(err, session.ErrNotFound):
+			return session.Info{}, err
+		}
+	}
+	shellID := uuid.NewString()
+	info, err := s.Sessions.CreateTaskShell(shellID, userID, t.Spec.Name+" (shell)", taskID)
+	if err != nil {
+		return session.Info{}, err
+	}
+	if err := s.DB.SetTaskShellSession(taskID, shellID); err != nil {
+		s.warn("could not record the task's shell session", err)
 	}
 	return info, nil
 }

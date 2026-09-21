@@ -11,9 +11,6 @@
 /backend/web/dist/manifest.webmanifest
 /backend/web/dist/sw.js
 
-# The cross-compiled MCP bridge (make bridge), embedded into the server;
-# its README stays committed so the embed directive is always valid.
-/backend/internal/mcp/bridge/sessile-mcp-*
 
 # Runtime state
 /sandbox/

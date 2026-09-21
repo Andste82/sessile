@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/Andste82/sessile/backend/internal/agents"
 	"github.com/Andste82/sessile/backend/internal/hosts"
@@ -45,6 +46,9 @@ type Service struct {
 	Tools ToolServer
 	// Sessions starts and reaches task sessions (§4.18.1).
 	Sessions Sessions
+	// DataDir is sessile's data directory: a task's agent lives under
+	// <DataDir>/users/<uid>/tasks/<taskID> and nowhere else (§4.12.9).
+	DataDir string
 	// AllowLocal reports whether local-host sessions are enabled (§4.6); nil
 	// means they are. Checked in Create, so the form, the orchestrator and
 	// create_task all honour the setting.
@@ -55,17 +59,22 @@ type Service struct {
 
 	mu      sync.Mutex
 	pending map[string]RestartOptions // by task id
-	local   map[string]net.Listener   // local-host tasks' tool tunnels, by task id
+	local   map[string]net.Listener   // each agent's tool socket, by task id
+	conns   map[string]*hostConn      // each task's host connection, by task id
+	preps   map[string]*prepare       // host preparation in flight, by task id
 }
 
 // Task is a stored task, decoded.
 type Task struct {
 	ID        string `json:"id"`
 	SessionID string `json:"sessionId"`
-	HostID    string `json:"hostId"`
-	Dir       string `json:"dir"`
-	Spec      Spec   `json:"spec"`
-	Summary   string `json:"summary"`
+	// ShellSessionID is the user's shell pane on the task's host (v0.9), "" for
+	// a task that runs on the server.
+	ShellSessionID string `json:"shellSessionId,omitempty"`
+	HostID         string `json:"hostId"`
+	Dir            string `json:"dir"`
+	Spec           Spec   `json:"spec"`
+	Summary        string `json:"summary"`
 	// State is what the task's agent says it is doing (§4.18.2), "" until it
 	// says anything; Question is what a blocked task is waiting for.
 	State    string    `json:"state"`
@@ -84,7 +93,7 @@ func fromRow(row storage.TaskRow) (Task, error) {
 	if kind == "" {
 		kind = KindTask
 	}
-	return Task{ID: row.ID, SessionID: row.SessionID, HostID: row.HostID, Dir: row.Dir,
+	return Task{ID: row.ID, SessionID: row.SessionID, ShellSessionID: row.ShellSessionID, HostID: row.HostID, Dir: row.Dir,
 		Spec: spec, Summary: row.Summary, State: row.State, Question: row.Question,
 		Kind: kind, Created: row.Created}, nil
 }
@@ -256,9 +265,11 @@ func (s *Service) SetState(taskID, state, summary, question string) error {
 	return s.DB.SetTaskState(taskID, state, summary, question)
 }
 
-// Launch resolves a task to its session start (session.TaskLauncher). It runs
-// on every start, so a restart picks up the current connection token, notes
-// and scripts, and rewrites the bootstrap (§4.12.6).
+// Launch resolves a task to its agent session (session.TaskLauncher). The
+// agent runs on the sessile server (§4.12, v0.9), in the task's own folder
+// under the data dir, and reaches its host through the tools of §4.12.4. It
+// runs on every start, so a restart picks up the connection's current token,
+// the user's current notes and scripts, and rewrites what the agent reads.
 func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 	t, err := s.Get(userID, taskID)
 	if err != nil {
@@ -281,13 +292,17 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 	if !ok {
 		return session.TaskLaunch{}, fmt.Errorf("unknown agent %q", profile.Agent)
 	}
+	// The CLI is installed once, on the server, rather than on every host.
+	binary, err := exec.LookPath(ln.def.Binary)
+	if err != nil {
+		return session.TaskLaunch{}, fmt.Errorf("%s is not installed on the sessile server: %w", ln.def.Binary, err)
+	}
 
 	var accounts []agents.GitAccount
 	var identity agents.GitAccount
 	if t.Spec.Repo != nil {
 		if g, ok := settings.GitFor(t.Spec.Repo.URL); ok {
-			accounts = []agents.GitAccount{g}
-			identity = g
+			accounts, identity = []agents.GitAccount{g}, g
 		}
 	} else {
 		accounts = settings.Git
@@ -307,132 +322,89 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 	if s.Tools != nil {
 		toolsText = s.Tools.ToolsSection(userID, scope)
 	}
-
-	env := append(append(conn.Env(), ln.env...), gitEnv(accounts)...)
-	// files renders the folder for one start; displayDir is the folder as
-	// the target itself names it, which is what the bootstrap and the
-	// instructions use; tools is how the agent reaches sessile's tools.
 	restart := s.takeRestart(t.ID)
-	inContainer := t.Spec.Devcontainer != nil
-	files := func(displayDir string, windows bool, tools toolsSetup) func(string) ([]file, error) {
-		return func(string) ([]file, error) {
+	dir := s.AgentDir(userID, t.ID)
+
+	return session.TaskLaunch{
+		Group:        taskGroup(t),
+		AgentDir:     dir,
+		LocalDropEnv: serverEnvBlocked,
+		LocalPrepare: func(absDir string) ([]string, []string, error) {
+			if restart.Fresh {
+				// A fresh start is a new conversation: the agent's state goes,
+				// the work on the host stays.
+				_ = os.RemoveAll(filepath.Join(absDir, agentStateDir))
+			}
+			tools := s.localTools(userID, t.ID, absDir, scope)
 			launchFor := ln
 			text := ""
 			if tools.enabled {
-				launchFor.first, launchFor.resume = ln.argv(toolArgs(ln.agent, tools.agentDir, tools.bridge, tools.windows))
+				launchFor.first, launchFor.resume = ln.argv(toolArgs(ln.agent, absDir, tools.bridge, false))
 				text = toolsText
 			}
-			out, err := buildFiles(t, displayDir, windows, launchFor, identity, accounts, env, notes, text)
+			files, err := buildFiles(t, absDir, launchFor, identity, accounts, notes, text)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			out = append(out, tools.files...)
-			out = append(out, mcpFiles(ln.agent, tools)...)
+			files = append(files, tools.files...)
+			files = append(files, mcpFiles(ln.agent, tools)...)
 			if t.Kind == KindOrchestrator {
-				// The orchestrator's instructions are its own; the agent reads
-				// them from the same file name as any task's.
 				instr, err := render("orchestrator.md.tmpl", orchestratorData{
-					Dir: displayDir, Tools: text, HasRequest: t.Spec.Request != "",
+					Dir: absDir, Tools: text, HasRequest: t.Spec.Request != "",
 				})
 				if err != nil {
-					return nil, err
-				}
-				out = replaceFile(out, ln.def.InstructionsFile, instr)
-			}
-			// One-shot markers the bootstrap consumes (§4.12.3, §4.12.6).
-			if restart.RebuildContainer {
-				out = append(out, file{".rebuild-container", nil, 0o600})
-			}
-			if restart.Fresh {
-				out = append(out, file{".restart-fresh", nil, 0o600})
-			}
-			return out, nil
-		}
-	}
-
-	if t.Spec.Target == "local" {
-		rel := s.WorkspaceTasksDir + "/" + t.ID
-		if t.Kind == KindOrchestrator {
-			// Its own root, so an orchestrator is never listed among task
-			// folders (§4.18).
-			rel = ".sessile/orchestrator/" + t.ID
-		}
-		return session.TaskLaunch{
-			Group:        taskGroup(t),
-			LocalDir:     rel,
-			LocalDropEnv: serverEnvBlocked,
-			LocalPrepare: func(absDir string) ([]string, []string, error) {
-				fs := localFS{}
-				tools := s.localTools(userID, t.ID, absDir, scope, inContainer)
-				if err := writeFiles(fs, absDir, files(absDir, false, tools)); err != nil {
 					return nil, nil, err
 				}
-				s.recordDir(t.ID, absDir)
-				return []string{"/bin/sh", fs.Join(absDir, "task.sh")}, nil, nil
-			},
-		}, nil
-	}
+				files = replaceFile(files, ln.def.InstructionsFile, instr)
+			}
+			if err := writeFiles(localFS{}, absDir, func(string) ([]file, error) { return files, nil }); err != nil {
+				return nil, nil, err
+			}
 
-	hs, err := s.Hosts.For(userID)
-	if err != nil {
-		return session.TaskLaunch{}, err
-	}
-	host, ok := hs.Get(t.HostID)
-	if !ok {
-		return session.TaskLaunch{}, session.ErrHostNotFound
-	}
-	if !supportedOS(host.TargetOS) {
-		return session.TaskLaunch{}, ErrUnsupportedTarget
-	}
-	target := host.SSHTarget()
-	tasksDir := host.EffectiveTasksDir()
-	windows := host.TargetOS == hosts.OSWindows
-	target.Task = func(client *ssh.Client) (string, error) {
-		fs, err := newSFTPFS(client)
-		if err != nil {
-			return "", err
-		}
-		defer fs.Close()
-		base := sftpPath(tasksDir)
-		if !strings.HasPrefix(base, "/") {
-			home, err := fs.Home()
-			if err != nil {
-				return "", fmt.Errorf("find the login directory: %w", err)
+			// The host, in the background: the folder is made on dial, and a
+			// clone of any size runs while the agent is already reading its
+			// instructions (§4.12.2). The tools wait for it.
+			if t.Spec.Target != "local" {
+				s.startPrepare(userID, t, accounts, identity, restart)
 			}
-			base = fs.Join(home, base)
-		}
-		dir := fs.Join(base, t.ID)
-		// The folder first: the tools tunnel's socket lives in it.
-		if err := fs.MkdirAll(dir); err != nil {
-			return "", err
-		}
-		if err := fs.Chmod(dir, 0o700); err != nil {
-			return "", err
-		}
-		tools, l, token := s.sshTools(client, fs.c, dir, windows, inContainer)
-		displayDir := dir
-		if windows {
-			displayDir = windowsPath(dir)
-		}
-		if err := writeFiles(fs, dir, files(displayDir, windows, tools)); err != nil {
-			if l != nil {
-				l.Close()
-			}
-			return "", err
-		}
-		if l != nil {
-			// Serves until the session's connection closes the listener.
-			go s.Tools.Serve(l, userID, t.ID, token, scope)
-		}
-		s.recordDir(t.ID, displayDir)
-		if windows {
-			// Run by Win32-OpenSSH's own shell (cmd.exe or PowerShell), both of
-			// which take a double-quoted path; tasksDir can't contain a quote.
-			return `powershell -NoProfile -ExecutionPolicy Bypass -File "` + displayDir + `\task.ps1"`, nil
-		}
-		return "sh " + shellQuote(fs.Join(dir, "task.sh")), nil
+
+			marker := filepath.Join(absDir, ".agent-started")
+			_, seen := os.Stat(marker)
+			argv := append([]string{binary}, launchFor.start(seen == nil)...)
+			_ = os.WriteFile(marker, nil, 0o600)
+			env := agentEnv(absDir, conn, ln, model)
+			return argv, env, nil
+		},
+	}, nil
+}
+
+// agentStateDir holds the agent CLI's own settings and history, per task, so
+// it never touches the server user's home (§4.12.9).
+const agentStateDir = ".agent"
+
+// agentEnv is the environment the agent CLI starts with: its connection's
+// credentials, the agent's own arguments-as-env, and state directories inside
+// the task folder. Nothing of the server's own is inherited (serverEnvBlocked).
+func agentEnv(dir string, conn agents.Connection, ln launch, model string) []string {
+	pairs := append(conn.Env(), ln.env...)
+	state := filepath.Join(dir, agentStateDir)
+	pairs = append(pairs,
+		[2]string{"CLAUDE_CONFIG_DIR", filepath.Join(state, "claude")},
+		[2]string{"CODEX_HOME", filepath.Join(state, "codex")},
+		[2]string{"GEMINI_CLI_HOME", filepath.Join(state, "gemini")},
+		[2]string{"HOME", dir},
+	)
+	out := make([]string, 0, len(pairs))
+	for _, kv := range pairs {
+		out = append(out, kv[0]+"="+kv[1])
 	}
-	return session.TaskLaunch{SSH: &target, HostID: host.ID, HostDisplayName: host.Name, Group: taskGroup(t)}, nil
+	return out
+}
+
+// AgentDir is where a task's agent lives on the server: per user, per task,
+// and the only place it can write (§4.12.9, E13).
+func (s *Service) AgentDir(userID, taskID string) string {
+	return filepath.Join(s.DataDir, "users", userID, "tasks", taskID)
 }
 
 // taskGroup is the session group a task is filed under: its epic, or the
@@ -489,7 +461,7 @@ func writeFiles(fs FS, dir string, build func(string) ([]file, error)) error {
 				return err
 			}
 		}
-		if err := fs.WriteFile(p, f.data, osMode(f.perm)); err != nil {
+		if err := fs.WriteFile(p, f.data, os.FileMode(f.perm)); err != nil {
 			return err
 		}
 	}
@@ -497,63 +469,12 @@ func writeFiles(fs FS, dir string, build func(string) ([]file, error)) error {
 }
 
 // buildFiles renders every file of a task folder for one start (§4.12.2).
-func buildFiles(t Task, dir string, windows bool, ln launch, identity agents.GitAccount, accounts []agents.GitAccount,
-	env [][2]string, notes []Note, tools string) ([]file, error) {
-	dc := t.Spec.Devcontainer
-	data := bootstrapData{
-		ID: t.ID, Dir: dir, Repo: t.Spec.Repo,
-		GitName: identity.Name, GitEmail: identity.Email,
-		Agent: ln.def.Binary, Install: installFor(ln.def.Binary, dc != nil), InstallPS: installForPS(ln.def.Binary),
-		First: ln.first, Resume: ln.resume, Devcontainer: dc,
-		Local: t.Spec.Target == "local",
-	}
-	var files []file
-	add := func(name, tmpl string, perm uint32) error {
-		out, err := render(tmpl, data)
-		if err != nil {
-			return err
-		}
-		files = append(files, file{name, out, perm})
-		return nil
-	}
-	addEnv := func(name string, fn func([][2]string) ([]byte, error)) error {
-		out, err := fn(env)
-		if err != nil {
-			return err
-		}
-		files = append(files, file{name, out, 0o600})
-		return nil
-	}
-
-	// The host side: task.sh + agent.sh on a POSIX host, task.ps1 on Windows.
-	// Wherever the agent itself runs POSIX — any devcontainer — agent.sh and
-	// the POSIX .env go along too.
-	if windows {
-		if err := add("task.ps1", "task.ps1.tmpl", 0o700); err != nil {
-			return nil, err
-		}
-		if err := addEnv(".env.json", renderEnvJSON); err != nil {
-			return nil, err
-		}
-	} else if err := add("task.sh", "task.sh.tmpl", 0o700); err != nil {
-		return nil, err
-	}
-	if !windows || dc != nil {
-		if err := add("agent.sh", "agent.sh.tmpl", 0o700); err != nil {
-			return nil, err
-		}
-		if err := addEnv(".env", renderEnv); err != nil {
-			return nil, err
-		}
-	}
-	if dc != nil && dc.Mode != "repo" {
-		files = append(files, file{".devcontainer-generic/devcontainer.json", genericDevcontainer, 0o600})
-	}
-
-	instrDir := dir
-	if dc != nil {
-		instrDir = "/sessile/task"
-	}
+// buildFiles renders what the agent reads in its folder on the server: its
+// instructions, the request, and copies of the user's notes. There is no
+// bootstrap any more — sessile starts the CLI itself, and the host is
+// prepared over SSH (§4.12.2, v0.9).
+func buildFiles(t Task, dir string, ln launch, identity agents.GitAccount, accounts []agents.GitAccount,
+	notes []Note, tools string) ([]file, error) {
 	gitHosts, github := gitHostsList(accounts)
 	var always []Note
 	for _, n := range notes {
@@ -561,28 +482,30 @@ func buildFiles(t Task, dir string, windows bool, ln launch, identity agents.Git
 			always = append(always, n)
 		}
 	}
-	instr, err := render("instructions.md.tmpl", instructionsData{
-		Name: t.Spec.Name, Dir: instrDir, Repo: t.Spec.Repo, Devcontainer: dc != nil,
-		GitHosts: gitHosts, GitHub: github,
-		Notes: len(notes) > 0, AlwaysNotes: always, Tools: tools,
-		HasRequest: t.Spec.Request != "", Summary: t.Summary,
+	instructions, err := render("instructions.md.tmpl", instructionsData{
+		Name: t.Spec.Name, Dir: dir, Repo: t.Spec.Repo,
+		Devcontainer: t.Spec.Devcontainer != nil,
+		GitHosts:     gitHosts, GitHub: github,
+		Notes: len(notes) > 0, AlwaysNotes: always,
+		Tools: tools, HasRequest: t.Spec.Request != "", Summary: t.Summary,
 	})
 	if err != nil {
 		return nil, err
 	}
-	spec, err := json.MarshalIndent(t.Spec, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	files = append(files,
-		file{"task.json", append(spec, '\n'), 0o600},
-		file{ln.def.InstructionsFile, instr, 0o600},
-	)
+	files := []file{{ln.def.InstructionsFile, instructions, 0o600}}
 	if t.Spec.Request != "" {
 		files = append(files, file{"PROMPT.md", []byte(t.Spec.Request + "\n"), 0o600})
 	}
 	for _, n := range notes {
 		files = append(files, file{"notes/" + n.Slug + ".md", []byte(n.Body), 0o600})
 	}
-	return files, nil
+	meta, err := json.MarshalIndent(map[string]any{
+		"id": t.ID, "name": t.Spec.Name, "epic": t.Spec.Epic, "host": t.HostID,
+		"repo": t.Spec.Repo, "devcontainer": t.Spec.Devcontainer, "mode": t.Spec.Agent.Mode,
+		"identity": map[string]string{"name": identity.Name, "email": identity.Email},
+	}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(files, file{"task.json", append(meta, '\n'), 0o600}), nil
 }
