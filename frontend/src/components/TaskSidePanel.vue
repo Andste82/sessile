@@ -35,6 +35,19 @@ const hostName = computed(() => {
   return hosts.hosts.find((h) => h.id === t.hostId)?.name ?? 'a host'
 })
 
+// The state badge's colours: blocked asks for the user, done is finished,
+// working is in progress.
+const stateClass = computed(() => {
+  switch (task.value?.state) {
+    case 'blocked':
+      return 'bg-amber-500/20 text-amber-300'
+    case 'done':
+      return 'bg-emerald-500/20 text-emerald-300'
+    default:
+      return 'bg-slate-700 text-slate-300'
+  }
+})
+
 function pretty(v: unknown) {
   if (v === null || v === undefined) return ''
   try {
@@ -93,8 +106,26 @@ function ago(at: number) {
     <div class="min-h-0 flex-1 overflow-y-auto p-3 text-sm">
       <template v-if="task">
         <p class="font-medium text-slate-100">{{ task.spec.name }}</p>
+        <p class="mt-1 flex items-center gap-2">
+          <!-- What the agent says it is doing (§4.18.2), not a guess from
+               the terminal. -->
+          <span
+            v-if="task.state"
+            class="rounded px-1.5 py-0.5 text-xs font-medium"
+            :class="stateClass"
+            >{{ task.state }}</span
+          >
+          <span v-if="task.spec.epic" class="text-xs text-slate-400">{{ task.spec.epic }}</span>
+        </p>
         <p class="mt-1 text-slate-300" :class="task.summary ? '' : 'text-slate-500'">
           {{ task.summary || 'No status from the agent yet.' }}
+        </p>
+        <p
+          v-if="task.state === 'blocked' && task.question"
+          class="mt-2 rounded-md border border-amber-600/60 bg-slate-800/60 p-2 text-slate-200"
+        >
+          <span class="block text-xs font-medium uppercase tracking-wide text-amber-400">Waiting for an answer</span>
+          {{ task.question }}
         </p>
 
         <!-- Write calls waiting for the user: the reason this panel exists. -->

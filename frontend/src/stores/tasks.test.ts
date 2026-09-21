@@ -15,7 +15,7 @@ vi.mock('@/api/client', () => ({
 const { useTasksStore } = await import('./tasks')
 
 describe('task events', () => {
-  it('parses the three task event types and drops malformed ones', () => {
+  it('parses the task event types and drops malformed ones', () => {
     expect(parseEvent('{"type":"taskSummary","taskId":"t1","summary":"PR open"}')).toEqual({
       type: 'taskSummary',
       taskId: 't1',
@@ -29,6 +29,15 @@ describe('task events', () => {
       input: { a: 1 },
       status: 'pending',
     })
+    expect(parseEvent('{"type":"taskState","taskId":"t1","state":"blocked","summary":"stuck","question":"Which branch?"}')).toEqual({
+      type: 'taskState',
+      taskId: 't1',
+      state: 'blocked',
+      summary: 'stuck',
+      question: 'Which branch?',
+    })
+    // A state sessile doesn't define is not a state (§4.18.2).
+    expect(parseEvent('{"type":"taskState","taskId":"t1","state":"sleeping"}')).toBeNull()
   })
 })
 
@@ -62,5 +71,18 @@ describe('tasks store', () => {
     expect(store.activity.t1.map((a) => `${a.callId}:${a.status}`)).toEqual(['b:running', 'a:ok'])
     store.applyEvent({ type: 'taskSummary', taskId: 't1', summary: 'CI green' })
     expect(store.tasks.t1.summary).toBe('CI green')
+  })
+
+  it('records what a task says it is doing, and keeps the summary when it sends none', () => {
+    const store = useTasksStore()
+    store.tasks = { t1: { id: 't1', summary: 'CI green', state: '', question: '' } as never }
+    store.applyEvent({ type: 'taskState', taskId: 't1', state: 'blocked', summary: '', question: 'Which branch?' })
+    expect(store.tasks.t1.state).toBe('blocked')
+    expect(store.tasks.t1.question).toBe('Which branch?')
+    expect(store.tasks.t1.summary).toBe('CI green')
+    // Answering it clears the question.
+    store.applyEvent({ type: 'taskState', taskId: 't1', state: 'working', summary: 'on main', question: '' })
+    expect(store.tasks.t1.question).toBe('')
+    expect(store.tasks.t1.summary).toBe('on main')
   })
 })

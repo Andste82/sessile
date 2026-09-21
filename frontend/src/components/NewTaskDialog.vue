@@ -5,6 +5,7 @@ import { api, ApiRequestError } from '@/api/client'
 import { useAgentStore } from '@/stores/agent'
 import { useHostsStore } from '@/stores/hosts'
 import { useSessionsStore } from '@/stores/sessions'
+import { useTasksStore } from '@/stores/tasks'
 import AppDialog from './AppDialog.vue'
 import ModelPicker from './ModelPicker.vue'
 import HostKeyTrustDialog from './HostKeyTrustDialog.vue'
@@ -20,9 +21,11 @@ const router = useRouter()
 const agent = useAgentStore()
 const hostsStore = useHostsStore()
 const sessions = useSessionsStore()
+const tasks = useTasksStore()
 
 const localValue = '__local__'
 const name = ref('')
+const epic = ref('')
 const request = ref('')
 const host = ref('')
 const repoUrl = ref('')
@@ -42,6 +45,11 @@ const profiles = computed(() => agent.settings?.profiles ?? [])
 const profile = computed(() => profiles.value.find((p) => p.id === profileId.value))
 const connection = computed(() => (profile.value ? agent.connection(profile.value.connectionId) : undefined))
 const hasRepo = computed(() => repoUrl.value.trim() !== '')
+// Epics the user already has (§4.18.3), so related tasks land in one group
+// rather than in three spellings of the same name.
+const epics = computed(() =>
+  [...new Set(Object.values(tasks.tasks).map((t) => t.spec.epic ?? '').filter(Boolean))].sort(),
+)
 
 watch(
   () => props.open,
@@ -50,6 +58,7 @@ watch(
     error.value = null
     pendingHostKey.value = null
     name.value = ''
+    epic.value = ''
     request.value = ''
     repoUrl.value = ''
     repoRef.value = ''
@@ -98,6 +107,7 @@ const canSubmit = computed(
 function spec(): TaskSpec {
   const s: TaskSpec = {
     name: name.value.trim(),
+    epic: epic.value.trim() || undefined,
     agent: { profileId: profileId.value, model: model.value.trim() || undefined, mode: mode.value },
   }
   if (host.value === localValue) s.target = 'local'
@@ -150,10 +160,26 @@ const inputCls =
 <template>
   <AppDialog :open="open" title="New task" wide @close="emit('close')">
     <form class="flex flex-col gap-4" @submit.prevent="create">
-      <label :class="labelCls">
-        <span class="text-slate-400">Name</span>
-        <input v-model="name" type="text" maxlength="64" autofocus placeholder="DBG-142 print crash" :class="inputCls" />
-      </label>
+      <div class="grid gap-3 sm:grid-cols-[2fr_1fr]">
+        <label :class="labelCls">
+          <span class="text-slate-400">Name</span>
+          <input v-model="name" type="text" maxlength="64" autofocus placeholder="DBG-142 print crash" :class="inputCls" />
+        </label>
+        <label :class="labelCls">
+          <span class="text-slate-400">Epic <span class="text-slate-500">(optional)</span></span>
+          <input
+            v-model="epic"
+            type="text"
+            maxlength="64"
+            list="task-epics"
+            placeholder="Tasks"
+            :class="inputCls"
+          />
+          <datalist id="task-epics">
+            <option v-for="e in epics" :key="e" :value="e" />
+          </datalist>
+        </label>
+      </div>
 
       <label :class="labelCls">
         <span class="text-slate-400">Request <span class="text-slate-500">(optional)</span></span>

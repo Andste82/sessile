@@ -328,6 +328,10 @@ export interface ModelsResponse {
 
 export interface TaskSpec {
   name: string
+  /** "task" (the default) or "orchestrator" (§4.18). */
+  kind?: 'task' | 'orchestrator'
+  /** Groups tasks that belong together; it is the session's group (§4.18.3). */
+  epic?: string
   hostId?: string
   target?: 'local'
   repo?: { url: string; ref?: string }
@@ -343,7 +347,18 @@ export interface Task {
   dir: string
   spec: TaskSpec
   summary: string
+  /** What the task's agent says it is doing (§4.18.2); "" until it says. */
+  state: '' | 'working' | 'blocked' | 'done'
+  /** What a blocked task is waiting for. */
+  question: string
+  kind: 'task' | 'orchestrator'
   created: string
+}
+
+/** GET /api/orchestrator (§4.18): the user's orchestrator, if it exists. */
+export interface OrchestratorRef {
+  sessionId?: string
+  taskId?: string
 }
 
 // GET /api/tasks carries each task's held write calls (§4.17.4).

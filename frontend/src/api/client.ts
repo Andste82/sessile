@@ -7,6 +7,7 @@ import type {
   GitImportResponse,
   Note,
   NoteContext,
+  OrchestratorRef,
   PendingApproval,
   ModelsResponse,
   RestartOptions,
@@ -145,6 +146,14 @@ export const api = {
   createTask: (spec: TaskSpec) =>
     request<Session>('/api/tasks', { method: 'POST', body: JSON.stringify(spec) }),
   getTask: (id: string) => request<Task>(`/api/tasks/${id}`),
+  /** The user's orchestrator, if it has ever been opened (§4.18). */
+  getOrchestrator: () => request<OrchestratorRef>('/api/orchestrator'),
+  /** Open it: created the first time, restarted when it has stopped. */
+  openOrchestrator: (profileId?: string) =>
+    request<Session>('/api/orchestrator', {
+      method: 'POST',
+      body: JSON.stringify(profileId ? { profileId } : {}),
+    }),
   listTasks: () => request<TaskWithApprovals[]>('/api/tasks'),
   taskApprovals: (id: string) => request<PendingApproval[]>(`/api/tasks/${id}/approvals`),
   decideApproval: (id: string, callId: string, approve: boolean) =>

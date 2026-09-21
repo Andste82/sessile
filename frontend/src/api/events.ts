@@ -66,8 +66,16 @@ export interface TaskSummaryEvent {
   taskId: string
   summary: string
 }
+/** A task marked its own state (§4.18.2). */
+export interface TaskStateEvent {
+  type: 'taskState'
+  taskId: string
+  state: 'working' | 'blocked' | 'done'
+  summary: string
+  question: string
+}
 
-export type TaskEvent = TaskToolEvent | TaskApprovalEvent | TaskSummaryEvent
+export type TaskEvent = TaskToolEvent | TaskApprovalEvent | TaskSummaryEvent | TaskStateEvent
 
 export type ServerEvent =
   | SessionsEvent
@@ -199,6 +207,17 @@ export function parseEvent(data: string): ServerEvent | null {
     case 'taskSummary':
       if (typeof m.taskId !== 'string') return null
       return { type: 'taskSummary', taskId: m.taskId, summary: str(m.summary) }
+    case 'taskState': {
+      if (typeof m.taskId !== 'string') return null
+      if (!['working', 'blocked', 'done'].includes(m.state as string)) return null
+      return {
+        type: 'taskState',
+        taskId: m.taskId,
+        state: m.state as TaskStateEvent['state'],
+        summary: str(m.summary),
+        question: str(m.question),
+      }
+    }
     default:
       // Includes the `error` frame the server sends when it cannot build a
       // snapshot (§5.1). There is nothing to apply, and the subscription

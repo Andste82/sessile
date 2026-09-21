@@ -68,6 +68,16 @@ export const useTasksStore = defineStore('tasks', () => {
         else void loadOne(ev.taskId)
         break
       }
+      case 'taskState': {
+        const t = tasks.value[ev.taskId]
+        if (t) {
+          tasks.value = {
+            ...tasks.value,
+            [ev.taskId]: { ...t, state: ev.state, summary: ev.summary || t.summary, question: ev.question },
+          }
+        } else void loadOne(ev.taskId)
+        break
+      }
       case 'taskTool': {
         const list = [...(activity.value[ev.taskId] ?? [])]
         const i = list.findIndex((a) => a.callId === ev.callId)
