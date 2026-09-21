@@ -20,9 +20,20 @@ import (
 	"github.com/Andste82/sessile/backend/internal/agents"
 )
 
+// Kinds of task (§4.18): an ordinary task, or the user's one orchestrator.
+const (
+	KindTask         = "task"
+	KindOrchestrator = "orchestrator"
+)
+
 // Spec is what the task form sends (§4.12.1).
 type Spec struct {
 	Name string `json:"name"`
+	// Kind is "task" (the default) or "orchestrator" (§4.18).
+	Kind string `json:"kind,omitempty"`
+	// Epic groups tasks that belong together; it is the session's group
+	// (§4.18.3), so the sidebar and dashboard fold by it already.
+	Epic string `json:"epic,omitempty"`
 	// HostID names one of the user's hosts; Target "local" means the server
 	// itself instead. Exactly one of the two is set.
 	HostID       string        `json:"hostId,omitempty"`
@@ -60,6 +71,19 @@ const (
 	ModeNormal = "normal"
 )
 
+// Task states (§4.18.2): what a task's agent says it is doing. "" until it
+// says anything.
+const (
+	StateWorking = "working"
+	StateBlocked = "blocked"
+	StateDone    = "done"
+)
+
+// ValidState reports whether a state is one an agent may set.
+func ValidState(s string) bool {
+	return s == StateWorking || s == StateBlocked || s == StateDone
+}
+
 // maxRequest bounds the first message (§4.12.1).
 const maxRequest = 64 << 10
 
@@ -95,6 +119,10 @@ func (s *Spec) Normalize() {
 	if s.Devcontainer != nil && s.Devcontainer.Mode == "" {
 		s.Devcontainer.Mode = "auto"
 	}
+	if s.Kind == "" {
+		s.Kind = KindTask
+	}
+	s.Epic = strings.TrimSpace(s.Epic)
 	s.Agent.Model = strings.TrimSpace(s.Agent.Model)
 	if s.Agent.Mode == "" {
 		s.Agent.Mode = ModePlan
@@ -112,6 +140,19 @@ func (s Spec) Validate() error {
 	case s.Target == "" && s.HostID != "":
 	default:
 		return invalid(`pick a host, or target "local"`)
+	}
+	if len(s.Epic) > 64 {
+		return invalid("an epic name is at most 64 characters")
+	}
+	switch s.Kind {
+	case KindTask, "": // "" is a task; Normalize fills it in
+	case KindOrchestrator:
+		// The orchestrator is sessile's own session on the server (§4.18).
+		if s.Target != "local" || s.Repo != nil || s.Devcontainer != nil {
+			return invalid("the orchestrator runs on the server, without a repo")
+		}
+	default:
+		return invalid("unknown task kind %q", s.Kind)
 	}
 	if s.Repo != nil {
 		if err := validRepoURL(s.Repo.URL); err != nil {

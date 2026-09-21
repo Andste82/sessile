@@ -138,7 +138,12 @@ func run(args []string) error {
 	mcpServer := mcp.New(scriptStore, scriptRunner, taskService, manager.PublishHostop, log)
 	mcpServer.Version = config.Version
 	mcpServer.AllowScripts = func() bool { return serverCfg.Get().ScriptsAllowed() }
+	// The orchestrator's view of sessile (§4.18.1).
+	mcpServer.Hosts, mcpServer.Agents, mcpServer.Notes, mcpServer.Sessions = hostsRegistry, agentsRegistry, notesStore, manager
 	taskService.Tools = mcpServer
+	taskService.Sessions = manager
+	taskService.AllowLocal = func() bool { return serverCfg.Get().AllowLocalHost }
+	manager.SetTaskEvents(mcpServer)
 	srv.SetMCP(mcpServer)
 	manager.SetTaskLauncher(taskService)
 	srv.SetTasks(taskService)

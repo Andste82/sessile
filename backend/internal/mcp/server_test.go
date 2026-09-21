@@ -126,7 +126,7 @@ func setup(t *testing.T) (*Server, *recorder, string, net.Listener) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { l.Close() })
-	go s.Serve(l, "u1", taskID, "the-token")
+	go s.Serve(l, "u1", taskID, "the-token", tasks.ScopeTask)
 	return s, rec, taskID, l
 }
 
@@ -241,7 +241,7 @@ func TestToolsEndToEnd(t *testing.T) {
 	if c.call("nope", nil)["error"] == nil {
 		t.Fatal("unknown method didn't error")
 	}
-	if section := s.ToolsSection("u1"); !strings.Contains(section, "tix__comment (write)") || !strings.Contains(section, "Read tickets before planning.") {
+	if section := s.ToolsSection("u1", tasks.ScopeTask); !strings.Contains(section, "tix__comment (write)") || !strings.Contains(section, "Read tickets before planning.") {
 		t.Fatalf("tools section = %s", section)
 	}
 }

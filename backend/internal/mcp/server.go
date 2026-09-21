@@ -30,7 +30,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Andste82/sessile/backend/internal/agents"
+	"github.com/Andste82/sessile/backend/internal/hosts"
+	"github.com/Andste82/sessile/backend/internal/notes"
 	"github.com/Andste82/sessile/backend/internal/scripts"
+	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/tasks"
 )
 
@@ -39,6 +43,15 @@ const approvalTimeout = 5 * time.Minute
 
 // maxLine bounds one JSON-RPC message from the agent.
 const maxLine = 4 << 20
+
+// Sessions is what the orchestrator's tools need from the session manager
+// (§4.18.1). Every method is owner-scoped.
+type Sessions interface {
+	Get(id, userID string) (session.Info, error)
+	Restart(id, userID string) (session.Info, error)
+	Output(id, userID string, max int) ([]byte, error)
+	Input(id, userID string, data []byte) error
+}
 
 // Server serves the sessile tools to every task's agent.
 type Server struct {
@@ -50,9 +63,18 @@ type Server struct {
 	Version      string
 	Log          *slog.Logger
 
+	// The orchestrator's view of sessile (§4.18.1). Unset in a task-only
+	// server: its tools then report that they are unavailable rather than
+	// panicking.
+	Hosts    *hosts.Registry
+	Agents   *agents.Registry
+	Notes    *notes.Store
+	Sessions Sessions
+
 	mu        sync.Mutex
 	conns     map[string]map[*conn]struct{} // by user id
 	approvals map[string]*approval          // by call id
+	events    map[string]*eventQueue        // by user id
 }
 
 type approval struct {
@@ -66,27 +88,29 @@ type approval struct {
 func New(store *scripts.Store, runner *scripts.Runner, svc *tasks.Service, publish func(string, any), log *slog.Logger) *Server {
 	return &Server{Scripts: store, Runner: runner, Tasks: svc, Publish: publish, Log: log,
 		AllowScripts: func() bool { return true },
-		conns:        map[string]map[*conn]struct{}{}, approvals: map[string]*approval{}}
+		conns:        map[string]map[*conn]struct{}{}, approvals: map[string]*approval{},
+		events: map[string]*eventQueue{}}
 }
 
 // Serve accepts agent connections on l until it closes — which, for an SSH
 // task, is when the session's connection goes away. token is this start's
-// secret; every connection has to present it first.
-func (s *Server) Serve(l net.Listener, userID, taskID, token string) {
+// secret; every connection has to present it first. scope decides which tools
+// the connection gets (§4.18.1): tasks.ScopeTask, or the orchestrator's.
+func (s *Server) Serve(l net.Listener, userID, taskID, token, scope string) {
 	for {
 		c, err := l.Accept()
 		if err != nil {
 			return
 		}
-		go s.handle(c, userID, taskID, token)
+		go s.handle(c, userID, taskID, token, scope)
 	}
 }
 
 type conn struct {
-	s              *Server
-	userID, taskID string
-	w              io.Writer
-	wmu            sync.Mutex
+	s                     *Server
+	userID, taskID, scope string
+	w                     io.Writer
+	wmu                   sync.Mutex
 }
 
 func (c *conn) send(v any) {
@@ -99,7 +123,7 @@ func (c *conn) send(v any) {
 	_, _ = c.w.Write(append(b, '\n'))
 }
 
-func (s *Server) handle(nc net.Conn, userID, taskID, token string) {
+func (s *Server) handle(nc net.Conn, userID, taskID, token, scope string) {
 	defer nc.Close()
 	r := bufio.NewReaderSize(nc, 64<<10)
 
@@ -115,7 +139,7 @@ func (s *Server) handle(nc net.Conn, userID, taskID, token string) {
 	}
 	_ = nc.SetReadDeadline(time.Time{})
 
-	c := &conn{s: s, userID: userID, taskID: taskID, w: nc}
+	c := &conn{s: s, userID: userID, taskID: taskID, scope: scope, w: nc}
 	s.mu.Lock()
 	if s.conns[userID] == nil {
 		s.conns[userID] = map[*conn]struct{}{}
@@ -204,13 +228,13 @@ func (c *conn) dispatch(ctx context.Context, raw []byte) {
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": true}},
 			"serverInfo":      map[string]any{"name": "sessile", "version": c.s.Version},
-			"instructions":    "Tools from sessile: the user's own scripts (tickets, CI, artifacts) and this task's status line. Calls marked as writes wait for the user's approval in sessile.",
+			"instructions":    instructions(c.scope),
 		}, nil)
 	case "notifications/initialized", "notifications/cancelled":
 	case "ping":
 		reply(map[string]any{}, nil)
 	case "tools/list":
-		reply(map[string]any{"tools": c.s.tools(c.userID)}, nil)
+		reply(map[string]any{"tools": c.s.tools(c.userID, c.scope)}, nil)
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -220,7 +244,7 @@ func (c *conn) dispatch(ctx context.Context, raw []byte) {
 			reply(nil, &rpcError{Code: -32602, Message: "invalid params"})
 			return
 		}
-		text, isErr := c.s.call(ctx, c.userID, c.taskID, p.Name, p.Arguments)
+		text, isErr := c.s.call(ctx, c.userID, c.taskID, c.scope, p.Name, p.Arguments)
 		reply(map[string]any{
 			"content": []map[string]any{{"type": "text", "text": text}},
 			"isError": isErr,
@@ -228,6 +252,17 @@ func (c *conn) dispatch(ctx context.Context, raw []byte) {
 	default:
 		reply(nil, &rpcError{Code: -32601, Message: "method not found: " + req.Method})
 	}
+}
+
+// instructions is the server's one-paragraph introduction, per scope.
+func instructions(scope string) string {
+	if scope == tasks.ScopeOrchestrator {
+		return "Tools from sessile: the user's hosts, agent profiles and notes, their tasks — " +
+			"start one, read its state and terminal, restart it, answer it — and their own scripts " +
+			"(tickets, CI, artifacts). wait_for_events tells you when something happens."
+	}
+	return "Tools from sessile: the user's own scripts (tickets, CI, artifacts) and this task's status line. " +
+		"Calls marked as writes wait for the user's approval in sessile."
 }
 
 // Tool is one MCP tool.
@@ -242,6 +277,15 @@ var emptySchema = json.RawMessage(`{"type":"object","properties":{}}`)
 
 // builtins are the task's own tools.
 var builtins = []Tool{
+	{
+		Name: "set_task_state",
+		Description: "Tell sessile what you are doing: working, blocked (you need a decision — say what in `question`) or done. " +
+			"Mark yourself blocked instead of waiting silently: that is how the user and the orchestrator find out you are stuck.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["state"],"properties":{
+			"state":{"type":"string","enum":["working","blocked","done"]},
+			"summary":{"type":"string","maxLength":200,"description":"One-line status; keeps the sidebar current"},
+			"question":{"type":"string","maxLength":2000,"description":"What you are waiting for, when blocked"}}}`),
+	},
 	{
 		Name:        "set_task_summary",
 		Description: "Set this task's one-line status, shown to the user in sessile's sidebar and dashboard. Keep it current: e.g. \"Plan approved, implementing\", \"PR #412 open, CI running\".",
@@ -305,8 +349,13 @@ func contextLine(r ready) string {
 
 func toolName(script, fn string) string { return script + "__" + fn }
 
-func (s *Server) tools(userID string) []Tool {
-	out := append([]Tool{}, builtins...)
+func (s *Server) tools(userID, scope string) []Tool {
+	var out []Tool
+	if scope == tasks.ScopeOrchestrator {
+		out = append(out, orchestratorTools...)
+	} else {
+		out = append(out, builtins...)
+	}
 	for _, r := range s.readyScripts(userID) {
 		ctx := contextLine(r)
 		for _, f := range r.meta.Functions {
@@ -352,6 +401,15 @@ type ApprovalMsg struct {
 	Status string          `json:"status"` // pending | approved | denied | expired
 }
 
+// StateMsg carries a task's state and question (§4.18.2, §5.3).
+type StateMsg struct {
+	Type     string `json:"type"` // "taskState"
+	TaskID   string `json:"taskId"`
+	State    string `json:"state"`
+	Summary  string `json:"summary,omitempty"`
+	Question string `json:"question,omitempty"`
+}
+
 type SummaryMsg struct {
 	Type    string `json:"type"` // "taskSummary"
 	TaskID  string `json:"taskId"`
@@ -371,12 +429,55 @@ func newCallID() string {
 }
 
 // call runs one tool call and returns its text result and whether it failed.
-func (s *Server) call(ctx context.Context, userID, taskID, name string, args json.RawMessage) (string, bool) {
+func (s *Server) call(ctx context.Context, userID, taskID, scope, name string, args json.RawMessage) (string, bool) {
 	if len(args) == 0 || string(args) == "null" {
 		args = json.RawMessage("{}")
 	}
+	if scope == tasks.ScopeOrchestrator {
+		if orchestratorToolNames[name] {
+			return s.callOrchestrator(ctx, userID, name, args)
+		}
+	} else if orchestratorToolNames[name] {
+		// A task's agent gets its own task's tools, never sessile's (§4.18.1).
+		return "unknown tool " + name, true
+	}
 	switch name {
+	case "set_task_state":
+		if scope == tasks.ScopeOrchestrator {
+			return "unknown tool " + name, true
+		}
+		var p struct {
+			State    string `json:"state"`
+			Summary  string `json:"summary"`
+			Question string `json:"question"`
+		}
+		if err := json.Unmarshal(args, &p); err != nil || !tasks.ValidState(p.State) {
+			return "state must be working, blocked or done", true
+		}
+		summary := clip(p.Summary, 200)
+		question := clip(p.Question, 2000)
+		if summary == "" {
+			if t, err := s.Tasks.Get(userID, taskID); err == nil {
+				summary = t.Summary
+			}
+		}
+		if p.State != tasks.StateBlocked {
+			question = ""
+		}
+		if err := s.Tasks.SetState(taskID, p.State, summary, question); err != nil {
+			return "could not save the state", true
+		}
+		msg := StateMsg{Type: "taskState", TaskID: taskID, State: p.State, Summary: summary, Question: question}
+		s.publish(userID, msg)
+		s.pushEvent(userID, Event{Type: "taskState", TaskID: taskID, State: p.State, Summary: summary, Question: question})
+		if p.State == tasks.StateBlocked {
+			return "Saved. The user and the orchestrator can see you are waiting; keep reading this terminal for their answer.", false
+		}
+		return "Saved.", false
 	case "set_task_summary":
+		if scope == tasks.ScopeOrchestrator {
+			return "unknown tool " + name, true
+		}
 		var p struct {
 			Summary string `json:"summary"`
 		}
@@ -391,8 +492,12 @@ func (s *Server) call(ctx context.Context, userID, taskID, name string, args jso
 			return "could not save the summary", true
 		}
 		s.publish(userID, SummaryMsg{Type: "taskSummary", TaskID: taskID, Summary: summary})
+		s.pushEvent(userID, Event{Type: "taskSummary", TaskID: taskID, Summary: summary})
 		return "Saved.", false
 	case "task_info":
+		if scope == tasks.ScopeOrchestrator {
+			return "unknown tool " + name, true
+		}
 		t, err := s.Tasks.Get(userID, taskID)
 		if err != nil {
 			return "task not found", true
@@ -520,10 +625,19 @@ func (s *Server) ToolsChanged(userID string) {
 	}
 }
 
-// ToolsSection is tasks.ToolsSource: the "Tools from sessile" section of a
-// task's instructions (§4.17.2), naming each ready script with what it is for
-// and its guidance.
-func (s *Server) ToolsSection(userID string) string {
+// clip trims a one-line field to n runes.
+func clip(s string, n int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if len([]rune(s)) > n {
+		s = string([]rune(s)[:n])
+	}
+	return s
+}
+
+// ToolsSection is tasks.ToolServer: the "Tools from sessile" section of a
+// task's or the orchestrator's instructions (§4.17.2, §4.18.1), naming each
+// ready script with what it is for and its guidance.
+func (s *Server) ToolsSection(userID, scope string) string {
 	var b strings.Builder
 	b.WriteString("## Tools from sessile\n\n")
 	b.WriteString("Call these through the `sessile` MCP server. Results come from the user's own\n")
@@ -545,6 +659,13 @@ func (s *Server) ToolsSection(userID string) string {
 			fmt.Fprintf(&b, "- %s\n", g)
 		}
 	}
-	b.WriteString("\nAlso: `set_task_summary` — keep it current (plan approved, PR open, CI state) — and `task_info`.\n")
+	if scope == tasks.ScopeOrchestrator {
+		b.WriteString("\nAlso, sessile itself: `list_hosts`, `list_profiles`, `list_notes`, `create_task`,\n")
+		b.WriteString("`list_tasks`, `task_status`, `task_output`, `restart_task`, `send_to_task` and\n")
+		b.WriteString("`wait_for_events`.\n")
+	} else {
+		b.WriteString("\nAlso: `set_task_state` — working, blocked (say what you need) or done — \n")
+		b.WriteString("`set_task_summary`, and `task_info`.\n")
+	}
 	return b.String()
 }

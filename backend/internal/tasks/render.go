@@ -89,6 +89,13 @@ type instructionsData struct {
 	Summary      string
 }
 
+// orchestratorData fills orchestrator.md.tmpl (§4.18).
+type orchestratorData struct {
+	Dir        string
+	Tools      string
+	HasRequest bool
+}
+
 // Note is one of the user's notes as a task sees it (§4.14).
 type Note struct {
 	Slug  string

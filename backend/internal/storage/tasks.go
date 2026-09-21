@@ -21,6 +21,14 @@ CREATE TABLE IF NOT EXISTS tasks (
   created     TEXT NOT NULL
 );`
 
+// tasksMigrationColumns are added to an existing tasks table the way §8's
+// session columns are: guarded by a PRAGMA check, with nothing to backfill.
+var tasksMigrationColumns = []struct{ name, ddl string }{
+	{"state", `ALTER TABLE tasks ADD COLUMN state TEXT NOT NULL DEFAULT ''`},
+	{"question", `ALTER TABLE tasks ADD COLUMN question TEXT NOT NULL DEFAULT ''`},
+	{"kind", `ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'`},
+}
+
 // TaskRow is one task as stored.
 type TaskRow struct {
 	ID        string
@@ -30,15 +38,40 @@ type TaskRow struct {
 	Dir       string // absolute task folder on the target, known once it is created
 	SpecJSON  string
 	Summary   string
-	Created   time.Time
+	// State, Question and Kind are §4.18's: what the task's agent says it is
+	// doing, what it is waiting for, and whether this is a task or the
+	// user's orchestrator.
+	State    string
+	Question string
+	Kind     string
+	Created  time.Time
+}
+
+// taskColumns is every column the task queries read, in scan order.
+const taskColumns = `id, session_id, user_id, host_id, dir, spec_json, summary, state, question, kind, created`
+
+func scanTask(sc interface{ Scan(...any) error }) (TaskRow, error) {
+	var t TaskRow
+	var created string
+	if err := sc.Scan(&t.ID, &t.SessionID, &t.UserID, &t.HostID, &t.Dir, &t.SpecJSON,
+		&t.Summary, &t.State, &t.Question, &t.Kind, &created); err != nil {
+		return TaskRow{}, err
+	}
+	if ct, err := time.Parse(time.RFC3339, created); err == nil {
+		t.Created = ct
+	}
+	return t, nil
 }
 
 // InsertTask stores a new task.
 func (s *Store) InsertTask(t TaskRow) error {
+	if t.Kind == "" {
+		t.Kind = "task"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO tasks (id, session_id, user_id, host_id, dir, spec_json, summary, created)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.SessionID, t.UserID, t.HostID, t.Dir, t.SpecJSON, t.Summary,
+		`INSERT INTO tasks (id, session_id, user_id, host_id, dir, spec_json, summary, state, question, kind, created)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.SessionID, t.UserID, t.HostID, t.Dir, t.SpecJSON, t.Summary, t.State, t.Question, t.Kind,
 		t.Created.UTC().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -49,19 +82,13 @@ func (s *Store) InsertTask(t TaskRow) error {
 // GetTask returns the task id, scoped to userID: another user's task is
 // reported exactly like a missing one (§14.5).
 func (s *Store) GetTask(id, userID string) (TaskRow, bool, error) {
-	row := s.db.QueryRow(`SELECT id, session_id, user_id, host_id, dir, spec_json, summary, created
-	                      FROM tasks WHERE id=? AND user_id=?`, id, userID)
-	var t TaskRow
-	var created string
-	err := row.Scan(&t.ID, &t.SessionID, &t.UserID, &t.HostID, &t.Dir, &t.SpecJSON, &t.Summary, &created)
+	row := s.db.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE id=? AND user_id=?`, id, userID)
+	t, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskRow{}, false, nil
 	}
 	if err != nil {
 		return TaskRow{}, false, fmt.Errorf("get task: %w", err)
-	}
-	if ct, err := time.Parse(time.RFC3339, created); err == nil {
-		t.Created = ct
 	}
 	return t, true, nil
 }
@@ -82,6 +109,29 @@ func (s *Store) SetTaskSummary(id, summary string) error {
 	return nil
 }
 
+// SetTaskState records what a task's agent says it is doing (§4.18.2).
+func (s *Store) SetTaskState(id, state, summary, question string) error {
+	if _, err := s.db.Exec(`UPDATE tasks SET state=?, summary=?, question=? WHERE id=?`,
+		state, summary, question, id); err != nil {
+		return fmt.Errorf("set task state: %w", err)
+	}
+	return nil
+}
+
+// OrchestratorTask returns the user's orchestrator task (§4.18), if any.
+func (s *Store) OrchestratorTask(userID string) (TaskRow, bool, error) {
+	row := s.db.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE user_id=? AND kind='orchestrator'
+	                      ORDER BY created DESC LIMIT 1`, userID)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskRow{}, false, nil
+	}
+	if err != nil {
+		return TaskRow{}, false, fmt.Errorf("get orchestrator: %w", err)
+	}
+	return t, true, nil
+}
+
 // DeleteTask removes a task row by id — for a task whose session never
 // came into existence.
 func (s *Store) DeleteTask(id string) error {
@@ -93,21 +143,16 @@ func (s *Store) DeleteTask(id string) error {
 
 // ListTasks returns userID's tasks.
 func (s *Store) ListTasks(userID string) ([]TaskRow, error) {
-	rows, err := s.db.Query(`SELECT id, session_id, user_id, host_id, dir, spec_json, summary, created
-	                         FROM tasks WHERE user_id=? ORDER BY created`, userID)
+	rows, err := s.db.Query(`SELECT `+taskColumns+` FROM tasks WHERE user_id=? ORDER BY created`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
 	defer rows.Close()
 	var out []TaskRow
 	for rows.Next() {
-		var t TaskRow
-		var created string
-		if err := rows.Scan(&t.ID, &t.SessionID, &t.UserID, &t.HostID, &t.Dir, &t.SpecJSON, &t.Summary, &created); err != nil {
+		t, err := scanTask(rows)
+		if err != nil {
 			return nil, err
-		}
-		if ct, err := time.Parse(time.RFC3339, created); err == nil {
-			t.Created = ct
 		}
 		out = append(out, t)
 	}

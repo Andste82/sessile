@@ -63,6 +63,7 @@ type Manager struct {
 	hostResolver HostResolver
 	// taskLauncher resolves task sessions (§4.12); nil until SetTaskLauncher.
 	taskLauncher TaskLauncher
+	taskEvents   TaskEvents
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -549,6 +550,7 @@ func (m *Manager) readLoop(s *Session) {
 		// as a stopped session that nothing can remove.
 		if !s.isDiscarded() {
 			m.publishSession(info)
+			m.taskExited(info)
 		}
 	}
 	// Reap the shell process (single reaper), close the master, then signal

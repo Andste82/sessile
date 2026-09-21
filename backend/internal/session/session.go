@@ -62,6 +62,10 @@ type Session struct {
 	// TaskID is the task (§4.12) this session runs, "" for an ordinary
 	// session. Persisted, so a restart finds its way back to the task.
 	TaskID string
+	// taskGroup is the group a fresh task session is filed under — its epic
+	// (§4.18.3). Runtime only: a restart keeps the session's stored Group,
+	// which the user may have changed since.
+	taskGroup string
 
 	Status       Status
 	PID          int

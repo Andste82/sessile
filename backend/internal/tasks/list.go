@@ -1,8 +1,6 @@
 package tasks
 
-import "encoding/json"
-
-// List returns userID's tasks.
+// List returns userID's tasks, newest first.
 func (s *Service) List(userID string) ([]Task, error) {
 	rows, err := s.DB.ListTasks(userID)
 	if err != nil {
@@ -10,12 +8,11 @@ func (s *Service) List(userID string) ([]Task, error) {
 	}
 	out := []Task{}
 	for _, row := range rows {
-		var spec Spec
-		if err := json.Unmarshal([]byte(row.SpecJSON), &spec); err != nil {
-			continue
+		t, err := fromRow(row)
+		if err != nil {
+			continue // one task whose spec no longer decodes shouldn't hide the rest
 		}
-		out = append(out, Task{ID: row.ID, SessionID: row.SessionID, HostID: row.HostID, Dir: row.Dir,
-			Spec: spec, Summary: row.Summary, Created: row.Created})
+		out = append(out, t)
 	}
 	return out, nil
 }

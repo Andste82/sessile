@@ -21,8 +21,10 @@ import (
 // need it: to serve a task's tunnel, to render the instructions' Tools
 // section, and to hand out the bridge binary.
 type ToolServer interface {
-	ToolsSection(userID string) string
-	Serve(l net.Listener, userID, taskID, token string)
+	// ToolsSection renders the instructions' Tools section for a scope
+	// (§4.18.1): the task scope, or the orchestrator's.
+	ToolsSection(userID, scope string) string
+	Serve(l net.Listener, userID, taskID, token, scope string)
 	Bridge(goos, goarch string) ([]byte, bool)
 }
 
@@ -205,7 +207,7 @@ func (s *Service) sshTools(client *ssh.Client, sc *sftp.Client, dir string, wind
 
 // localTools is sshTools for a local-host task: the bridge for the server's
 // own platform and a Unix socket in the task folder.
-func (s *Service) localTools(userID, taskID, dir string, inContainer bool) toolsSetup {
+func (s *Service) localTools(userID, taskID, dir, scope string, inContainer bool) toolsSetup {
 	if s.Tools == nil {
 		return toolsSetup{}
 	}
@@ -220,7 +222,7 @@ func (s *Service) localTools(userID, taskID, dir string, inContainer bool) tools
 		return toolsSetup{}
 	}
 	token := newToken()
-	go s.Tools.Serve(l, userID, taskID, token)
+	go s.Tools.Serve(l, userID, taskID, token, scope)
 	t := toolsSetup{enabled: true, files: append(bins, file{".sessile-token", []byte(token + "\n"), 0o600})}
 	if inContainer {
 		t.agentDir, t.bridge = "/sessile/task", "/sessile/task/.tools/"+name

@@ -427,3 +427,86 @@ func TestSFTPPath(t *testing.T) {
 		}
 	}
 }
+
+// TestOrchestratorEndToEnd runs the orchestrator the way OpenOrchestrator
+// does: one session per user, on the server, in its own folder, with its own
+// instructions — and reopening it returns the same session (§4.18).
+func TestOrchestratorEndToEnd(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	dataDir := t.TempDir()
+	root := t.TempDir()
+	binDir := t.TempDir()
+	fake := "#!/bin/sh\necho \"FAKE-CLAUDE args=[$*]\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SHELL", "/bin/true")
+
+	db, err := storage.Open(filepath.Join(dataDir, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	reg := agents.NewRegistry(dataDir)
+	st, _ := reg.For("u1")
+	if _, err := st.Update(func(s *agents.Settings) error {
+		s.Connections = []agents.Connection{{ID: "c1", Name: "Max", Kind: "claude-subscription", Fields: map[string]string{"token": "tok-123"}}}
+		s.Profiles = []agents.Profile{{ID: "p1", Name: "Claude", Agent: agents.AgentClaude, ConnectionID: "c1"}}
+		return nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, WorkspaceTasksDir: ".sessile/tasks"}
+	mgr := session.NewManager(root, []string{"sh"}, 1<<16, "", db, log)
+	mgr.SetTaskLauncher(svc)
+	svc.Sessions = mgr
+	defer mgr.Shutdown()
+
+	info, err := svc.OpenOrchestrator("u1", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, found, err := svc.Orchestrator("u1")
+	if err != nil || !found {
+		t.Fatalf("orchestrator not stored: %v %v", found, err)
+	}
+	if task.Kind != KindOrchestrator || task.SessionID != info.ID {
+		t.Fatalf("task = %+v, session %s", task, info.ID)
+	}
+	waitStopped(t, mgr, info.ID)
+
+	// Its own folder, outside the tasks root, with the orchestrator's
+	// instructions rather than a task's.
+	dir := filepath.Join(root, ".sessile", "orchestrator", task.ID)
+	instructions, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"You are the orchestrator", "create_task", "wait_for_events"} {
+		if !strings.Contains(string(instructions), want) {
+			t.Errorf("instructions are missing %q:\n%s", want, instructions)
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(root, ".sessile", "tasks")); err == nil && len(entries) > 0 {
+		t.Errorf("the orchestrator should not be filed under the tasks root: %v", entries)
+	}
+
+	// Reopening restarts the same session rather than starting a second one.
+	again, err := svc.OpenOrchestrator("u1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != info.ID {
+		t.Errorf("reopened as %s, want the same session %s", again.ID, info.ID)
+	}
+	waitStopped(t, mgr, info.ID)
+	list, err := svc.List("u1")
+	if err != nil || len(list) != 1 {
+		t.Fatalf("tasks = %d (%v), want the one orchestrator", len(list), err)
+	}
+}

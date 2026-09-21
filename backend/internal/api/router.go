@@ -195,6 +195,8 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/agent/scripts/:name/check", s.checkScript)
 		authGroup.POST("/agent/scripts/:name/run", s.runScript)
 		authGroup.POST("/agent/scripts/:name/rebuild", s.rebuildScript)
+		authGroup.GET("/orchestrator", s.getOrchestrator)
+		authGroup.POST("/orchestrator", s.openOrchestrator)
 		authGroup.POST("/tasks", s.createTask)
 		authGroup.GET("/tasks", s.listTasks)
 		authGroup.GET("/tasks/:id", s.getTask)

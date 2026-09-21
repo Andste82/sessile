@@ -43,6 +43,12 @@ type Service struct {
 	Notes  NotesSource
 	// Tools is the sessile MCP server (§4.17.3); nil runs tasks without tools.
 	Tools ToolServer
+	// Sessions starts and reaches task sessions (§4.18.1).
+	Sessions Sessions
+	// AllowLocal reports whether local-host sessions are enabled (§4.6); nil
+	// means they are. Checked in Create, so the form, the orchestrator and
+	// create_task all honour the setting.
+	AllowLocal func() bool
 	// WorkspaceTasksDir is a local-host task's folder root relative to the
 	// workspace (§4.12).
 	WorkspaceTasksDir string
@@ -54,13 +60,33 @@ type Service struct {
 
 // Task is a stored task, decoded.
 type Task struct {
-	ID        string    `json:"id"`
-	SessionID string    `json:"sessionId"`
-	HostID    string    `json:"hostId"`
-	Dir       string    `json:"dir"`
-	Spec      Spec      `json:"spec"`
-	Summary   string    `json:"summary"`
-	Created   time.Time `json:"created"`
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	HostID    string `json:"hostId"`
+	Dir       string `json:"dir"`
+	Spec      Spec   `json:"spec"`
+	Summary   string `json:"summary"`
+	// State is what the task's agent says it is doing (§4.18.2), "" until it
+	// says anything; Question is what a blocked task is waiting for.
+	State    string    `json:"state"`
+	Question string    `json:"question"`
+	Kind     string    `json:"kind"`
+	Created  time.Time `json:"created"`
+}
+
+// fromRow decodes a stored task.
+func fromRow(row storage.TaskRow) (Task, error) {
+	var spec Spec
+	if err := json.Unmarshal([]byte(row.SpecJSON), &spec); err != nil {
+		return Task{}, fmt.Errorf("decode task spec: %w", err)
+	}
+	kind := row.Kind
+	if kind == "" {
+		kind = KindTask
+	}
+	return Task{ID: row.ID, SessionID: row.SessionID, HostID: row.HostID, Dir: row.Dir,
+		Spec: spec, Summary: row.Summary, State: row.State, Question: row.Question,
+		Kind: kind, Created: row.Created}, nil
 }
 
 // Get returns a task, scoped to userID.
@@ -72,12 +98,7 @@ func (s *Service) Get(userID, id string) (Task, error) {
 	if !found {
 		return Task{}, ErrNotFound
 	}
-	var spec Spec
-	if err := json.Unmarshal([]byte(row.SpecJSON), &spec); err != nil {
-		return Task{}, fmt.Errorf("decode task spec: %w", err)
-	}
-	return Task{ID: row.ID, SessionID: row.SessionID, HostID: row.HostID, Dir: row.Dir,
-		Spec: spec, Summary: row.Summary, Created: row.Created}, nil
+	return fromRow(row)
 }
 
 // Check validates a spec against the user's own settings and hosts: what
@@ -163,7 +184,11 @@ func resolveProfile(settings agents.Settings, profileID string) (agents.Profile,
 
 // Store records a new, checked task for the session that is about to run it.
 func (s *Service) Store(userID, sessionID string, spec Spec) (string, error) {
-	id, err := NewID(spec.Name)
+	name := spec.Name
+	if spec.Kind == KindOrchestrator {
+		name = "orchestrator"
+	}
+	id, err := NewID(name)
 	if err != nil {
 		return "", err
 	}
@@ -173,7 +198,7 @@ func (s *Service) Store(userID, sessionID string, spec Spec) (string, error) {
 	}
 	if err := s.DB.InsertTask(storage.TaskRow{
 		ID: id, SessionID: sessionID, UserID: userID, HostID: spec.HostID,
-		SpecJSON: string(data), Created: time.Now().UTC(),
+		SpecJSON: string(data), Kind: spec.Kind, Created: time.Now().UTC(),
 	}); err != nil {
 		return "", err
 	}
@@ -226,6 +251,11 @@ func (s *Service) SetSummary(taskID, summary string) error {
 	return s.DB.SetTaskSummary(taskID, summary)
 }
 
+// SetState records what a task's agent says it is doing (§4.18.2).
+func (s *Service) SetState(taskID, state, summary, question string) error {
+	return s.DB.SetTaskState(taskID, state, summary, question)
+}
+
 // Launch resolves a task to its session start (session.TaskLauncher). It runs
 // on every start, so a restart picks up the current connection token, notes
 // and scripts, and rewrites the bootstrap (§4.12.6).
@@ -269,9 +299,13 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			return session.TaskLaunch{}, fmt.Errorf("load notes: %w", err)
 		}
 	}
+	scope := ScopeTask
+	if t.Kind == KindOrchestrator {
+		scope = ScopeOrchestrator
+	}
 	toolsText := ""
 	if s.Tools != nil {
-		toolsText = s.Tools.ToolsSection(userID)
+		toolsText = s.Tools.ToolsSection(userID, scope)
 	}
 
 	env := append(append(conn.Env(), ln.env...), gitEnv(accounts)...)
@@ -294,6 +328,17 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			}
 			out = append(out, tools.files...)
 			out = append(out, mcpFiles(ln.agent, tools)...)
+			if t.Kind == KindOrchestrator {
+				// The orchestrator's instructions are its own; the agent reads
+				// them from the same file name as any task's.
+				instr, err := render("orchestrator.md.tmpl", orchestratorData{
+					Dir: displayDir, Tools: text, HasRequest: t.Spec.Request != "",
+				})
+				if err != nil {
+					return nil, err
+				}
+				out = replaceFile(out, ln.def.InstructionsFile, instr)
+			}
 			// One-shot markers the bootstrap consumes (§4.12.3, §4.12.6).
 			if restart.RebuildContainer {
 				out = append(out, file{".rebuild-container", nil, 0o600})
@@ -307,11 +352,17 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 
 	if t.Spec.Target == "local" {
 		rel := s.WorkspaceTasksDir + "/" + t.ID
+		if t.Kind == KindOrchestrator {
+			// Its own root, so an orchestrator is never listed among task
+			// folders (§4.18).
+			rel = ".sessile/orchestrator/" + t.ID
+		}
 		return session.TaskLaunch{
+			Group:    taskGroup(t),
 			LocalDir: rel,
 			LocalPrepare: func(absDir string) ([]string, []string, error) {
 				fs := localFS{}
-				tools := s.localTools(userID, t.ID, absDir, inContainer)
+				tools := s.localTools(userID, t.ID, absDir, scope, inContainer)
 				if err := writeFiles(fs, absDir, files(absDir, false, tools)); err != nil {
 					return nil, nil, err
 				}
@@ -370,7 +421,7 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 		}
 		if l != nil {
 			// Serves until the session's connection closes the listener.
-			go s.Tools.Serve(l, userID, t.ID, token)
+			go s.Tools.Serve(l, userID, t.ID, token, scope)
 		}
 		s.recordDir(t.ID, displayDir)
 		if windows {
@@ -380,7 +431,30 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 		}
 		return "sh " + shellQuote(fs.Join(dir, "task.sh")), nil
 	}
-	return session.TaskLaunch{SSH: &target, HostID: host.ID, HostDisplayName: host.Name}, nil
+	return session.TaskLaunch{SSH: &target, HostID: host.ID, HostDisplayName: host.Name, Group: taskGroup(t)}, nil
+}
+
+// taskGroup is the session group a task is filed under: its epic, or the
+// default (§4.18.3). The orchestrator stands on its own.
+func taskGroup(t Task) string {
+	switch {
+	case t.Kind == KindOrchestrator:
+		return "Orchestrator"
+	case t.Spec.Epic != "":
+		return t.Spec.Epic
+	}
+	return session.TaskGroup
+}
+
+// replaceFile swaps one rendered file for another of the same name.
+func replaceFile(files []file, name string, data []byte) []file {
+	for i := range files {
+		if files[i].name == name {
+			files[i].data = data
+			return files
+		}
+	}
+	return append(files, file{name, data, 0o600})
 }
 
 func (s *Service) recordDir(taskID, dir string) {

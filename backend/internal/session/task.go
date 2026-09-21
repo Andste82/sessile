@@ -25,6 +25,10 @@ type TaskLaunch struct {
 	HostID          string
 	HostDisplayName string
 
+	// Group is the session group the task is filed under: its epic
+	// (§4.18.3), or TaskGroup.
+	Group string
+
 	// LocalDir is a local-host task's folder, relative to the workspace root
 	// (§4.5). LocalPrepare writes it and returns the bootstrap's argv and any
 	// extra environment.
@@ -47,10 +51,30 @@ var ErrNoTaskLauncher = errors.New("tasks are not available")
 // again here because the id becomes a directory name.
 var taskIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}-[0-9a-f]{6}$`)
 
+// TaskEvents is told when a task's session stops, so the user's orchestrator
+// hears that its agent finished (§4.18.2). Implemented by internal/mcp.
+type TaskEvents interface {
+	TaskExited(userID, taskID, name string)
+	TaskCreated(userID, taskID, sessionID, name string)
+}
+
 // SetTaskLauncher wires the task launcher. Called once at startup, like
 // SetHostResolver.
 func (m *Manager) SetTaskLauncher(l TaskLauncher) {
 	m.taskLauncher = l
+}
+
+// SetTaskEvents wires the task event sink. Called once at startup.
+func (m *Manager) SetTaskEvents(e TaskEvents) {
+	m.taskEvents = e
+}
+
+// taskExited reports a stopped task session. Ordinary sessions have no task
+// id and are not reported.
+func (m *Manager) taskExited(info Info) {
+	if m.taskEvents != nil && info.TaskID != "" {
+		m.taskEvents.TaskExited(info.UserID, info.TaskID, info.Name)
+	}
 }
 
 // CreateTask starts the session for a task (§4.12) under the given session
@@ -62,12 +86,18 @@ func (m *Manager) CreateTask(id, userID, name, taskID string) (Info, error) {
 		return Info{}, err
 	}
 	s.Group = TaskGroup
+	if s.taskGroup != "" {
+		s.Group = s.taskGroup
+	}
 	info, err := m.register(s)
 	if err != nil {
 		return Info{}, err
 	}
 	m.log.Info("task session created", "id", s.ID, "name", name, "taskId", taskID)
 	m.publishSession(info)
+	if m.taskEvents != nil {
+		m.taskEvents.TaskCreated(userID, taskID, s.ID, name)
+	}
 	return info, nil
 }
 
@@ -92,7 +122,54 @@ func (m *Manager) spawnTask(id, userID, name, taskID string, created time.Time) 
 		return nil, err
 	}
 	s.TaskID = taskID
+	s.taskGroup = launch.Group
 	return s, nil
+}
+
+// Output returns the tail of a session's terminal, owner-scoped exactly like
+// Get. It is how the orchestrator reads what a task's agent is doing
+// (§4.18.1): the live buffer for a running session, the saved scrollback for
+// a stopped one. max bounds the bytes returned, newest kept.
+func (m *Manager) Output(id, userID string, max int) ([]byte, error) {
+	m.mu.RLock()
+	s, ok := m.sessions[id]
+	m.mu.RUnlock()
+	var data []byte
+	if ok {
+		if s.Info().UserID != userID {
+			return nil, ErrNotFound
+		}
+		// A stopped session's buffer has been released; its scrollback on disk
+		// is the real one.
+		data, ok = s.snapshotRunning()
+	}
+	if !ok {
+		if _, err := m.Get(id, userID); err != nil {
+			return nil, err
+		}
+		if m.scrollback == nil {
+			return nil, nil
+		}
+		var err error
+		if data, err = m.scrollback.Load(id); err != nil {
+			return nil, err
+		}
+	}
+	if max > 0 && len(data) > max {
+		data = data[len(data)-max:]
+	}
+	return data, nil
+}
+
+// Input types into a session's terminal on the owner's behalf — the
+// orchestrator answering a blocked task (§4.18.1). WriteInput is the
+// WebSocket path and has already checked ownership through the session's
+// client; this is the same write with the check done here.
+func (m *Manager) Input(id, userID string, data []byte) error {
+	if _, err := m.Get(id, userID); err != nil {
+		return err
+	}
+	return m.WriteInput(id, data)
 }
 
 // spawnLocalTask runs a task's bootstrap on the server itself, in its folder

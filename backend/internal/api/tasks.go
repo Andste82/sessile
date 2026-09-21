@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/tasks"
@@ -36,26 +35,13 @@ func (s *Server) createTask(c *gin.Context) {
 		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
 		return
 	}
-	if _, err := s.tasks.Check(userID, spec); err != nil {
+	info, err := s.tasks.Create(userID, spec)
+	if err != nil {
 		var ve *tasks.ValidationError
 		if errors.As(err, &ve) {
 			respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 			return
 		}
-		s.respondSessionError(c, err)
-		return
-	}
-
-	sessionID := uuid.NewString()
-	taskID, err := s.tasks.Store(userID, sessionID, spec)
-	if err != nil {
-		s.log.Error("store task failed", "err", err)
-		respondError(c, http.StatusInternalServerError, CodeInternal, "failed to create task")
-		return
-	}
-	info, err := s.manager.CreateTask(sessionID, userID, spec.Name, taskID)
-	if err != nil {
-		s.tasks.Discard(taskID)
 		if s.respondHostKeyError(c, err) {
 			return
 		}
@@ -76,4 +62,56 @@ func (s *Server) getTask(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, t)
+}
+
+// The orchestrator (§4.18): one session per user, on the server itself.
+// GET reports whether it exists; POST opens it — created the first time,
+// restarted when it has stopped, and otherwise handed back as it is.
+
+func (s *Server) getOrchestrator(c *gin.Context) {
+	if s.tasks == nil {
+		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, "tasks are not available")
+		return
+	}
+	t, found, err := s.tasks.Orchestrator(c.MustGet(userIDKey).(string))
+	if err != nil {
+		s.log.Error("read orchestrator failed", "err", err)
+		respondError(c, http.StatusInternalServerError, CodeInternal, "failed to read the orchestrator")
+		return
+	}
+	if !found {
+		c.JSON(http.StatusOK, gin.H{})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"sessionId": t.SessionID, "taskId": t.ID})
+}
+
+func (s *Server) openOrchestrator(c *gin.Context) {
+	if s.tasks == nil {
+		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, "tasks are not available")
+		return
+	}
+	// It runs on the server itself, like any local-host session (§4.5).
+	if !s.serverConfig.Get().AllowLocalHost {
+		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
+		return
+	}
+	var body struct {
+		ProfileID string `json:"profileId"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	info, err := s.tasks.OpenOrchestrator(c.MustGet(userIDKey).(string), body.ProfileID)
+	if err != nil {
+		var ve *tasks.ValidationError
+		if errors.As(err, &ve) {
+			respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
+			return
+		}
+		if s.respondHostKeyError(c, err) {
+			return
+		}
+		s.respondSessionError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, session.ToJSON(info))
 }
