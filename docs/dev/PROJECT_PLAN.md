@@ -118,7 +118,9 @@ verify each milestone's acceptance criteria before moving on.
 | Logging | stdlib `log/slog` (JSON handler) | No dependency needed |
 | Config | CLI flags via stdlib `flag`, with env-var fallbacks, plus `config.yml`/`users.yml`/`hosts.yml` | See §9 |
 | Frontend embedding | `embed.FS` (`//go:embed`) | Single-binary distribution |
-| Agent tools (MCP) | Hand-written JSON-RPC handler (`initialize`, `tools/list`, `tools/call`) + `cmd/sessile-mcp` stdio bridge, cross-compiled and embedded | No MCP SDK; three methods don't justify one (§4.17) |
+| Agent tools (MCP) | Hand-written JSON-RPC handler (`initialize`, `tools/list`, `tools/call`) over a Unix socket, with `sessile mcp-bridge` as the agent's stdio end | No MCP SDK; three methods don't justify one (§4.17). The agent is local since v0.9, so there is nothing to deploy |
+| Agent confinement | Linux Landlock through `golang.org/x/sys/unix`, applied in a re-exec | No new dependency, no root, no container; the ruleset cannot be lifted (§4.12.9) |
+| Host access for agents | `github.com/pkg/sftp` + exec channels on the task's own `*ssh.Client` | One dial, the host's pinned key, no second trust decision (§4.12.4) |
 | Scripts runtime | `python3` + `venv` on the server (both runtime images) | User scripts are plain-HTTP Python (`requests`/`urllib`), no vendor SDKs (§4.15) |
 | LLM access | **None** | The user's agent CLI does all model work; sessile only tests connections and lists models over plain HTTP (§4.13) |
 
@@ -246,10 +248,10 @@ backend/
       sessions.go            # CRUD queries (now user/target scoped)
     config/
       config.go             # CLI flags (--data-dir, --shells, …)
-    tasks/                  # TaskSpec validation, bootstrap templates, tasks table (§4.12)
+    tasks/                  # TaskSpec validation, the agent's folder, tasks table (§4.12)
       spec.go
-      bootstrap.go            # renders task.sh / task.ps1 from embedded templates
-      templates/              # task.sh.tmpl, task.ps1.tmpl, instructions.md.tmpl,
+      host.go                 # the task's host connection, preparation, shell pane
+      templates/              # instructions.md.tmpl, orchestrator.md.tmpl,
                               # generic devcontainer.json
       registry.go             # built-in agents: argv, installers, resume, env (§4.12.4)
     agents/                 # agent.yml: connections, profiles, task defaults, Git accounts (§4.13, §4.16)
@@ -258,8 +260,9 @@ backend/
     notes/                  # per-user notes store (§4.14)
     scripts/                # zip extensions, settings, runner, venv cache (§4.15)
       examples/               # embedded example zips (jira, jenkins, artifactory)
-    mcp/                    # MCP handler + per-task tunnel over the session's *ssh.Client (§4.17)
-  cmd/sessile-mcp/          # stdio ↔ socket bridge uploaded into task dirs (§4.17.3)
+    mcp/                    # MCP handler: script, host, ask and orchestrator tools (§4.17, §4.18)
+    hosttools/              # files over SFTP and commands over exec, for the agent's tools (§4.12.4)
+    confine/                # Landlock rules for agents and scripts (§4.12.9)
 frontend/                   # see §7
 Dockerfile
 docker-compose.yml
@@ -932,42 +935,52 @@ attached browser over the event channel (§5.1).
 
 ### 4.12 Tasks
 
-A **task** is a session set up for a piece of work: its own folder on the
-target, the main repo cloned into it, optionally a devcontainer, and the
-user's coding agent (Claude Code, Codex or Gemini) started in it. It's the
-one place a session runs something other than the target's configured
-shell, and even there the API never carries a command string (§1, §14.8).
+A **task** is a piece of work set up for an agent: a folder on the target
+with the main repo cloned into it, optionally a devcontainer, and the
+user's coding agent (Claude Code, Codex or Gemini) working on it.
+
+Since v0.9 the agent **runs on the sessile server**, not on the target. The
+user authenticates their agent once, on the server, and every task on every
+host uses it. Nothing is installed on a host, no token is delivered there,
+and the machinery that used to carry sessile's tools to the far side of the
+connection — a bootstrap per platform, a per-host CLI install, a reverse
+tunnel, a cross-compiled bridge — is gone. What the host holds is the work.
 
 ```
-  ┌──────────────────── Agent section (sidebar, below Hosts) ────────────────────┐
-  │  New task…   Notes (md)   Scripts (+ Examples, Configure)   Connections, profiles │
-  └───────────────────────────────────────────────────────────────────────────────┘
-
-  New task form: name · host · main repo (+ref) · agent profile · devcontainer · mode
-        │
-        ▼  POST /api/tasks
-  SFTP: task dir, task.json, instructions, notes/, .env, task.sh|ps1, sessile-mcp
-        │
-        ▼  session (group "Tasks"), fixed start command, SSH tunnel for MCP opened
-  clone main repo → devcontainer up → install agent if missing → agent in PLAN mode
-        │
-        ▼  one conversation, in the terminal; the user types the request there:
-  investigate (repo, notes, scripts via MCP, gh, web) → ask the user → plan
-  → user approves the plan in the CLI → implement → PR → check CI (scripts / gh) → …
+  sessile server                                  the task's host
+  ┌─────────────────────────────────────────┐    ┌──────────────────────────┐
+  │ task  dbg-142-print-crash-3f9a1c        │    │ <tasksDir>/dbg-142-…/    │
+  │  ├─ agent session (a local PTY)         │    │   repo/        ← the work│
+  │  │    claude, confined to this folder   │    │   repos/<name>/          │
+  │  │    MCP over a Unix socket beside it ─┼────┼─→ sftp channel (files)   │
+  │  │                                      │ ssh│   exec channels (run)    │
+  │  ├─ shell session (the user's pane) ────┼────┼─→ pty channel            │
+  │  └─ instructions, PROMPT.md, notes/     │    │                          │
+  └─────────────────────────────────────────┘    └──────────────────────────┘
 ```
+
+A task owns **two sessions**: its agent, on the server, and the user's own
+shell on its host, shown side by side (§7). Both are ordinary sessions —
+same manager, same protocol, same restart — sharing one task id, so the
+lists show the task once. A task on `local` has only the agent.
+
+The agent reaches the host through the tools of §4.12.4, on the task's own
+SSH connection: one dial, the host's pinned key, no second trust decision.
+Sessile's **HTTP API still takes no command string**; `run` is an agent
+tool, bounded to the task's own host, owner-scoped and logged (§14.8).
 
 A task is **one agent session from the first question to the merged PR**.
-There's no separate planner and no hand-over. The CLI's own plan
-mode and plan approval are the "plan, then go" step.
+There's no separate planner and no hand-over. The CLI's own plan mode and
+plan approval are the "plan, then go" step.
 
 The form sets the task up and has an **optional Request field** ("Fix
 DBG-142, the print crash on Android 14"). If it's filled in, it becomes the
-agent's first message. If it's empty, the agent starts in plan mode and
-waits, and the user types the request in the terminal. The task
-**name** (e.g. "DBG-142 print crash") is the session name, and it's in the
-agent's instructions as the task's title. The user picks the host and, for
-a devcontainer, the main repo, because the container config lives in the
-repo and has to exist before the container starts. The agent can clone
+agent's first message, written to `PROMPT.md` beside it on the server. If
+it's empty, the agent starts in plan mode and waits, and the user types the
+request in the terminal. The task **name** is the session name, and it's in
+the agent's instructions as the task's title. The user picks the host and,
+for a devcontainer, the main repo, because the container config lives in
+the repo and has to exist before the container starts. The agent can clone
 further repos itself whenever it needs them.
 
 #### 4.12.1 TaskSpec
@@ -1007,57 +1020,43 @@ existing PATCH). Validation happens server-side:
   `agent.profileId` must belong to the caller. `mode` is `plan|normal`.
   `request` is optional, ≤ 64 KiB.
 
-#### 4.12.2 Bootstrap: one template per platform
+#### 4.12.2 What sessile writes, and where
 
-Files written over the session's own SFTP connection (the §4.10
-`FileTransport`, no second dial):
+**On the server**, in the agent's own folder under `--data-dir` — the only
+place it may write (§4.12.9):
 
 ```
-<tasksDir>/<task-id>/                 # the agent's working directory
-  CLAUDE.md | AGENTS.md | GEMINI.md   # sessile's instructions for this task (§4.17.1), named for the agent
-  task.json          # the spec, for humans and restart
-  PROMPT.md          # the request, only if one was given
-  notes/             # copies of the user's notes (no secrets by design, §4.14)
-  .env               # KEY=VALUE: connection env + git credential env (§4.16) + MCP token — removed after load (§4.12.9)
-  task.sh | task.ps1 # rendered from the embedded template for targetOS
-  .tools/            # sessile-mcp helper (§4.17.3); the agent install inside containers (§4.12.5)
-  .agent/            # agent state inside containers (§4.12.3)
-  repo/              # the main repo, if given
-  repos/<name>/      # further repos the agent clones itself (told so in the instructions)
+<data-dir>/users/<uid>/tasks/<task-id>/
+  CLAUDE.md | AGENTS.md | GEMINI.md   # sessile's instructions for this task (§4.17.1)
+  PROMPT.md                            # the request, only if one was given
+  task.json                            # the spec, for humans and for restart
+  notes/                               # copies of the user's notes (§4.14)
+  .agent/{claude,codex,gemini}/        # the CLI's own settings and history — resume lives here
+  .sessile-mcp.json, .sessile-claude-settings.json   # the MCP registration, and the denied built-ins
+  .sessile.sock, .sessile-token        # the tools socket and this start's secret
+  tmp/, run/, .cache/, .config/        # the agent's own scratch, since it may write nowhere else
 ```
 
-Both templates do the same steps, and each step is **idempotent**, so
-restart re-runs the whole thing:
+**On the host**, over SFTP and exec on the task's connection — no bootstrap,
+no `.env`, nothing to install:
 
-| Step | `task.sh` (Linux, local) | `task.ps1` (Windows) |
-|---|---|---|
-| env | `set -a; . ./.env; set +a; rm -f .env` | parse `.env` → `$env:K=V`; `Remove-Item .env` |
-| clone | if a repo is given: `[ -d repo/.git ] \|\| git clone -- "$URL" repo` (credentials from env, §4.16) | `if (-not (Test-Path repo\.git)) { git clone -- $Url repo }` |
-| identity | `git -C repo config user.name/user.email` from the Git account | same |
-| checkout | `git -C repo checkout "$REF"` | `git -C repo checkout $Ref` |
-| devcontainer | `devcontainer up --workspace-folder repo [--config generic]` + the fixed mounts of §4.12.3 | same CLI (Docker Desktop on the host) |
-| agent install | if the agent CLI isn't on `PATH`: run the registry's **user-space installer** (§4.12.5), inside the container when devcontainer is on | same, with the registry's Windows installer |
-| agent | cwd = task dir. First start: `<argv from registry>` for the mode, with the sessile MCP server configured (§4.17.3); `.agent-started` marker written. **Restart** (marker present): the registry's **resume** argv (§4.12.6). In `devcontainer exec` when on | same, `& <argv>` |
-| after the agent / on failure | print the failed step, `exec $SHELL -l` in the task dir | print the failed step, `powershell -NoExit` in the task dir |
+```
+<tasksDir>/<task-id>/
+  repo/              # the main repo, cloned by sessile
+  repos/<name>/      # further repos the agent clones itself
+```
 
-Start command: `sshpty.Target` and the local `terminal.Start` gain an
-optional `StartCommand`, set **only** by `internal/tasks`, to one of two
-constants:
-- `sh <dir>/task.sh`
-- `powershell -NoProfile -ExecutionPolicy Bypass -File <dir>\task.ps1`
+Preparation runs from the server and is idempotent, so a restart re-runs it
+and does nothing: make the folder, clone the repo, check out the ref, set
+the committer identity, bring the devcontainer up. It runs **in the
+background** — a clone of any size proceeds while the agent is already
+reading its instructions, and a tool that needs the repo waits for it rather
+than finding an empty folder.
 
-The existing `wrapWithPIDRecording` wraps these like any shell, so the
-process tree keeps working on both OSes.
-
-Env is loaded **first** now, because the clone needs the git credential
-env.
-
-Windows notes:
-- SFTP returns `/C:/Users/x/…`, which the template converts to a native
-  path.
-- Git for Windows must be on `PATH`. A missing `git`, `devcontainer` or
-  agent CLI is reported by name, with the task left at a PowerShell prompt
-  in the task dir.
+Sessile starts the CLI itself, with a constant argv from the registry
+(§4.12.4) plus the MCP registration; the request goes in a file, the
+credentials in the process environment. No shell is involved on this side,
+and no rendered script on either.
 
 #### 4.12.3 Devcontainers
 
@@ -1136,7 +1135,54 @@ folder, so they survive a rebuild and resume (§4.12.6) keeps working.
 container (SSH agent forwarding), extra user-defined mounts, and a
 per-user custom generic config.
 
-#### 4.12.4 Agent registry and modes
+#### 4.12.4 The agent's tools
+
+The agent runs on the server, so everything it does to the work it does
+through the `sessile` MCP server, over the task's own SSH connection:
+
+| Tool | What it does |
+|---|---|
+| `read_file(path, offset?, limit?)` | A file on the host, with line numbers |
+| `write_file(path, content)` | Create or overwrite |
+| `edit_file(path, old_string, new_string, replace_all?)` | Exact-string replace, unique unless told otherwise |
+| `list_dir(path)` | One directory |
+| `glob(pattern, path?)` | File names by pattern — one command on the host |
+| `grep(pattern, path?, glob?)` | Contents, `rg` where it exists — one command on the host |
+| `run(command, cwd?, where?, timeout_seconds?)` | A command on the host, or in the task's devcontainer |
+| `ask(question, options?)` | Ask the user and **wait** (§4.12.4a) |
+
+Paths are relative to the repo, or absolute. Searching happens host-side in
+one command rather than dragging a tree over the wire. `run` returns the
+exit code and the tail of the output (64 KiB, newest kept), streams it to
+the task panel as it arrives, defaults to a 2-minute timeout and allows at
+most an hour, and carries the Git credential environment for that one
+command so `git push` works with nothing left on the host (§4.16).
+
+Beside them: the user's **scripts** as tools (§4.15), `set_task_state`,
+`set_task_summary` and `task_info`. The MCP server runs on the sessile side
+of a Unix socket in the agent's folder; the agent reaches it through
+`sessile mcp-bridge <dir>`, a mode of the server binary, because it is on
+the same machine.
+
+**The agent's own file and shell tools are denied** in the settings sessile
+generates, and Landlock makes that true rather than requested (§4.12.9). The
+work is on the host; the folder on the server is the agent's own.
+
+#### 4.12.4a Asking the user
+
+`ask` holds the tool call open. The question reaches the user's task panel
+and the orchestrator's event stream, the task reads as **blocked**
+everywhere, and the first answer — from the panel, or from the
+orchestrator's `answer_task` — comes back as that call's result. Nobody
+answering within 30 minutes is not a deadlock: the agent is told to carry on
+with its best judgement and to say what it assumed.
+
+This replaces marking yourself blocked and then watching your own terminal
+for someone to type, which only ever worked while a person was looking:
+nothing can interrupt an agent sitting at its prompt.
+
+#### 4.12.4b Agent registry and modes
+
 
 The agent registry is **built in** (code, not config). Every argv is
 constant. The agent starts interactively in the task dir (`/sessile/task`
@@ -1172,32 +1218,22 @@ The flags were checked against the current docs and source on 2026-09-18
 change, so they live in one table in code and get rechecked when M32 is
 built.
 
-#### 4.12.5 Deploying the agent
+#### 4.12.5 The agent CLI
 
-A task never fails just because the agent CLI isn't there. The bootstrap
-checks for it (`command -v` / `Get-Command`) and, if it's missing, runs the
-installer from the registry: a fixed, per-agent, **user-space** install
-that needs no root or admin rights. On a host it installs into the login
-user's home. Inside a devcontainer it installs into the task's own
-`/sessile/task/.tools/`, so it survives container rebuilds and doesn't
-depend on the container user.
+One install, on the sessile server, by whoever runs it — the Docker image
+carries it, and a bare-metal operator installs it once the way they install
+anything. Nothing reaches a host, and nothing is installed per task or per
+container, which is the point of v0.9: a host behind strict egress, with no
+npm and no write access to a home directory, runs tasks like any other.
 
-| Agent | Linux (and in containers) | Windows |
-|---|---|---|
-| `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` (in a container with `HOME` pointed into the task folder for the install) | `irm https://claude.ai/install.ps1 \| iex` |
-| `codex` | `npm install -g --prefix ~/.local @openai/codex` (its standalone script's install location isn't documented, so npm with an explicit prefix is what keeps it on the bootstrap's PATH) | `irm https://chatgpt.com/codex/install.ps1 \| iex` (native Windows is still maturing upstream) |
-| `gemini` | `npm install -g --prefix ~/.local @google/gemini-cli` (needs Node ≥ 20) | same, with npm |
+A task whose CLI is missing says so plainly ("claude is not installed on the
+sessile server") instead of starting a session that cannot work.
 
-- The installers are fixed URLs and package names in code, the same as the
-  argv. They get checked against each vendor's current instructions in M35.
-- They use the host's own proxy settings. A failed install (no network, no
-  node for an npm-based agent) prints what's missing and leaves the task at
-  a shell, as any failed step does.
-- Inside a devcontainer, the install lives in the task folder, so it
-  happens once per task, not once per container.
-- The bootstrap decides on its own; the task form shows no install hint
-  (a stat of one path would be wrong for an agent installed anywhere else
-  on PATH).
+| Agent | Installed on the server with |
+|---|---|
+| `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| `codex` | `npm install -g @openai/codex` |
+| `gemini` | `npm install -g @google/gemini-cli` (needs Node ≥ 20) |
 
 #### 4.12.6 Recovering a task after a restart
 
@@ -1289,48 +1325,56 @@ example "Claude (Bedrock, Opus)" or "Claude (my Max plan)".
 - Host-key 409 responses are reused unchanged. A task never connects
   silently.
 
-#### 4.12.9 Secrets on the host
+#### 4.12.9 What an agent may touch, and what it holds
 
-`Setenv` is refused by most sshd configs, and typing `export` into the PTY
-would leak into scrollback. So:
-- `.env` is written over SFTP. On Linux it's 0600. On Windows it relies on
-  the user-profile ACL.
-- The bootstrap loads it into the agent's environment and deletes it right
-  away.
-- Inside a devcontainer, the same `.env` reaches the agent through the
-  task-folder mount: the host-side `task.sh` loads it for the clone and
-  leaves it, `agent.sh` loads and deletes it inside the container
-  (§4.12.3). Any failure before that deletes it too.
+The agent runs on the sessile server, as sessile's own OS user, which can
+otherwise read `--data-dir`: every user's `hosts.yml` with its plaintext SSH
+credentials, every user's agent tokens, every script's settings. An agent is
+a program that follows text it reads — a ticket description, a README, a CI
+log — so that proximity is the design's one serious cost, and this is what
+pays it.
 
-What's left is that the running agent's environment is readable by the same
-OS user on that host. That's accepted as the user's own host, and it gets
-documented next to the plaintext `hosts.yml` decision (§11).
+**Confinement (Landlock, Linux 5.13+).** Before the CLI starts, sessile
+applies a ruleset it cannot lift:
 
-**A local-host task inherits nothing that configures an agent.** It is the
-one case where sessile's own process environment would become an agent's —
-an SSH task gets its user's login environment on their own host, but a task
-on the server starts as a child of sessile. So a fixed prefix list
-(`CLAUDE`, `ANTHROPIC`, `AWS_`, `GOOGLE_`, `GEMINI`, `OPENAI`, `CODEX`,
-`GIT_`, `GH_TOKEN`, `GITHUB_TOKEN`) is stripped from what the bootstrap
-inherits, and the task's own `.env` supplies the rest. Two reasons, both
-real: a CLI that finds `ANTHROPIC_API_KEY` or AWS credentials in its
-environment uses them over the task's connection, silently and as someone
-else's credentials; and an agent harness that started sessile exports its
-own session id, messaging socket and token, which makes the task's agent
-believe it is that session's child and try to talk to it. Everything else
-is inherited on purpose — `PATH`, `HOME`, the locale, and the proxy
-variables an operator behind a corporate proxy relies on.
+- read/write: its own task folder, and the temp, cache, config and runtime
+  directories inside it, which is why `TMPDIR` and the XDG variables point
+  there — a CLI with nowhere to write refuses to start at all;
+- read-only: the agent CLI and the sessile binary by their own directories,
+  the system paths a program needs, and the resolver configuration
+  (`/etc/resolv.conf` is a symlink into `/run` on systemd machines, and an
+  agent that cannot resolve its vendor's API hangs);
+- nothing else: not `--data-dir`, not another task's folder, not the
+  operator's home.
 
-`HOME` is inherited, but the agent's **state** is not left in it. On a real
-host `~/.claude`, `~/.codex` and `~/.gemini` are the user's own, and their
-settings and resume history belong there. On the sessile server that home
-is the server's OS user's, shared with the operator and with every other
-sessile user, so a local task exports `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and
-`GEMINI_CLI_HOME` into its own `.agent/` instead — the same isolation a
-devcontainer already gets (§4.12.3). Without it the agent reads the
-operator's settings: one of them, `remoteControlAtStartup`, makes it try a
-claude.ai login the task's token cannot satisfy, and the task dies at
-startup.
+It is applied in a re-exec of the sessile binary (`sessile confine-exec`),
+because the restriction lands between fork and exec on the calling thread,
+which Go gives no hook for. That step pins its thread, applies the rules and
+execs the CLI, which inherits them. **Where the kernel cannot enforce it, a
+task refuses to start** unless the operator passes
+`--allow-unconfined-agents` — the safe state is the default one. The same
+mechanism covers scripts, which have always run on the server (§11).
+
+What confinement does *not* do is stop network egress: the agent must reach
+its vendor's API, so it can reach anywhere. What it removes is access to
+other people's secrets to send there.
+
+**Credentials.** The agent's own token is in its process environment and
+never leaves the server. The Git credential reaches the host only in the
+environment of the one command that needs it (§4.16) — never written there,
+never in a URL, never in a long-lived process. Each start's MCP token lives
+in the agent's folder, 0600, and dies with the session.
+
+**Environment.** A task's agent inherits none of sessile's own agent-shaped
+environment: a fixed prefix list (`CLAUDE`, `ANTHROPIC`, `AWS_`, `GOOGLE_`,
+`GEMINI`, `OPENAI`, `CODEX`, `GIT_`, `GH_TOKEN`, `GITHUB_TOKEN`) is stripped
+from what it would otherwise pick up from the operator's shell. Two reasons,
+both seen in practice: a CLI that finds `ANTHROPIC_API_KEY` in its
+environment uses it over the task's own connection, silently and as someone
+else's credential; and an agent harness that started sessile exports its own
+session id and messaging socket, which makes the task's agent believe it is
+that session's child. Everything else is inherited on purpose — `PATH`, the
+locale, and the proxy variables an operator behind one relies on.
 
 ### 4.13 Agent connections and profiles: tokens and API keys only
 
@@ -1840,71 +1884,28 @@ layers, so the agent is never told about a tool it can't use.
 - The task page shows "Tools changed, restart to update the agent's
   instructions" when that's needed.
 
-#### 4.17.3 Tools: the `sessile` MCP server, tunnelled over SSH
+#### 4.17.3 Tools: the `sessile` MCP server
 
-The agent reaches the user's scripts through **MCP**, which all three CLIs
-support.
-- The scripts keep running **on the sessile server** . Their tokens
-  never leave it and never enter the agent's context. Write actions still
-  need the user's approval in sessile.
-- The host needs no Python, and no network path back to the sessile
-  server either.
+The agent reaches its tools through **MCP**, which all three CLIs support.
 
-**Transport:**
-- Sessile serves MCP from a small hand-written JSON-RPC handler
-  (`initialize`, `tools/list`, `tools/call`), with no new dependency.
-- It reaches the host over the **task session's own SSH connection**,
-  through a reverse forward opened on the same `*ssh.Client` (no new dial,
-  no new trust decision):
-  - Linux hosts: a Unix socket `<task dir>/.sessile.sock`
-    (`streamlocal-forward@openssh.com`, `ListenUnix` in `x/crypto/ssh`),
-    with mode 0600. It's inside the task dir, so a devcontainer sees it at
-    `/sessile/task/.sessile.sock` through the existing mount, with no extra
-    networking.
-  - Windows hosts: a TCP listener on `127.0.0.1:<random>` (`Listen`), since
-    OpenSSH for Windows' streamlocal support is unverified. Reaching it from
-    a Docker Desktop container is to be verified in M33.
-  - Local-host tasks: sessile listens on the socket path directly, falling
-    back to a loopback TCP port and `.sessile-port` where the socket cannot
-    be bound — most often because the workspace path is longer than the
-    ~107 bytes a Unix socket address holds.
-- The agent's side is **`sessile-mcp`**, a tiny stdio ↔ socket bridge.
-  - It's written in Go in this repo and cross-compiled with CGO off for
-    linux/amd64, linux/arm64 and windows/amd64.
-  - The binaries are embedded in the server, and one is uploaded into
-    `.tools/` per task: the host's architecture, and additionally the Linux
-    one for its devcontainer.
-  - It's configured as an ordinary stdio MCP server in the agent's config,
-    written into the task dir: `.sessile-mcp.json` passed with
-    `--mcp-config` for claude, `-c mcp_servers.sessile.command=…` constants
-    for codex, and `.gemini/settings.json` for gemini.
-  - It finds everything relative to itself, so it takes no flags and no
-    environment (CLIs differ in what environment they pass an MCP server):
-    the socket (`../.sessile.sock`) or port (`../.sessile-port`, tried on
-    127.0.0.1 and then host.docker.internal) and the token.
-- **Auth**: a per-start random token in `<task dir>/.sessile-token` (0600),
-  which the bridge sends as its first line. The token and the forward die
-  with the session. Restart opens new ones.
-- **The tunnel is tied to the session's connection.** If the connection
-  drops, the tools fail with "sessile connection lost", and the session
-  is marked stopped as usual.
-
-**Tools:**
-
-| Tool | Does |
-|---|---|
-| `<script>__<function>` | one tool per function of each ready script (§4.15): the schema from `meta.json`, the `context` settings in the description, and the output redacted |
-| `set_task_summary(text)` | a one-line status the agent keeps current ("Plan approved, implementing", "PR #412 open, CI running"). It's shown on the task in the sidebar and the dashboard |
-| `task_info()` | the task's spec and Git accounts (hosts and usernames, never tokens) |
-
-**Approvals:** a `write`-effect script call is held open while sessile
-shows an approval card. Approve runs it. Deny, or 5 minutes without an
-answer, returns "denied by user". The sessile tools are pre-allowed in the
-CLI's own permission settings, so the user isn't asked twice, and a yolo
-mode in the agent can't bypass the card.
-
-The agent's own tools (shell, edits, web, `gh`) keep the CLI's normal
-permission prompts in the terminal.
+- The **scripts** keep running on the sessile server, as they always have.
+  Their tokens never leave it and never enter the agent's context, and write
+  actions still need the user's approval in sessile (§4.15).
+- The **host tools** (§4.12.4) reach the task's own machine over its SSH
+  connection: SFTP for files, exec channels for commands.
+- Since v0.9 the agent is on the same machine as the server, so this is a
+  Unix socket in the agent's own folder, 0600, with a per-start token as the
+  first line. There is no tunnel, no uploaded bridge and no architecture
+  matrix: `sessile mcp-bridge <dir>` is a mode of the server binary, and the
+  agent's MCP config names it.
+- The server is a small hand-written JSON-RPC handler (`initialize`,
+  `tools/list`, `tools/call`, `ping`) — no MCP SDK (§2).
+- **Two scopes.** A task's agent gets the host tools, `ask`,
+  `set_task_state`, `set_task_summary`, `task_info` and the user's scripts.
+  The orchestrator gets sessile itself (§4.18.1) and the same scripts.
+  Neither can reach the other's tools, and both are owner-scoped: a user's
+  own hosts, tasks, notes and scripts, never a client-supplied id.
+- The token and the socket die with the session. A restart makes new ones.
 
 #### 4.17.4 The task page
 
@@ -1996,6 +1997,8 @@ a cursor to continue from. The events, per user:
 |---|---|
 | `taskState` | a task called `set_task_state` |
 | `taskSummary` | a task's status line changed |
+| `taskRun` | a command on the task's host: started, output (coalesced per tick), finished with its exit code |
+| `taskQuestion` | a task asked the user something, or the question was answered |
 | `taskExited` | a task's session stopped — its agent finished, or died |
 | `taskCreated` | a task started, by the form or by the orchestrator |
 | `approvalPending` | a write call is waiting for the user |
@@ -2221,7 +2224,10 @@ never trusts a client-supplied user id.
 | `GET /api/agent/connection-kinds` | Connection kinds | The fixed kinds of §4.13: fields, instructions, whether Test and model listing are possible |
 | `POST /api/agent/connections/test` | Test a connection | `{kind, fields}` (an omitted secret means the saved one) → `{ok, detail\|error}` |
 | `GET /api/agent/connections/:id/models` | Models for a connection | Model list + resolved default (§4.12.7), 1 h cache, `?refresh=1` |
-| `GET /api/tasks/:id` | Get one task | Spec + dir |
+| `GET /api/tasks/:id` | Get one task | Spec, dir, state, question, and both session ids |
+| `POST /api/tasks/:id/shell` | Open the shell pane (§4.12) | Start (or restart) the user's shell on the task's host → session JSON. 400 for a task that runs on the server |
+| `GET /api/tasks/:id/questions` | What a task is waiting to be told (§4.12.4a) | The held `ask` calls, for a page that opens after the question was asked |
+| `POST /api/tasks/:id/answer` | Answer it | `{answer, callId?}` → 204. The agent is holding that call open; 404 once it is not |
 | `GET/PUT/DELETE /api/agent/notes[/:slug]` | Notes (§4.14) | Notes CRUD |
 | `GET /api/agent/scripts` | List scripts (§4.15) | Scripts, functions, settings status (`ready`/`needs_setup`/`check_failed`), venv status |
 | `GET/PUT /api/agent/scripts/:name/settings` | A script's settings | Settings values; secrets returned as `{"set":true}` only, and an omitted secret means "leave unchanged" (same rule as host credentials) |
@@ -2602,6 +2608,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   dir         TEXT NOT NULL,              -- the task folder on the target
   spec_json   TEXT NOT NULL,              -- the TaskSpec, as validated
   summary     TEXT NOT NULL DEFAULT '',   -- the agent's last status line
+  shell_session_id TEXT NOT NULL DEFAULT '', -- the user's shell on the host (§4.12); '' for a task on the server
   state       TEXT NOT NULL DEFAULT '',   -- working | blocked | done (§4.18.2)
   question    TEXT NOT NULL DEFAULT '',   -- what a blocked task is waiting for
   kind        TEXT NOT NULL DEFAULT 'task', -- task | orchestrator (§4.18)
@@ -2946,15 +2953,18 @@ layout and §11 for what they do and don't encrypt.
     (`internal/tasks/templates`), every field is validated and quoted,
     agent argv is a constant from the built-in registry, and the request
     and env go to files, never onto a command line.
-  - **Scripts are code execution on the sessile server, for every user.**
-    Uploading a zip lets a user run any code as sessile's OS user. That code
-    can read every file sessile can read: all users' `hosts.yml`,
-    `agent.yml`, script settings, and `sessions.db`. Per-user storage keeps
-    users apart in the API, **not** against one another's scripts. This is
-    accepted: sessile's users are trusted like colleagues on a shared build
-    server. An operator with users they don't trust sets
-    `allowAgentScripts: false` (§9). Confining a script's file access
-    without root (Landlock) is on the future list (§12e).
+  - **Agents and scripts both run code on the sessile server**, so both are
+    confined with Landlock (§4.12.9): a task's agent may read and write its
+    own folder and read the programs it needs, and nothing else — not
+    `--data-dir`, not another task, not the operator's home. Where the
+    kernel cannot enforce that, an agent refuses to start unless the
+    operator passes `--allow-unconfined-agents`. Scripts are confined the
+    same way; what stays true of them is that installing a zip is still
+    running code on the server as sessile's OS user, so
+    `allowAgentScripts: false` (§9) remains the switch for an operator with
+    users they don't trust. Confinement bounds the filesystem, not the
+    network: an agent must reach its vendor's API, so it can reach anywhere
+    — what it can no longer reach is other people's secrets to send there.
   - Zip install validates before it writes (schema, zip-slip, symlinks,
     entry count and size) and swaps in atomically.
   - Secret values (script settings of type `secret`, connection tokens,
@@ -2964,7 +2974,11 @@ layout and §11 for what they do and don't encrypt.
     its own settings. Script code and script credentials are stored apart
     (`scripts/<name>/` vs `settings/<name>.yml`), so an exported zip can't
     leak a token.
-  - On a host, a task's connection env and Git tokens exist only between
+  - Since v0.9 a task's agent token never leaves the server at all, and the
+    Git credential reaches the host only in the environment of the one
+    command that needs it (§4.16) — nothing written there, nothing in a URL,
+    nothing in a long-lived process. Before that, on a host, a task's
+    connection env and Git tokens existed only between
     the SFTP write of `.env` (0600 on Linux, the profile ACL on Windows)
     and the bootstrap loading it, and afterwards only in the environment of
     the task's processes, which the same OS user on that host can read.
@@ -3499,6 +3513,73 @@ What was verified, and how, as the milestones landed:
   installers and flags beyond their docs and source, and Bedrock /
   Foundry / Vertex connections against live accounts. These are the first
   things to check on real infrastructure.
+
+## 12g. Milestones — Server-side agents (v0.9)
+
+The agent moved from the task's host to the sessile server
+(`docs/dev/proposals/0.9-server-side-agents.md`, accepted 2026-09-21).
+
+### M46 — Spike ✅
+A throwaway MCP server over one SSH connection, the agent's own file and
+shell tools denied, against a real repo on a real host. Two runs, both
+unsteered: two failing tests found and fixed (14 turns, 23 s), then a
+feature across three files with tests, README and a commit (22 turns,
+67 s). It settled that an agent works well with no local filesystem, that
+denying the built-ins costs nothing, and where the ergonomics effort
+belongs.
+
+### M47 — The runtime ✅
+A task is an agent session on the server plus the user's shell on its host.
+Per-user agent folders under `--data-dir`, MCP on a local socket, the host
+prepared over SSH in the background. The host-side pipeline went in the same
+commit rather than lingering unrunnable: both bootstraps, the installers,
+the `.env` delivery, the tunnel, the bridge binaries and their build steps.
+
+### M48, M49 — The host tools ✅
+`read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` over
+SFTP, and `run` over exec channels with `where: "container"`, streaming
+output, timeouts, logging and the Git credential environment.
+✅ *Verified live:* a task's agent read the README and the code over SSH,
+ran the failing suite, found both bugs, edited the file and turned 2
+failures into 7 passing tests — checked on the host afterwards.
+
+### M50 — Asking ✅
+The blocking `ask`, the orchestrator's `answer_task`, the question in the
+task panel and in the event ring, and the retirement of
+mark-yourself-blocked-and-watch-your-terminal.
+
+### M51 — Confinement ✅
+Landlock for agents, through `x/sys/unix` and a `confine-exec` re-exec, with
+`--allow-unconfined-agents` as the operator's deliberate override. A test
+proves the property in a child process: it writes in its own folder and
+cannot read or list the data dir.
+
+### M52 — The task page ✅
+Two panes with a draggable split and phone tabs, the question with its
+answer box, the commands running on the host, and one sidebar entry per
+task.
+
+### M53 — The subtraction ✅
+The dead host-side code and this rewrite of §4.12–§4.17, CLAUDE.md and the
+README.
+
+### Implementation notes (M46–M53)
+- Verified live throughout against a throwaway account over real SSH, with
+  a real agent CLI and the user's own subscription: task creation, the
+  clone by sessile, the agent starting clean, the host tools doing real
+  work, `ask` reaching the panel, the split screen, and confinement.
+- Four things only a real run showed, each fixed where it was found: a
+  confined agent has no `/tmp` and a CLI with nowhere to write refuses to
+  start; `/etc/resolv.conf` is a symlink into `/run`, so without it the
+  agent had no DNS and hung; a fresh per-task config dir puts a theme
+  picker and a trust prompt in front of the work; and an agent reached for
+  `PROMPT.md` with `read_file`, which looks on the *host*, and concluded
+  the task had no request.
+- Not yet run for real: a Windows host (the host tools spell PowerShell but
+  have not met one), a devcontainer (`where: "container"` — this
+  environment's Docker daemon belongs to the outer host), codex and gemini
+  as the task agent, and a WAN-latency link. These are the first things to
+  check on real infrastructure.
 
 ### Implementation notes (M42–M45)
 - Verified on a real server with a stub agent binary, through the

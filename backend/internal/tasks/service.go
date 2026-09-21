@@ -494,7 +494,7 @@ type file struct {
 	perm uint32
 }
 
-func writeFiles(fs FS, dir string, build func(string) ([]file, error)) error {
+func writeFiles(fs localFS, dir string, build func(string) ([]file, error)) error {
 	files, err := build(dir)
 	if err != nil {
 		return err
