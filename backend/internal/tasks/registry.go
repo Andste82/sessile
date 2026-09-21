@@ -30,6 +30,13 @@ type agentDef struct {
 	RequestFlag string
 	// ResumeArgs continue the latest conversation in the working directory.
 	ResumeArgs []string
+	// History is where the CLI keeps its saved conversations, relative to
+	// the task's agent state dir, and HistoryMatch a path fragment a saved
+	// conversation's file has (for a CLI that keeps other files there too).
+	// A start resumes only when one is there: resuming with nothing to
+	// resume makes the CLI exit at once.
+	History      string
+	HistoryMatch string
 	// ModelEnv carries the model when the CLI reads one from env; otherwise
 	// ModelFlag is passed with it.
 	ModelEnv  string
@@ -50,6 +57,7 @@ var registry = map[agents.Agent]agentDef{
 		// deployment ones are still blocked or asked about.
 		AutoArgs:   []string{"--permission-mode", "auto"},
 		ResumeArgs: []string{"--continue"},
+		History:    "claude/projects",
 		ModelEnv:   "ANTHROPIC_MODEL",
 	},
 	agents.AgentCodex: {
@@ -61,6 +69,7 @@ var registry = map[agents.Agent]agentDef{
 		// No prompts, with codex's own sandbox holding writes to its folder.
 		AutoArgs:   []string{"--sandbox", "workspace-write", "--ask-for-approval", "never"},
 		ResumeArgs: []string{"resume", "--last"},
+		History:    "codex/sessions",
 		ModelFlag:  "-m",
 	},
 	agents.AgentGemini: {

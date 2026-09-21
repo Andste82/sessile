@@ -376,10 +376,11 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 				s.startPrepare(userID, t, accounts, identity, restart)
 			}
 
-			marker := filepath.Join(absDir, ".agent-started")
-			_, seen := os.Stat(marker)
-			argv := append([]string{binary}, launchFor.start(seen == nil)...)
-			_ = os.WriteFile(marker, nil, 0o600)
+			// Resume only a conversation that exists. A marker file said
+			// "has run before" even after a fresh start had deleted the
+			// history, and the CLI exits at once when told to continue
+			// nothing — so the answer comes from the history itself.
+			argv := append([]string{binary}, launchFor.start(hasConversation(absDir, ln.def))...)
 			argv, err = s.confined(absDir, binary, argv)
 			if err != nil {
 				return nil, nil, err
@@ -388,6 +389,27 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			return argv, env, nil
 		},
 	}, nil
+}
+
+// hasConversation reports whether the agent has a saved conversation to
+// resume in this task (§4.12.6): any file under its CLI's history directory.
+func hasConversation(dir string, def agentDef) bool {
+	if def.History == "" {
+		return false
+	}
+	found := false
+	_ = filepath.WalkDir(filepath.Join(dir, agentStateDir, def.History), func(p string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && (strings.HasSuffix(p, ".jsonl") || strings.HasSuffix(p, ".json")) &&
+			strings.Contains(p, def.HistoryMatch) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // agentStateDir holds the agent CLI's own settings and history, per task, so

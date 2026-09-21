@@ -239,7 +239,7 @@ func TestAgentRunsOnTheServer(t *testing.T) {
 	waitStopped(t, mgr, info.ID)
 
 	dir := svc.AgentDir("u1", info.TaskID)
-	for _, name := range []string{"CLAUDE.md", "PROMPT.md", "task.json", ".agent-started"} {
+	for _, name := range []string{"CLAUDE.md", "PROMPT.md", "task.json"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -265,13 +265,42 @@ func TestAgentRunsOnTheServer(t *testing.T) {
 		t.Errorf("a first start plans first:\n%s", out)
 	}
 
-	// A restart continues the conversation rather than starting over.
+	// The fake agent saved no conversation, so a restart must start one
+	// rather than ask the CLI to continue nothing — which makes a real CLI
+	// exit at once ("No conversation found to continue").
+	if _, err := mgr.Restart(info.ID, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	waitStopped(t, mgr, info.ID)
+	if out := readSession(t, mgr, info.ID); strings.Count(out, "--continue") != 0 {
+		t.Errorf("a restart with no saved conversation must not resume:\n%s", out)
+	}
+
+	// Once the agent has saved one, a restart continues it.
+	history := filepath.Join(dir, agentStateDir, "claude", "projects", "task")
+	if err := os.MkdirAll(history, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(history, "conversation.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := mgr.Restart(info.ID, "u1"); err != nil {
 		t.Fatal(err)
 	}
 	waitStopped(t, mgr, info.ID)
 	if out := readSession(t, mgr, info.ID); !strings.Contains(out, "--continue") {
-		t.Errorf("a restart should resume:\n%s", out)
+		t.Errorf("a restart with a saved conversation should resume:\n%s", out)
+	}
+
+	// A fresh restart deletes the history, and so starts over.
+	svc.RequestRestart(info.TaskID, RestartOptions{Fresh: true})
+	if _, err := mgr.Restart(info.ID, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	waitStopped(t, mgr, info.ID)
+	out = readSession(t, mgr, info.ID)
+	if last := out[strings.LastIndex(out, "FAKE-CLAUDE"):]; strings.Contains(last, "--continue") {
+		t.Errorf("a fresh restart must not resume:\n%s", last)
 	}
 }
 
