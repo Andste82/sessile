@@ -1907,6 +1907,86 @@ devcontainer on, and profile "Claude (Max plan)":
 
 ---
 
+### 4.18 The orchestrator (v0.8b)
+
+One agent session per user, on the sessile server, whose tools are sessile
+itself: it starts tasks, watches them and answers them. It is where the
+user says "start a task to …" rather than filling in the form, and where
+they ask "how is DBG-142 doing?" without opening every task.
+
+It is an ordinary task (§4.12) with `kind: "orchestrator"`: same session,
+same bootstrap, same connection env, same resume after a restart. What
+differs is its folder (`<workspace>/.sessile/orchestrator`), its
+instructions, and its tool scope. There is exactly one per user; opening it
+again reopens — or restarts — the same session.
+
+**Where it runs.** On the server, under `allowAgentScripts` (§9): like a
+script, an agent here runs as sessile's own OS user and can read what
+sessile can read. It is not gated by `allowLocalHost`, which is about users
+opening free shells on the server; this session is sessile's own, started
+from a fixed bootstrap.
+
+#### 4.18.1 The orchestrator's tools
+
+The `sessile` MCP server (§4.17.3) serves two scopes. A task session gets
+the task scope (its own scripts, `set_task_state`, `task_info`); the
+orchestrator gets the scripts and:
+
+| Tool | Does | Waits for approval? |
+|---|---|---|
+| `list_hosts`, `list_profiles`, `list_notes` | what the user has set up | no |
+| `create_task(spec)` | the same validated `TaskSpec` the form posts, started at once | **no** — the user asked for it in the conversation, which is where they agreed to it; the orchestrator asks in chat when anything is unclear |
+| `list_tasks(epic?)` | tasks with their state, summary and session status | no |
+| `task_status(taskId)` | one task: state, summary, session status, last question | no |
+| `task_output(taskId, lines?)` | the tail of that task's terminal, escape sequences stripped | no |
+| `restart_task(taskId, fresh?, rebuildContainer?)` | restart a stopped task | no |
+| `send_to_task(taskId, text)` | type a line into a task's terminal | only when that task isn't **blocked**: answering a task that asked is the point, nudging one that didn't is not |
+| `wait_for_events(since?, timeoutSeconds?)` | block until something happens (§4.18.2) | no |
+
+The user's ready scripts are in both scopes, so the orchestrator can read a
+ticket before it creates a task. Write-effect script calls still wait for
+approval in both.
+
+Deleting tasks is deliberately absent: it is destructive and has a
+perfectly good button in the UI (§4.12.8).
+
+#### 4.18.2 Task state and events
+
+A task agent marks its own state with `set_task_state(state, summary,
+question?)` — `working`, `blocked` or `done` — and its instructions tell it
+to mark itself **blocked** when it needs a decision. State and summary are
+stored on the task (§8) and shown in the UI; nothing guesses them from the
+terminal.
+
+`wait_for_events` is how the orchestrator watches without polling: it
+blocks until an event arrives or the timeout passes (default 25 s, at most
+60 s, so no CLI's tool timeout cuts it off), and returns what changed with
+a cursor to continue from. The events, per user:
+
+| Event | When |
+|---|---|
+| `taskState` | a task called `set_task_state` |
+| `taskSummary` | a task's status line changed |
+| `taskExited` | a task's session stopped — its agent finished, or died |
+| `taskCreated` | a task started, by the form or by the orchestrator |
+| `approvalPending` | a write call is waiting for the user |
+
+Events are kept per user in a bounded ring (the last 200), so an
+orchestrator that was away picks up what it missed rather than a snapshot
+of now. Nothing is pushed into its terminal: an MCP server can't interrupt
+an agent sitting at its prompt, and typing into the session would collide
+with the user's own typing.
+
+#### 4.18.3 Epics
+
+A task's **epic** is its session group (§4.11) — the field the sidebar and
+dashboard already fold by, with no entity behind it. The task form offers
+it (default "Tasks"), `create_task` takes it, and `list_tasks(epic)`
+filters by it, so "how is epic DBG-142 doing?" is one call and the UI
+groups those tasks on its own.
+
+---
+
 ## 5. WebSocket Protocol (exact spec)
 
 Endpoint: `GET /ws/sessions/:id` (upgraded), gated by `requireAuth` (§10)
@@ -2130,6 +2210,7 @@ never trusts a client-supplied user id.
 | `POST /api/agent/git/import` | Import a Git identity from a host | `{hostId, gitHost}` → `{name, email, username, token?}` read from that host, **not saved**. Same host-key 409s as sessions |
 | `POST /api/tasks/:id/approvals/:callId` | Approve/deny a held tool call | `{approve: bool}` for a held write-effect script call (§4.17.3) |
 | `GET /api/tasks` | List tasks | Each task with its pending `approvals`, for summaries and badges |
+| `GET/POST /api/orchestrator` | The caller's orchestrator (§4.18) | GET: `{sessionId, taskId}` or `{}`. POST `{profileId}`: create it, or reopen/restart the one that exists → session JSON |
 | `GET /api/tasks/:id/approvals` | Pending approvals | A task's held write calls, for a page opened after the request |
 | `POST /api/agent/git/import` | Read a host's git identity | `{hostId, gitHost}` → `{name, email, username, hasToken, tokenImportId?}`; the token stays on the server (§4.16) |
 
@@ -2491,10 +2572,17 @@ CREATE TABLE IF NOT EXISTS tasks (
   host_id     TEXT NOT NULL DEFAULT '',   -- '' for a local-host task
   dir         TEXT NOT NULL,              -- the task folder on the target
   spec_json   TEXT NOT NULL,              -- the TaskSpec, as validated
-  summary     TEXT NOT NULL DEFAULT '',   -- the agent's last set_task_summary
+  summary     TEXT NOT NULL DEFAULT '',   -- the agent's last status line
+  state       TEXT NOT NULL DEFAULT '',   -- working | blocked | done (§4.18.2)
+  question    TEXT NOT NULL DEFAULT '',   -- what a blocked task is waiting for
+  kind        TEXT NOT NULL DEFAULT 'task', -- task | orchestrator (§4.18)
   created     TEXT NOT NULL               -- RFC 3339 UTC
 );
 ```
+`state`, `question` and `kind` were added to the M32 table the way §8's
+other migrations were: `ALTER TABLE ... ADD COLUMN` guarded by a
+`PRAGMA table_info` check, so an existing tasks table gains them with
+nothing to backfill.
 Deleting the session deletes the row; the folder on the target stays
 (§4.12.8).
 
@@ -3323,6 +3411,45 @@ card; the tunnel is back after Restart.
 phone sheet, and §5.3's events.
 ✅ *Verify:* approve and deny a write call from a second browser; the
 summary updates live on the dashboard card.
+
+## 12f. Milestones — The orchestrator (v0.8b)
+
+One agent session per user whose tools are sessile itself (§4.18), the
+task state it watches, and epics.
+
+### M42 — Orchestrator session and its tool scope
+`kind` on a task, the orchestrator's folder, instructions and bootstrap,
+`GET/POST /api/orchestrator` (one per user, reopened or restarted), and the
+MCP server's second scope: `list_hosts`, `list_profiles`, `list_notes`,
+`create_task`, `list_tasks`, `task_status`, `task_output`, `restart_task`,
+`send_to_task` (§4.18.1). `tasks.Service.Create` moves out of the API
+handler so the form and the orchestrator take the same path.
+✅ *Verify:* ask the orchestrator to start a task and watch it appear in the
+dashboard; `task_output` returns that task's terminal; `send_to_task`
+refuses a task that isn't blocked.
+
+### M43 — Task state and events
+`set_task_state` for task agents, state and question on the task, the
+per-user event ring and `wait_for_events` (§4.18.2), fed by task state,
+summaries, session exits, task creation and pending approvals.
+✅ *Verify:* a task marks itself blocked, the orchestrator's
+`wait_for_events` returns within a second, and `send_to_task` then goes
+through without an approval; the event cursor replays what was missed
+while the orchestrator was away.
+
+### M44 — Epics
+`epic` on the task spec (its session group), in the form, in `create_task`
+and as a filter on `list_tasks`.
+✅ *Verify:* two tasks in one epic are grouped together in the sidebar and
+the dashboard, and `list_tasks` filtered by that epic returns exactly them.
+
+### M45 — Orchestrator in the UI
+An Orchestrator entry in the sidebar that opens (creating or restarting)
+the session, the task panel's state/question line, and the epic field.
+✅ *Verify:* the entry opens the same session every time, including after a
+server restart; a blocked task shows what it is waiting for.
+
+---
 
 ### Implementation notes (M31–M41)
 What was verified, and how, as the milestones landed:
