@@ -75,7 +75,34 @@ export interface TaskStateEvent {
   question: string
 }
 
-export type TaskEvent = TaskToolEvent | TaskApprovalEvent | TaskSummaryEvent | TaskStateEvent
+/** A command the agent is running on the task's host (§4.12.4). */
+export interface TaskRunEvent {
+  type: 'taskRun'
+  taskId: string
+  callId: string
+  command: string
+  cwd: string
+  status: 'running' | 'output' | 'ok' | 'error'
+  output: string
+  exitCode?: number
+}
+/** A question the agent is waiting on (§4.12.4). */
+export interface TaskQuestionEvent {
+  type: 'taskQuestion'
+  taskId: string
+  callId: string
+  question: string
+  options?: string[]
+  status: 'pending' | 'answered' | 'expired' | 'gone'
+}
+
+export type TaskEvent =
+  | TaskToolEvent
+  | TaskApprovalEvent
+  | TaskSummaryEvent
+  | TaskStateEvent
+  | TaskRunEvent
+  | TaskQuestionEvent
 
 export type ServerEvent =
   | SessionsEvent
@@ -207,6 +234,32 @@ export function parseEvent(data: string): ServerEvent | null {
     case 'taskSummary':
       if (typeof m.taskId !== 'string') return null
       return { type: 'taskSummary', taskId: m.taskId, summary: str(m.summary) }
+    case 'taskRun': {
+      if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
+      const st = ['running', 'output', 'ok', 'error'].includes(m.status as string) ? m.status : 'error'
+      return {
+        type: 'taskRun',
+        taskId: m.taskId,
+        callId: m.callId,
+        command: str(m.command),
+        cwd: str(m.cwd),
+        status: st as TaskRunEvent['status'],
+        output: str(m.output),
+        exitCode: typeof m.exitCode === 'number' ? m.exitCode : undefined,
+      }
+    }
+    case 'taskQuestion': {
+      if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
+      const st = ['pending', 'answered', 'expired', 'gone'].includes(m.status as string) ? m.status : 'gone'
+      return {
+        type: 'taskQuestion',
+        taskId: m.taskId,
+        callId: m.callId,
+        question: str(m.question),
+        options: Array.isArray(m.options) ? m.options.filter((o): o is string => typeof o === 'string') : undefined,
+        status: st as TaskQuestionEvent['status'],
+      }
+    }
     case 'taskState': {
       if (typeof m.taskId !== 'string') return null
       if (!['working', 'blocked', 'done'].includes(m.state as string)) return null

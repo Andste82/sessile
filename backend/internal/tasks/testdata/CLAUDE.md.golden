@@ -25,8 +25,9 @@ there is nothing of the project in it.
 - git is already authenticated over https for github.com (as ob), through the
   environment sessile sets on each command. Don't write credentials into any
   git config or remote URL. `gh` is logged in for github.com through `GH_TOKEN`.
-- The user's notes are in `notes/` **here**, beside you. Read the ones that
-  sound relevant — they are the only files worth reading on this side.
+- The user's notes are in `notes/` **here, on this machine**, beside you —
+  your own Read tool reaches them. They and `PROMPT.md` are the only files
+  worth reading on this side; everything else is on the host.
 
 ## Notes the user always wants you to have
 
@@ -37,7 +38,8 @@ there is nothing of the project in it.
 
 
 ## How to work
-- The user's request is in `PROMPT.md`, here beside you.
+- The user's request is in `PROMPT.md` **here, on this machine** — read it
+  with your own Read tool, not with `read_file`, which looks on the host.
 - Investigate first: read the code, the notes and anything the request
   points to. Ask the user when something is unclear.
 - Present a plan and wait for the user to approve it before you change

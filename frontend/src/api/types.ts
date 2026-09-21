@@ -342,7 +342,10 @@ export interface TaskSpec {
 
 export interface Task {
   id: string
+  /** The agent's session, on the sessile server. */
   sessionId: string
+  /** The user's shell on the task's host (§4.12); "" for a task without one. */
+  shellSessionId?: string
   hostId: string
   dir: string
   spec: TaskSpec
@@ -353,6 +356,14 @@ export interface Task {
   question: string
   kind: 'task' | 'orchestrator'
   created: string
+}
+
+/** A question a task is waiting to be answered (§4.12.4). */
+export interface TaskQuestion {
+  taskId: string
+  callId: string
+  question: string
+  options?: string[]
 }
 
 /** GET /api/orchestrator (§4.18): the user's orchestrator, if it exists. */

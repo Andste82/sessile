@@ -18,6 +18,7 @@ import type {
   ScriptRunResult,
   ScriptSettingsBody,
   Task,
+  TaskQuestion,
   TaskSpec,
   TaskWithApprovals,
   TestResult,
@@ -156,6 +157,16 @@ export const api = {
     }),
   listTasks: () => request<TaskWithApprovals[]>('/api/tasks'),
   taskApprovals: (id: string) => request<PendingApproval[]>(`/api/tasks/${id}/approvals`),
+  /** What a task is waiting to be told (§4.12.4). */
+  taskQuestions: (id: string) => request<TaskQuestion[]>(`/api/tasks/${id}/questions`),
+  /** Answer it — the agent is holding that call open. */
+  answerTask: (id: string, answer: string, callId?: string) =>
+    request<void>(`/api/tasks/${id}/answer`, {
+      method: 'POST',
+      body: JSON.stringify(callId ? { answer, callId } : { answer }),
+    }),
+  /** Open (or reopen) a task's shell pane on its host. */
+  openTaskShell: (id: string) => request<Session>(`/api/tasks/${id}/shell`, { method: 'POST' }),
   decideApproval: (id: string, callId: string, approve: boolean) =>
     request<void>(`/api/tasks/${id}/approvals/${callId}`, { method: 'POST', body: JSON.stringify({ approve }) }),
   processTree: (id: string, scope?: 'session' | 'all') =>

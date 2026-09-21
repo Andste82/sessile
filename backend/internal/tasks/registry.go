@@ -7,7 +7,9 @@ import (
 // requestInstruction is the one first message an agent gets when the task has
 // a request: the request itself stays in PROMPT.md and never reaches a
 // command line (§4.12.4).
-const requestInstruction = "Read PROMPT.md: that's my request."
+// It names the machine, because every other file the agent touches is on the
+// task's host and reaching for this one there finds nothing (v0.9).
+const requestInstruction = "Read ./PROMPT.md with your own Read tool — it is here, on this machine, beside you — that's my request."
 
 // agentDef is one built-in agent (§4.12.4). Every argv here is constant; the
 // only variable part any of them takes is a model id that passed

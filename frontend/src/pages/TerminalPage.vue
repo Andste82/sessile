@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { FolderIcon, SparklesIcon } from '@heroicons/vue/24/outline'
+import { CommandLineIcon, FolderIcon, SparklesIcon } from '@heroicons/vue/24/outline'
 import TaskSidePanel from '@/components/TaskSidePanel.vue'
 import { useTasksStore } from '@/stores/tasks'
 import { hasFinePointer } from '@/utils/device'
+import { useWideScreen } from '@/composables/useBreakpoint'
 import TerminalView from '@/components/TerminalView.vue'
 import TabBar from '@/components/TabBar.vue'
 import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
@@ -43,6 +44,79 @@ const pending = computed(() => tasksStore.pendingCount(session.value?.taskId))
 watch(pending, (n, old) => {
   if (n > (old ?? 0)) taskPanelOpen.value = true
 })
+// The task's two panes (§4.12, E10): the agent, which runs on the sessile
+// server, and the user's own shell on the task's host. Side by side where
+// there is room, two tabs where there is not. The split is remembered per
+// browser: it is a view preference, like the panel's own open state.
+const wide = useWideScreen()
+const shellId = computed(() => task.value?.shellSessionId ?? '')
+const splitAvailable = computed(
+  () => isTask.value && shellId.value !== '' && session.value?.targetType === 'local',
+)
+// A task on a host, whose shell pane is not there (or was never opened).
+const canOpenShell = computed(
+  () =>
+    isTask.value &&
+    session.value?.targetType === 'local' &&
+    !!task.value &&
+    task.value.spec.target !== 'local' &&
+    !shellId.value,
+)
+const splitKey = 'sessile.taskSplit'
+const splitPct = ref(readSplit())
+const pane = ref<'agent' | 'shell'>('agent')
+
+function readSplit(): number {
+  try {
+    const v = Number(localStorage.getItem(splitKey))
+    return v >= 20 && v <= 80 ? v : 55
+  } catch {
+    return 55
+  }
+}
+
+// Dragging the divider: pointer events on the page, so the pointer keeps
+// being tracked even when it leaves the thin divider itself.
+const dragging = ref(false)
+function startDrag(e: PointerEvent) {
+  dragging.value = true
+  ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+}
+function onDrag(e: PointerEvent) {
+  if (!dragging.value) return
+  const host = document.getElementById('task-panes')
+  if (!host) return
+  const rect = host.getBoundingClientRect()
+  const pct = ((e.clientX - rect.left) / rect.width) * 100
+  splitPct.value = Math.min(80, Math.max(20, Math.round(pct)))
+}
+function endDrag() {
+  if (!dragging.value) return
+  dragging.value = false
+  try {
+    localStorage.setItem(splitKey, String(splitPct.value))
+  } catch {
+    // A browser that refuses storage just forgets the split.
+  }
+}
+
+// Opening the shell pane for a task that has none yet, or whose pane stopped.
+const openingShell = ref(false)
+async function openShell() {
+  if (!task.value || openingShell.value) return
+  openingShell.value = true
+  try {
+    const s = await api.openTaskShell(task.value.id)
+    store.upsertSession(s)
+    task.value = { ...task.value, shellSessionId: s.id }
+    pane.value = 'shell'
+  } catch (e) {
+    restartError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    openingShell.value = false
+  }
+}
+
 // Same host-key-changed recovery gap as DashboardPage.vue's restart button —
 // see its comment. Kept local to this page rather than shared, since the two
 // restart call sites otherwise have nothing in common to factor out.
@@ -192,6 +266,56 @@ watch(
            in a row, it was a column flex item, where no such minimum applies. -->
       <div class="relative min-h-0 min-w-0 flex-1">
         <p v-if="loadError" class="p-6 text-sm text-rose-400">{{ loadError }}</p>
+
+        <!-- Two panes for a task: its agent here on the server, and the
+             user's own shell on its host. -->
+        <div v-else-if="splitAvailable" id="task-panes" class="flex h-full min-h-0 flex-col md:flex-row"
+             @pointermove="onDrag" @pointerup="endDrag" @pointercancel="endDrag">
+          <div v-if="!wide" class="flex shrink-0 gap-1 border-b border-slate-800 px-2 py-1 text-xs">
+            <button
+              type="button"
+              class="rounded px-3 py-1.5"
+              :class="pane === 'agent' ? 'bg-slate-800 text-slate-100' : 'text-slate-400'"
+              @click="pane = 'agent'"
+            >
+              Agent
+            </button>
+            <button
+              type="button"
+              class="rounded px-3 py-1.5"
+              :class="pane === 'shell' ? 'bg-slate-800 text-slate-100' : 'text-slate-400'"
+              @click="pane = 'shell'"
+            >
+              Shell on {{ session?.hostDisplayName || 'the host' }}
+            </button>
+          </div>
+
+          <div
+            v-show="wide || pane === 'agent'"
+            class="min-h-0 min-w-0 flex-1"
+            :style="wide ? { flex: `0 0 ${splitPct}%` } : undefined"
+          >
+            <TerminalView
+              :key="`${id}:${reloadNonce}`"
+              :session-id="id"
+              class="h-full p-2"
+              @status="conn = $event"
+            />
+          </div>
+
+          <div
+            v-if="wide"
+            class="group w-1 shrink-0 cursor-col-resize bg-slate-800 hover:bg-emerald-600"
+            :class="{ 'bg-emerald-600': dragging }"
+            title="Drag to resize"
+            @pointerdown="startDrag"
+          />
+
+          <div v-show="wide || pane === 'shell'" class="min-h-0 min-w-0 flex-1">
+            <TerminalView :key="`shell:${shellId}`" :session-id="shellId" class="h-full p-2" />
+          </div>
+        </div>
+
         <TerminalView
           v-else
           :key="`${id}:${reloadNonce}`"
@@ -208,6 +332,18 @@ watch(
           @click="filesPanelOpen = !filesPanelOpen"
         >
           <FolderIcon class="h-4 w-4" />
+        </button>
+        <!-- A task whose shell pane was closed, or never opened, gets it back
+             here rather than from a menu. -->
+        <button
+          v-if="canOpenShell"
+          type="button"
+          class="absolute right-24 top-2 z-10 flex h-8 items-center gap-1 rounded-md bg-slate-800/80 px-2 text-xs text-slate-300 shadow hover:bg-slate-700 hover:text-slate-100 disabled:opacity-60"
+          :disabled="openingShell"
+          title="Open a shell on this task's host"
+          @click="openShell()"
+        >
+          <CommandLineIcon class="h-4 w-4" /> Shell
         </button>
         <button
           v-if="isTask"

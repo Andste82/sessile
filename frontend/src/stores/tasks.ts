@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
 import type { TaskEvent } from '@/api/events'
-import type { Task } from '@/api/types'
+import type { Task, TaskQuestion } from '@/api/types'
 
 export interface ToolActivity {
   callId: string
@@ -18,8 +18,22 @@ export interface Approval {
   input: unknown
 }
 
+/** A command the task's agent is running on its host (§4.12.4). */
+export interface RunActivity {
+  callId: string
+  command: string
+  cwd: string
+  status: 'running' | 'output' | 'ok' | 'error'
+  output: string
+  exitCode?: number
+  at: number
+}
+
 // How many tool calls a task page keeps in view.
 const maxActivity = 30
+// How many commands, and how much of each one's output, the panel keeps.
+const maxRuns = 10
+const maxRunOutput = 20000
 
 // Tasks (§4.12) as the task panel and the session lists show them: each
 // task's record and status line, and — live from the event channel (§5.3) —
@@ -28,6 +42,8 @@ export const useTasksStore = defineStore('tasks', () => {
   const tasks = ref<Record<string, Task>>({})
   const activity = ref<Record<string, ToolActivity[]>>({})
   const approvals = ref<Record<string, Approval[]>>({})
+  const questions = ref<Record<string, TaskQuestion[]>>({})
+  const runs = ref<Record<string, RunActivity[]>>({})
   const loaded = ref(false)
 
   async function load() {
@@ -49,14 +65,30 @@ export const useTasksStore = defineStore('tasks', () => {
 
   async function loadOne(id: string) {
     try {
-      const [t, pending] = await Promise.all([api.getTask(id), api.taskApprovals(id)])
+      const [t, pending, asked] = await Promise.all([
+        api.getTask(id),
+        api.taskApprovals(id),
+        api.taskQuestions(id),
+      ])
       tasks.value = { ...tasks.value, [id]: t }
       approvals.value = {
         ...approvals.value,
         [id]: pending.map((p) => ({ callId: p.callId, name: p.name, input: p.input })),
       }
+      questions.value = { ...questions.value, [id]: asked }
     } catch {
       // Shown as missing by the panel.
+    }
+  }
+
+  /** Answer what a task asked; its agent is holding that call open. */
+  async function answer(taskId: string, text: string, callId?: string) {
+    await api.answerTask(taskId, text, callId)
+    // The resolving event clears it everywhere; clear it here too so this
+    // browser does not wait for the round trip.
+    questions.value = {
+      ...questions.value,
+      [taskId]: (questions.value[taskId] ?? []).filter((q) => q.callId !== callId),
     }
   }
 
@@ -76,6 +108,36 @@ export const useTasksStore = defineStore('tasks', () => {
             [ev.taskId]: { ...t, state: ev.state, summary: ev.summary || t.summary, question: ev.question },
           }
         } else void loadOne(ev.taskId)
+        break
+      }
+      case 'taskQuestion': {
+        const rest = (questions.value[ev.taskId] ?? []).filter((q) => q.callId !== ev.callId)
+        if (ev.status === 'pending') {
+          rest.unshift({ taskId: ev.taskId, callId: ev.callId, question: ev.question, options: ev.options })
+        }
+        questions.value = { ...questions.value, [ev.taskId]: rest }
+        break
+      }
+      case 'taskRun': {
+        const list = [...(runs.value[ev.taskId] ?? [])]
+        const i = list.findIndex((r) => r.callId === ev.callId)
+        if (i < 0) {
+          list.unshift({
+            callId: ev.callId, command: ev.command, cwd: ev.cwd,
+            status: ev.status, output: ev.output, exitCode: ev.exitCode, at: Date.now(),
+          })
+        } else {
+          const prev = list[i]
+          list[i] = {
+            ...prev,
+            command: ev.command || prev.command,
+            status: ev.status,
+            exitCode: ev.status === 'ok' || ev.status === 'error' ? ev.exitCode : prev.exitCode,
+            // Output arrives in chunks as the command runs; keep the tail.
+            output: (prev.output + ev.output).slice(-maxRunOutput),
+          }
+        }
+        runs.value = { ...runs.value, [ev.taskId]: list.slice(0, maxRuns) }
         break
       }
       case 'taskTool': {
@@ -110,5 +172,8 @@ export const useTasksStore = defineStore('tasks', () => {
     return taskId ? (approvals.value[taskId]?.length ?? 0) : 0
   }
 
-  return { tasks, activity, approvals, loaded, load, loadOne, applyEvent, decide, pendingCount }
+  return {
+    tasks, activity, approvals, questions, runs, loaded,
+    load, loadOne, applyEvent, decide, answer, pendingCount,
+  }
 })

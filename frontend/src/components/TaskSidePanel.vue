@@ -26,6 +26,40 @@ watch(
 if (hosts.hosts.length === 0) void hosts.fetchHosts()
 
 const task = computed(() => store.tasks[props.taskId])
+const question = computed(() => store.questions[props.taskId]?.[0])
+const runs = computed(() => store.runs[props.taskId] ?? [])
+const answerText = ref('')
+const answering = ref(false)
+
+async function answer(text?: string) {
+  const body = (text ?? answerText.value).trim()
+  if (!body || answering.value) return
+  answering.value = true
+  error.value = null
+  try {
+    await store.answer(props.taskId, body, question.value?.callId)
+    answerText.value = ''
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    answering.value = false
+  }
+}
+
+function runMark(r: { status: string; exitCode?: number }) {
+  if (r.status === 'running' || r.status === 'output') return '›'
+  return r.exitCode === 0 ? '✓' : '✗'
+}
+function runClass(status: string) {
+  switch (status) {
+    case 'ok':
+      return 'text-emerald-400'
+    case 'error':
+      return 'text-rose-400'
+    default:
+      return 'text-slate-500'
+  }
+}
 const approvals = computed(() => store.approvals[props.taskId] ?? [])
 const activity = computed(() => store.activity[props.taskId] ?? [])
 const hostName = computed(() => {
@@ -120,13 +154,67 @@ function ago(at: number) {
         <p class="mt-1 text-slate-300" :class="task.summary ? '' : 'text-slate-500'">
           {{ task.summary || 'No status from the agent yet.' }}
         </p>
+        <!-- A question the agent is holding a tool call open for (§4.12.4):
+             it is waiting on this box, so it belongs above everything else. -->
+        <form
+          v-if="question"
+          class="mt-2 flex flex-col gap-2 rounded-md border border-amber-600/60 bg-slate-800/60 p-3"
+          @submit.prevent="answer()"
+        >
+          <span class="text-xs font-medium uppercase tracking-wide text-amber-400">The agent is asking</span>
+          <!-- A long question must not push the answer box off the panel. -->
+          <p class="max-h-48 overflow-y-auto whitespace-pre-wrap text-slate-100">{{ question.question }}</p>
+          <div v-if="question.options?.length" class="flex flex-wrap gap-1">
+            <button
+              v-for="o in question.options"
+              :key="o"
+              type="button"
+              class="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200 hover:bg-slate-700"
+              :disabled="answering"
+              @click="answer(o)"
+            >
+              {{ o }}
+            </button>
+          </div>
+          <div class="flex gap-2">
+            <input
+              v-model="answerText"
+              type="text"
+              placeholder="Your answer…"
+              class="min-w-0 flex-1 rounded-md border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-slate-100"
+            />
+            <button
+              type="submit"
+              class="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+              :disabled="answering || !answerText.trim()"
+            >
+              Send
+            </button>
+          </div>
+        </form>
         <p
-          v-if="task.state === 'blocked' && task.question"
+          v-else-if="task.state === 'blocked' && task.question"
           class="mt-2 rounded-md border border-amber-600/60 bg-slate-800/60 p-2 text-slate-200"
         >
           <span class="block text-xs font-medium uppercase tracking-wide text-amber-400">Waiting for an answer</span>
           {{ task.question }}
         </p>
+
+        <!-- What the agent is running on the host, live (§4.12.4). -->
+        <div v-if="runs.length" class="mt-4 flex flex-col gap-2">
+          <p class="text-xs font-medium uppercase tracking-wide text-slate-400">On the host</p>
+          <div v-for="r in runs" :key="r.callId" class="rounded-md border border-slate-700 bg-slate-800/40 p-2">
+            <p class="flex items-start gap-2 font-mono text-xs text-slate-200">
+              <span :class="runClass(r.status)">{{ runMark(r) }}</span>
+              <span class="min-w-0 flex-1 break-all">{{ r.command }}</span>
+            </p>
+            <pre
+              v-if="r.output"
+              class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-900 p-2 text-xs text-slate-400"
+              >{{ r.output }}</pre
+            >
+          </div>
+        </div>
 
         <!-- Write calls waiting for the user: the reason this panel exists. -->
         <div v-if="approvals.length" class="mt-4 flex flex-col gap-2">
