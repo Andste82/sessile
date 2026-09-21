@@ -3474,6 +3474,29 @@ What was verified, and how, as the milestones landed:
   Foundry / Vertex connections against live accounts. These are the first
   things to check on real infrastructure.
 
+### Implementation notes (M42–M45)
+- Verified on a real server with a stub agent binary, through the
+  orchestrator's own reverse tunnel and the real `sessile-mcp` bridge:
+  `GET/POST /api/orchestrator` (created once, reopened afterwards),
+  `tools/list` in both scopes, `create_task` starting a task that appears
+  in the session list under its epic, `list_tasks` (filtered and not),
+  `task_status`, `task_output` (escape sequences stripped),
+  `set_task_state` from the task's own scope, `send_to_task` answering a
+  blocked task without an approval and returning it to working, and
+  `wait_for_events` both replaying from a cursor and waking on a change.
+  The UI was checked in a headless browser: the Orchestrator entry, the
+  state badge and question line, and the epic field.
+- A task's agent cannot reach the orchestrator's tools and the
+  orchestrator cannot set a task's state: each scope's tools are rejected
+  by name in the other (tested).
+- `create_task` deliberately asks for no approval. The user asked for the
+  task in the conversation the orchestrator is having with them, which is
+  where they agreed to it; `send_to_task` does ask, unless the task marked
+  itself blocked.
+- Not yet run for real: an actual agent CLI driving these tools (the
+  stub answers the protocol, not the prompt), and the orchestrator on a
+  server whose local-host sessions are disabled.
+
 ### Future (post-v0.8, do not start now)
 - A task-folder cleanup cycle (age or size based, with a preview).
 - An in-app editor for scripts (the zip round trip covers v0.8).
