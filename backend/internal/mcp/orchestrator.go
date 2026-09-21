@@ -77,6 +77,12 @@ var orchestratorTools = []Tool{
 		InputSchema: json.RawMessage(`{"type":"object","required":["taskId"],"properties":{"taskId":{"type":"string"},"fresh":{"type":"boolean"},"rebuildContainer":{"type":"boolean"}}}`),
 	},
 	{
+		Name: "answer_task",
+		Description: "Answer the question a task is waiting on. This is how you unblock a task that called `ask` — " +
+			"its agent gets your answer as the result of that call and carries on.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["taskId","answer"],"properties":{"taskId":{"type":"string"},"answer":{"type":"string","minLength":1,"maxLength":4000}}}`),
+	},
+	{
 		Name: "send_to_task",
 		Description: "Type a line into a task's terminal — how you answer a task that marked itself blocked. " +
 			"A task that isn't blocked waits for the user's approval first.",
@@ -119,6 +125,8 @@ func (s *Server) callOrchestrator(ctx context.Context, userID, name string, args
 		return s.taskOutput(userID, args)
 	case "restart_task":
 		return s.restartTask(userID, args)
+	case "answer_task":
+		return s.answerTask(userID, args)
 	case "send_to_task":
 		return s.sendToTask(ctx, userID, args)
 	case "wait_for_events":
@@ -371,6 +379,25 @@ func (s *Server) restartTask(userID string, raw json.RawMessage) (string, bool) 
 		return "could not restart the task: " + err.Error(), true
 	}
 	return asJSON(map[string]any{"taskId": t.ID, "restarted": true, "fresh": a.Fresh})
+}
+
+// answerTask releases the question a task is waiting on (§4.12.4, E15).
+func (s *Server) answerTask(userID string, raw json.RawMessage) (string, bool) {
+	t, msg, bad := s.taskArg(userID, raw)
+	if bad {
+		return msg, true
+	}
+	var a struct {
+		Answer string `json:"answer"`
+	}
+	_ = json.Unmarshal(raw, &a)
+	if strings.TrimSpace(a.Answer) == "" {
+		return "answer is required", true
+	}
+	if err := s.AnswerTask(userID, t.ID, a.Answer); err != nil {
+		return "that task is not waiting on a question right now — look at task_status, or use send_to_task to type into its terminal", true
+	}
+	return asJSON(map[string]any{"taskId": t.ID, "answered": true})
 }
 
 func (s *Server) sendToTask(ctx context.Context, userID string, raw json.RawMessage) (string, bool) {

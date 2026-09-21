@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -43,6 +44,51 @@ func (s *Server) decideApproval(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// answerQuestion answers what a task asked with `ask` (§4.12.4). The agent
+// is holding that tool call open, so the answer goes straight back to it.
+func (s *Server) answerQuestion(c *gin.Context) {
+	if s.mcp == nil {
+		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, "tools are not available")
+		return
+	}
+	var body struct {
+		Answer string `json:"answer"`
+		CallID string `json:"callId"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Answer) == "" {
+		respondError(c, http.StatusBadRequest, CodeValidation, "an answer is required")
+		return
+	}
+	userID := c.MustGet(userIDKey).(string)
+	taskID := c.Param("id")
+	var err error
+	if body.CallID != "" {
+		err = s.mcp.Answer(userID, taskID, body.CallID, body.Answer)
+	} else {
+		err = s.mcp.AnswerTask(userID, taskID, body.Answer)
+	}
+	if errors.Is(err, mcp.ErrNoSuchQuestion) {
+		respondError(c, http.StatusNotFound, CodeNotFound, "that task isn't waiting on a question any more")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// listQuestions returns what a task is waiting to be told, for a page that
+// opens after the question was asked.
+func (s *Server) listQuestions(c *gin.Context) {
+	if s.mcp == nil || s.tasks == nil {
+		c.JSON(http.StatusOK, []mcp.QuestionMsg{})
+		return
+	}
+	userID := c.MustGet(userIDKey).(string)
+	if _, err := s.tasks.Get(userID, c.Param("id")); err != nil {
+		s.respondSessionError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, s.mcp.Questions(userID, c.Param("id")))
 }
 
 // listApprovals returns a task's held write calls (§4.17.3).

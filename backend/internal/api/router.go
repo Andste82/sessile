@@ -202,6 +202,9 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.GET("/tasks/:id", s.getTask)
 		authGroup.GET("/tasks/:id/approvals", s.listApprovals)
 		authGroup.POST("/tasks/:id/approvals/:callId", s.decideApproval)
+		authGroup.GET("/tasks/:id/questions", s.listQuestions)
+		authGroup.POST("/tasks/:id/answer", s.answerQuestion)
+		authGroup.POST("/tasks/:id/shell", s.openTaskShell)
 	}
 
 	// Download/upload get their own routes outside authGroup's blanket

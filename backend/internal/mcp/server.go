@@ -74,6 +74,7 @@ type Server struct {
 	mu        sync.Mutex
 	conns     map[string]map[*conn]struct{} // by user id
 	approvals map[string]*approval          // by call id
+	questions map[string]*question          // held asks, by call id
 	events    map[string]*eventQueue        // by user id
 }
 
@@ -89,7 +90,7 @@ func New(store *scripts.Store, runner *scripts.Runner, svc *tasks.Service, publi
 	return &Server{Scripts: store, Runner: runner, Tasks: svc, Publish: publish, Log: log,
 		AllowScripts: func() bool { return true },
 		conns:        map[string]map[*conn]struct{}{}, approvals: map[string]*approval{},
-		events: map[string]*eventQueue{}}
+		questions: map[string]*question{}, events: map[string]*eventQueue{}}
 }
 
 // Serve accepts agent connections on l until it closes — which, for an SSH
@@ -358,6 +359,7 @@ func (s *Server) tools(userID, scope string) []Tool {
 		// A task's agent runs on the server; these are how it reaches the
 		// machine its work is on (§4.12.4).
 		out = append(out, hostTools...)
+		out = append(out, askTool)
 		out = append(out, builtins...)
 	}
 	for _, r := range s.readyScripts(userID) {
@@ -450,6 +452,14 @@ func (s *Server) call(ctx context.Context, userID, taskID, scope, name string, a
 		return "unknown tool " + name, true
 	} else if hostToolNames[name] {
 		return s.callHost(ctx, userID, taskID, name, args)
+	}
+	if name == askTool.Name {
+		if scope == tasks.ScopeOrchestrator {
+			// The orchestrator is talking to the user already: it asks in its
+			// own terminal, where they are.
+			return "unknown tool " + name + " — ask the user here, in this conversation", true
+		}
+		return s.callAsk(ctx, userID, taskID, args)
 	}
 	switch name {
 	case "set_task_state":

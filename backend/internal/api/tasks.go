@@ -64,6 +64,27 @@ func (s *Server) getTask(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+// openTaskShell opens (or reopens) a task's shell pane on its host (§4.12).
+func (s *Server) openTaskShell(c *gin.Context) {
+	if s.tasks == nil {
+		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, "tasks are not available")
+		return
+	}
+	info, err := s.tasks.OpenShell(c.MustGet(userIDKey).(string), c.Param("id"))
+	if err != nil {
+		if errors.Is(err, tasks.ErrLocalTask) {
+			respondError(c, http.StatusBadRequest, CodeValidation, "this task runs on the sessile server; it has no host shell")
+			return
+		}
+		if s.respondHostKeyError(c, err) {
+			return
+		}
+		s.respondSessionError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, session.ToJSON(info))
+}
+
 // The orchestrator (§4.18): one session per user, on the server itself.
 // GET reports whether it exists; POST opens it — created the first time,
 // restarted when it has stopped, and otherwise handed back as it is.
