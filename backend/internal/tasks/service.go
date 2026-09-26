@@ -199,7 +199,8 @@ func resolveProfile(settings agents.Settings, profileID string) (agents.Profile,
 func (s *Service) Store(userID, sessionID string, spec Spec) (string, error) {
 	name := spec.Name
 	if spec.Kind == KindOrchestrator {
-		name = "orchestrator"
+		// Its id names the group it runs, so two orchestrators never collide.
+		name = "orchestrator " + spec.Epic
 	}
 	id, err := NewID(name)
 	if err != nil {
@@ -358,7 +359,8 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			files = append(files, mcpFiles(ln.agent, tools)...)
 			if t.Kind == KindOrchestrator {
 				instr, err := render("orchestrator.md.tmpl", orchestratorData{
-					Dir: absDir, Tools: text, HasRequest: t.Spec.Request != "",
+					Dir: absDir, Tools: text, Group: t.Spec.Epic,
+					HasRequest: t.Spec.Request != "",
 				})
 				if err != nil {
 					return nil, nil, err
@@ -479,11 +481,14 @@ func (s *Service) AgentDir(userID, taskID string) string {
 // taskGroup is the session group a task is filed under: its epic, or the
 // default (§4.18.3). The orchestrator stands on its own.
 func taskGroup(t Task) string {
-	switch {
-	case t.Kind == KindOrchestrator:
-		return "Orchestrator"
-	case t.Spec.Epic != "":
+	if t.Spec.Epic != "" {
+		// A group's orchestrator sits in that group, beside the tasks it
+		// runs: the point of one per group is that everything for it is in
+		// one place (§4.18).
 		return t.Spec.Epic
+	}
+	if t.Kind == KindOrchestrator {
+		return "Orchestrator"
 	}
 	return session.TaskGroup
 }

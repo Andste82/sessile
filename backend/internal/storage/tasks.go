@@ -149,18 +149,25 @@ func (s *Store) SetTaskState(id, state, summary, question string) error {
 	return nil
 }
 
-// OrchestratorTask returns the user's orchestrator task (§4.18), if any.
-func (s *Store) OrchestratorTask(userID string) (TaskRow, bool, error) {
-	row := s.db.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE user_id=? AND kind='orchestrator'
-	                      ORDER BY created DESC LIMIT 1`, userID)
-	t, err := scanTask(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return TaskRow{}, false, nil
-	}
+// OrchestratorTasks returns the user's orchestrators (§4.18), newest first.
+// There is one per group, and the group is in the spec, so the caller picks
+// the one it wants.
+func (s *Store) OrchestratorTasks(userID string) ([]TaskRow, error) {
+	rows, err := s.db.Query(`SELECT `+taskColumns+` FROM tasks WHERE user_id=? AND kind='orchestrator'
+	                         ORDER BY created DESC`, userID)
 	if err != nil {
-		return TaskRow{}, false, fmt.Errorf("get orchestrator: %w", err)
+		return nil, fmt.Errorf("get orchestrators: %w", err)
 	}
-	return t, true, nil
+	defer rows.Close()
+	var out []TaskRow
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // DeleteTask removes a task row by id — for a task whose session never

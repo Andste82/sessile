@@ -14,12 +14,13 @@ export function useOrchestrator() {
   const router = useRouter()
   const sessions = useSessionsStore()
 
-  async function open() {
+  /** Open a group's orchestrator, or the general one when group is "". */
+  async function open(group = '') {
     if (busy.value) return
     busy.value = true
     error.value = ''
     try {
-      const session = await api.openOrchestrator()
+      const session = await api.openOrchestrator(undefined, group)
       await sessions.refreshSessions()
       await router.push(`/sessions/${session.id}`)
     } catch (e) {

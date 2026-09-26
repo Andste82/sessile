@@ -153,13 +153,16 @@ export const api = {
   createTask: (spec: TaskSpec) =>
     request<Session>('/api/tasks', { method: 'POST', body: JSON.stringify(spec) }),
   getTask: (id: string) => request<Task>(`/api/tasks/${id}`),
-  /** The user's orchestrator, if it has ever been opened (§4.18). */
-  getOrchestrator: () => request<OrchestratorRef>('/api/orchestrator'),
+  /** Which groups have an orchestrator (§4.18). */
+  orchestrators: () => request<{ orchestrators: OrchestratorRef[] }>('/api/orchestrator'),
+  /** One group's orchestrator, if it has ever been opened; "" is the general one. */
+  getOrchestrator: (group = '') =>
+    request<OrchestratorRef>(`/api/orchestrator?group=${encodeURIComponent(group)}`),
   /** Open it: created the first time, restarted when it has stopped. */
-  openOrchestrator: (profileId?: string) =>
+  openOrchestrator: (profileId?: string, group = '') =>
     request<Session>('/api/orchestrator', {
       method: 'POST',
-      body: JSON.stringify(profileId ? { profileId } : {}),
+      body: JSON.stringify({ ...(profileId ? { profileId } : {}), group }),
     }),
   listTasks: () => request<TaskWithApprovals[]>('/api/tasks'),
   taskApprovals: (id: string) => request<PendingApproval[]>(`/api/tasks/${id}/approvals`),

@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -122,23 +123,57 @@ func (s *Service) defaultProfile(userID string) string {
 }
 
 // Orchestrator returns the user's orchestrator task (§4.18), if it exists.
-func (s *Service) Orchestrator(userID string) (Task, bool, error) {
-	row, found, err := s.DB.OrchestratorTask(userID)
-	if err != nil || !found {
+func (s *Service) Orchestrator(userID, group string) (Task, bool, error) {
+	rows, err := s.DB.OrchestratorTasks(userID)
+	if err != nil {
 		return Task{}, false, err
 	}
-	t, err := fromRow(row)
-	return t, err == nil, err
+	group = strings.TrimSpace(group)
+	for _, row := range rows {
+		t, err := fromRow(row)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(t.Spec.Epic, group) {
+			return t, true, nil
+		}
+	}
+	return Task{}, false, nil
 }
 
-// OpenOrchestrator returns the user's orchestrator session, starting it the
-// first time and restarting it when it has stopped. There is exactly one per
-// user: opening it again is how you get back to the same conversation.
-func (s *Service) OpenOrchestrator(userID, profileID string) (session.Info, error) {
+// Orchestrators returns all of the user's orchestrators, for a UI that shows
+// which groups have one.
+func (s *Service) Orchestrators(userID string) ([]Task, error) {
+	rows, err := s.DB.OrchestratorTasks(userID)
+	if err != nil {
+		return nil, err
+	}
+	out := []Task{}
+	for _, row := range rows {
+		if t, err := fromRow(row); err == nil {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// OpenOrchestrator returns a group's orchestrator session, starting it the
+// first time and restarting it when it has stopped. There is one per group
+// (§4.18), and the group with no name is the one for everything else:
+// opening it again is how you get back to the same conversation.
+//
+// One per group because a conversation is a context: an orchestrator that
+// only handles one epic keeps a log the user can follow, and each one still
+// sees every task when it asks.
+func (s *Service) OpenOrchestrator(userID, group, profileID string) (session.Info, error) {
 	if s.Sessions == nil {
 		return session.Info{}, ErrNoSessions
 	}
-	t, found, err := s.Orchestrator(userID)
+	group = strings.TrimSpace(group)
+	if len(group) > 64 {
+		return session.Info{}, invalid("a group name is at most 64 characters")
+	}
+	t, found, err := s.Orchestrator(userID, group)
 	if err != nil {
 		return session.Info{}, err
 	}
@@ -165,8 +200,12 @@ func (s *Service) OpenOrchestrator(userID, profileID string) (session.Info, erro
 	if profileID == "" {
 		return session.Info{}, invalid("set up an agent profile first: the orchestrator is an agent session")
 	}
+	name := "Orchestrator"
+	if group != "" {
+		name = "Orchestrator · " + group
+	}
 	return s.Create(userID, Spec{
-		Name: "Orchestrator", Kind: KindOrchestrator, Target: "local",
+		Name: name, Kind: KindOrchestrator, Epic: group, Target: "local",
 		Agent: AgentSpec{ProfileID: profileID, Mode: ModeNormal},
 	})
 }

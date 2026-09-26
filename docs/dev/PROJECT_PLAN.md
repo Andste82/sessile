@@ -1977,6 +1977,15 @@ itself: it starts tasks, watches them and answers them. It is where the
 user says "start a task to …" rather than filling in the form, and where
 they ask "how is DBG-142 doing?" without opening every task.
 
+**One per group** (§4.18.3), plus one with no group for everything else. A
+conversation is a context: an orchestrator that runs a single epic keeps a
+log the user can follow, and it sits in that group beside the tasks it
+starts, so everything for the epic is in one place. It is not walled off —
+`list_tasks` takes `all: true` or another group's `epic` — but by default
+it lists and creates within its own. The group-less one sees everything and
+handles what is not an epic of its own. In the UI every group header opens
+its orchestrator; the sidebar entry opens the general one.
+
 It is an ordinary task (§4.12) with `kind: "orchestrator"`: same session,
 same bootstrap, same connection env, same resume after a restart. What
 differs is its folder (`<workspace>/.sessile/orchestrator`), its
@@ -2278,7 +2287,7 @@ never trusts a client-supplied user id.
 | `POST /api/agent/git/import` | Import a Git identity from a host | `{hostId, gitHost}` → `{name, email, username, token?}` read from that host, **not saved**. Same host-key 409s as sessions |
 | `POST /api/tasks/:id/approvals/:callId` | Approve/deny a held tool call | `{approve: bool}` for a held write-effect script call (§4.17.3) |
 | `GET /api/tasks` | List tasks | Each task with its pending `approvals`, for summaries and badges |
-| `GET/POST /api/orchestrator` | The caller's orchestrator (§4.18) | GET: `{sessionId, taskId}` or `{}`. POST `{profileId}` (optional; defaults to the task default, or the caller's only profile): create it, or reopen/restart the one that exists → session JSON |
+| `GET/POST /api/orchestrator` | The caller's orchestrators (§4.18) | GET without `?group=`: `{orchestrators:[{group, sessionId, taskId}]}`. GET `?group=X`: that one, or `{}`. POST `{group, profileId?}` (profile defaults to the task default, or the caller's only one): create it, or reopen/restart the one that exists → session JSON |
 | `GET /api/tasks/:id/approvals` | Pending approvals | A task's held write calls, for a page opened after the request |
 | `POST /api/agent/git/import` | Read a host's git identity | `{hostId, gitHost}` → `{name, email, username, hasToken, tokenImportId?}`; the token stays on the server (§4.16) |
 

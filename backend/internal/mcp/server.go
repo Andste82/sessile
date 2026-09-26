@@ -445,7 +445,7 @@ func (s *Server) call(ctx context.Context, userID, taskID, scope, name string, a
 	}
 	if scope == tasks.ScopeOrchestrator {
 		if orchestratorToolNames[name] {
-			return s.callOrchestrator(ctx, userID, name, args)
+			return s.callOrchestrator(ctx, userID, taskID, name, args)
 		}
 		if hostToolNames[name] {
 			// The orchestrator manages tasks; it does not do their work.

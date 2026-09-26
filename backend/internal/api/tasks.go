@@ -90,7 +90,24 @@ func (s *Server) getOrchestrator(c *gin.Context) {
 		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, "tasks are not available")
 		return
 	}
-	t, found, err := s.tasks.Orchestrator(c.MustGet(userIDKey).(string))
+	userID := c.MustGet(userIDKey).(string)
+	// Without a group, the caller wants the whole picture: which groups have
+	// an orchestrator, and the one for everything else (§4.18).
+	if _, asked := c.GetQuery("group"); !asked {
+		list, err := s.tasks.Orchestrators(userID)
+		if err != nil {
+			s.log.Error("read orchestrators failed", "err", err)
+			respondError(c, http.StatusInternalServerError, CodeInternal, "failed to read the orchestrators")
+			return
+		}
+		out := []gin.H{}
+		for _, t := range list {
+			out = append(out, gin.H{"group": t.Spec.Epic, "sessionId": t.SessionID, "taskId": t.ID})
+		}
+		c.JSON(http.StatusOK, gin.H{"orchestrators": out})
+		return
+	}
+	t, found, err := s.tasks.Orchestrator(userID, c.Query("group"))
 	if err != nil {
 		s.log.Error("read orchestrator failed", "err", err)
 		respondError(c, http.StatusInternalServerError, CodeInternal, "failed to read the orchestrator")
@@ -100,7 +117,7 @@ func (s *Server) getOrchestrator(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"sessionId": t.SessionID, "taskId": t.ID})
+	c.JSON(http.StatusOK, gin.H{"group": t.Spec.Epic, "sessionId": t.SessionID, "taskId": t.ID})
 }
 
 func (s *Server) openOrchestrator(c *gin.Context) {
@@ -110,9 +127,12 @@ func (s *Server) openOrchestrator(c *gin.Context) {
 	}
 	var body struct {
 		ProfileID string `json:"profileId"`
+		// Group is the one this orchestrator runs; "" is the one for
+		// everything else (§4.18).
+		Group string `json:"group"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	info, err := s.tasks.OpenOrchestrator(c.MustGet(userIDKey).(string), body.ProfileID)
+	info, err := s.tasks.OpenOrchestrator(c.MustGet(userIDKey).(string), body.Group, body.ProfileID)
 	if err != nil {
 		var ve *tasks.ValidationError
 		if errors.As(err, &ve) {

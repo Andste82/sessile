@@ -43,8 +43,11 @@ type instructionsData struct {
 
 // orchestratorData fills orchestrator.md.tmpl (§4.18).
 type orchestratorData struct {
-	Dir        string
-	Tools      string
+	Dir   string
+	Tools string
+	// Group is the one this orchestrator runs, "" for the one that handles
+	// everything else (§4.18).
+	Group      string
 	HasRequest bool
 }
 

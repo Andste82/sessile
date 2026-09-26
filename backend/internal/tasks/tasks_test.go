@@ -428,11 +428,11 @@ func TestOrchestratorEndToEnd(t *testing.T) {
 	svc.Sessions = mgr
 	defer mgr.Shutdown()
 
-	info, err := svc.OpenOrchestrator("u1", "p1")
+	info, err := svc.OpenOrchestrator("u1", "", "p1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, found, err := svc.Orchestrator("u1")
+	task, found, err := svc.Orchestrator("u1", "")
 	if err != nil || !found {
 		t.Fatalf("orchestrator not stored: %v %v", found, err)
 	}
@@ -455,7 +455,7 @@ func TestOrchestratorEndToEnd(t *testing.T) {
 	}
 
 	// Reopening restarts the same session rather than starting a second one.
-	again, err := svc.OpenOrchestrator("u1", "")
+	again, err := svc.OpenOrchestrator("u1", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,6 +466,33 @@ func TestOrchestratorEndToEnd(t *testing.T) {
 	list, err := svc.List("u1")
 	if err != nil || len(list) != 1 {
 		t.Fatalf("tasks = %d (%v), want the one orchestrator", len(list), err)
+	}
+
+	// A group gets an orchestrator of its own, in that group beside its
+	// tasks, and the two do not collide (§4.18).
+	billing, err := svc.OpenOrchestrator("u1", "BILL-9", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if billing.ID == info.ID {
+		t.Fatal("a group's orchestrator must be its own session")
+	}
+	if billing.Group != "BILL-9" {
+		t.Errorf("group = %q, want the orchestrator to sit in its group", billing.Group)
+	}
+	waitStopped(t, mgr, billing.ID)
+	again2, err := svc.OpenOrchestrator("u1", "BILL-9", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again2.ID != billing.ID {
+		t.Errorf("reopening a group's orchestrator started a second one")
+	}
+	if t2, found, _ := svc.Orchestrator("u1", "BILL-9"); !found || t2.Spec.Epic != "BILL-9" {
+		t.Errorf("orchestrator for the group = %+v (found %v)", t2, found)
+	}
+	if t0, found, _ := svc.Orchestrator("u1", ""); !found || t0.SessionID != info.ID {
+		t.Errorf("the ungrouped orchestrator should still be its own: %+v", t0)
 	}
 }
 

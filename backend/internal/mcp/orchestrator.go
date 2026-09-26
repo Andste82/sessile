@@ -48,9 +48,10 @@ var orchestratorTools = []Tool{
 			"devcontainer":{"type":"object","properties":{"mode":{"type":"string","enum":["auto","repo","generic"]},"dockerSocket":{"type":"boolean"}},"description":"Run the task in the repo's devcontainer; needs repo"}}}`),
 	},
 	{
-		Name:        "list_tasks",
-		Description: "The user's tasks with their state, status line and session status. Optionally only one epic's.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"epic":{"type":"string"}}}`),
+		Name: "list_tasks",
+		Description: "The tasks of the group you run, with their state, status line and session status. " +
+			"all=true lists every group's; epic names another group's.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"epic":{"type":"string"},"all":{"type":"boolean"}}}`),
 		Annotations: map[string]any{"readOnlyHint": true},
 	},
 	{
@@ -101,16 +102,16 @@ var orchestratorToolNames = func() map[string]bool {
 }()
 
 // callOrchestrator runs one of §4.18.1's tools.
-func (s *Server) callOrchestrator(ctx context.Context, userID, name string, args json.RawMessage) (string, bool) {
+func (s *Server) callOrchestrator(ctx context.Context, userID, taskID, name string, args json.RawMessage) (string, bool) {
 	switch name {
 	case "list_hosts":
 		return s.listHosts(userID)
 	case "list_profiles":
 		return s.listProfiles(userID)
 	case "create_task":
-		return s.createTask(userID, args)
+		return s.createTask(userID, s.groupOf(userID, taskID), args)
 	case "list_tasks":
-		return s.listTasks(userID, args)
+		return s.listTasks(userID, s.groupOf(userID, taskID), args)
 	case "task_status":
 		return s.taskStatus(userID, args)
 	case "task_output":
@@ -186,7 +187,20 @@ type createTaskArgs struct {
 	Devcontainer *tasks.Devcontainer `json:"devcontainer"`
 }
 
-func (s *Server) createTask(userID string, raw json.RawMessage) (string, bool) {
+// groupOf is the group this orchestrator runs (§4.18): its own task's epic,
+// "" for the one that handles everything else.
+func (s *Server) groupOf(userID, taskID string) string {
+	if taskID == "" {
+		return ""
+	}
+	t, err := s.Tasks.Get(userID, taskID)
+	if err != nil {
+		return ""
+	}
+	return t.Spec.Epic
+}
+
+func (s *Server) createTask(userID, group string, raw json.RawMessage) (string, bool) {
 	var a createTaskArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "invalid input: " + err.Error(), true
@@ -200,8 +214,14 @@ func (s *Server) createTask(userID string, raw json.RawMessage) (string, bool) {
 	if profileID == "" {
 		return "no profile given and the user has no default profile: call list_profiles and pick one", true
 	}
+	epic := a.Epic
+	if epic == "" {
+		// A group's orchestrator files what it starts in its own group,
+		// unless it was told otherwise.
+		epic = group
+	}
 	spec := tasks.Spec{
-		Name: a.Name, Epic: a.Epic, HostID: a.HostID, Target: a.Target,
+		Name: a.Name, Epic: epic, HostID: a.HostID, Target: a.Target,
 		Repo: a.Repo, Devcontainer: a.Devcontainer, Request: a.Request,
 		Agent: tasks.AgentSpec{ProfileID: profileID, Model: a.Model, Mode: a.Mode},
 	}
@@ -252,26 +272,44 @@ func (s *Server) taskView(userID string, t tasks.Task) map[string]any {
 	return v
 }
 
-func (s *Server) listTasks(userID string, raw json.RawMessage) (string, bool) {
+func (s *Server) listTasks(userID, group string, raw json.RawMessage) (string, bool) {
 	var a struct {
 		Epic string `json:"epic"`
+		All  bool   `json:"all"`
 	}
 	_ = json.Unmarshal(raw, &a)
 	list, err := s.Tasks.List(userID)
 	if err != nil {
 		return "could not list the tasks", true
 	}
+	// A group's orchestrator lists its own group by default and can still
+	// see the rest when it asks; the one with no group is the one for
+	// everything else, so it lists everything (§4.18).
+	want := a.Epic
+	if want == "" && !a.All {
+		want = group
+	}
+	everything := a.All || want == ""
 	out := []map[string]any{}
+	others := 0
 	for _, t := range list {
 		if t.Kind == tasks.KindOrchestrator {
 			continue
 		}
-		if a.Epic != "" && !strings.EqualFold(a.Epic, t.Spec.Epic) {
+		if !everything && !strings.EqualFold(want, t.Spec.Epic) {
+			others++
 			continue
 		}
 		out = append(out, s.taskView(userID, t))
 	}
-	return asJSON(map[string]any{"tasks": out})
+	res := map[string]any{"tasks": out}
+	if !everything {
+		res["group"] = want
+	}
+	if others > 0 {
+		res["note"] = fmt.Sprintf("%d task(s) in other groups are not listed; call again with all=true to see them.", others)
+	}
+	return asJSON(res)
 }
 
 func (s *Server) taskArg(userID string, raw json.RawMessage) (tasks.Task, string, bool) {

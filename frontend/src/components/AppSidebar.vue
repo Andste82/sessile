@@ -97,7 +97,7 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
       <button
         type="button"
         class="flex items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
-        title="Orchestrator"
+        title="Orchestrator — the one for everything outside a group"
         :disabled="orchestrator.busy.value"
         @click="orchestrator.open()"
       >
@@ -140,10 +140,13 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
         <GroupHeader
           v-if="g.name"
           dense
+          orchestrator
           :name="g.name"
           :count="g.sessions.length"
           :collapsed="ui.isGroupCollapsed('sidebar', g.name)"
+          :busy="orchestrator.busy.value"
           @toggle="ui.toggleGroup('sidebar', g.name)"
+          @orchestrator="orchestrator.open(g.name)"
         />
         <RouterLink
           v-for="s in visible(g)"

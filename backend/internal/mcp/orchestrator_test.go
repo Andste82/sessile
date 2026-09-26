@@ -303,11 +303,11 @@ func TestOrchestratorCreatesAndWatchesATask(t *testing.T) {
 func TestOrchestratorToolsAreScopedToTheirUser(t *testing.T) {
 	s, _, _ := orchSetup(t)
 	// Another user's connection sees their own (empty) sessile, not u1's.
-	text, isErr := s.callOrchestrator(context.Background(), "u2", "list_hosts", json.RawMessage("{}"))
+	text, isErr := s.callOrchestrator(context.Background(), "u2", "", "list_hosts", json.RawMessage("{}"))
 	if isErr || strings.Contains(text, "build-01") {
 		t.Errorf("list_hosts leaked across users: %s", text)
 	}
-	text, isErr = s.callOrchestrator(context.Background(), "u2", "task_status", json.RawMessage(`{"taskId":"demo-abcdef"}`))
+	text, isErr = s.callOrchestrator(context.Background(), "u2", "", "task_status", json.RawMessage(`{"taskId":"demo-abcdef"}`))
 	if !isErr {
 		t.Errorf("task_status should not find another user's task: %s", text)
 	}

@@ -366,8 +366,10 @@ export interface TaskQuestion {
   options?: string[]
 }
 
-/** GET /api/orchestrator (§4.18): the user's orchestrator, if it exists. */
+/** GET /api/orchestrator (§4.18): one group's orchestrator, if it exists. */
 export interface OrchestratorRef {
+  /** The group it runs; "" is the general one. */
+  group?: string
   sessionId?: string
   taskId?: string
 }

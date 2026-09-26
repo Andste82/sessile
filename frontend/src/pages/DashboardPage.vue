@@ -167,10 +167,13 @@ function retryRestartAfterTrust() {
           <GroupHeader
             v-if="g.name"
             class="col-span-full"
+            orchestrator
             :name="g.name"
             :count="g.sessions.length"
             :collapsed="ui.isGroupCollapsed('dashboard', g.name)"
+            :busy="orchestrator.busy.value"
             @toggle="ui.toggleGroup('dashboard', g.name)"
+            @orchestrator="orchestrator.open(g.name)"
           />
           <SessionListItem
             v-for="s in ui.isGroupCollapsed('dashboard', g.name) ? [] : g.sessions"
