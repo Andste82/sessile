@@ -153,10 +153,10 @@ func (s *Service) hostTaskDir(c *hosttools.Client, host hosts.Host, t Task) (str
 // It runs from the server, with the Git account's credentials in the
 // environment of the one command that needs them — the agent never holds
 // them, and nothing is left on the host (§4.12.9).
-func (s *Service) prepareHost(ctx context.Context, userID string, t Task, accounts []agents.GitAccount, identity agents.GitAccount, progress func(string)) (string, error) {
+func (s *Service) prepareHost(ctx context.Context, userID string, t Task, accounts []agents.GitAccount, identity agents.GitAccount, progress func(string)) (dir string, containerErr error, err error) {
 	client, dir, err := s.Host(userID, t.ID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	say := func(format string, args ...any) {
 		if progress != nil {
@@ -164,7 +164,7 @@ func (s *Service) prepareHost(ctx context.Context, userID string, t Task, accoun
 		}
 	}
 	if t.Spec.Repo == nil {
-		return dir, nil
+		return dir, nil, nil
 	}
 
 	repoDir := path.Join(dir, "repo")
@@ -176,10 +176,10 @@ func (s *Service) prepareHost(ctx context.Context, userID string, t Task, accoun
 			Dir:     dir, Env: gitEnvPairs, Timeout: 30 * time.Minute,
 		})
 		if err != nil {
-			return "", fmt.Errorf("clone %s: %w", t.Spec.Repo.URL, err)
+			return "", nil, fmt.Errorf("clone %s: %w", t.Spec.Repo.URL, err)
 		}
 		if res.ExitCode != 0 {
-			return "", fmt.Errorf("clone %s failed:\n%s", t.Spec.Repo.URL, res.Output)
+			return "", nil, fmt.Errorf("clone %s failed:\n%s", t.Spec.Repo.URL, res.Output)
 		}
 	}
 	if ref := t.Spec.Repo.Ref; ref != "" {
@@ -199,20 +199,43 @@ func (s *Service) prepareHost(ctx context.Context, userID string, t Task, accoun
 			Dir: repoDir, Timeout: time.Minute,
 		})
 	}
+	// The container is the one part of preparation that is allowed to fail
+	// without taking the task with it: the repo is on the host either way,
+	// and everything but `run(where: "container")` works without it. A task
+	// that cannot build its container is worth continuing and saying so —
+	// not one where reading a file reports "devcontainer: not found".
 	if t.Spec.Devcontainer != nil {
-		say("bringing the devcontainer up")
-		res, err := client.Run(ctx, hosttools.RunRequest{
-			Command: devcontainerUp(t.Spec.Devcontainer, dir),
-			Dir:     dir, Timeout: 30 * time.Minute,
-		})
-		if err != nil {
-			return "", fmt.Errorf("devcontainer up: %w", err)
-		}
-		if res.ExitCode != 0 {
-			return "", fmt.Errorf("devcontainer up failed:\n%s", res.Output)
+		containerErr = s.upDevcontainer(ctx, client, t, dir, say)
+		if containerErr != nil && s.Log != nil {
+			s.Log.Warn("the task's devcontainer is not available", "taskId", t.ID, "err", containerErr)
 		}
 	}
-	return dir, nil
+	return dir, containerErr, nil
+}
+
+// upDevcontainer brings the task's container up, reporting a missing CLI as
+// what it is rather than as a shell error.
+func (s *Service) upDevcontainer(ctx context.Context, client *hosttools.Client, t Task, dir string, say func(string, ...any)) error {
+	probe, err := client.Run(ctx, hosttools.RunRequest{Command: "command -v devcontainer", Timeout: time.Minute})
+	if err != nil {
+		return fmt.Errorf("look for the devcontainer CLI: %w", err)
+	}
+	if probe.ExitCode != 0 {
+		return errors.New("the devcontainer CLI is not installed on this host " +
+			"(install it there with `npm install -g @devcontainers/cli`), so this task works on the host itself")
+	}
+	say("bringing the devcontainer up")
+	res, err := client.Run(ctx, hosttools.RunRequest{
+		Command: devcontainerUp(t.Spec.Devcontainer, dir),
+		Dir:     dir, Timeout: 30 * time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("devcontainer up: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("devcontainer up failed, so this task works on the host itself:\n%s", res.Output)
+	}
+	return nil
 }
 
 // devcontainerUp is the fixed command that starts a task's container: the CLI
@@ -328,9 +351,25 @@ func (s *Service) taskDirOf(t Task) string {
 // wait for it (§4.12.2).
 type prepare struct {
 	done chan struct{}
-	err  error
-	last string // the step it is on, for the task panel and for a waiting tool
-	dir  string
+	// err is fatal for the task's tools: the repo is not there.
+	err error
+	// containerErr only stops run(where: "container"); everything else works
+	// on the host itself.
+	containerErr error
+	last         string // the step it is on, for a waiting tool
+	dir          string
+}
+
+// Container reports why the task's devcontainer is unusable, or nil. It
+// blocks until preparation has finished, like Wait.
+func (p *prepare) Container(ctx context.Context, timeout time.Duration) error {
+	if p == nil {
+		return nil
+	}
+	if err := p.Wait(ctx, timeout); err != nil {
+		return err
+	}
+	return p.containerErr
 }
 
 // Wait blocks until preparation finishes, or until the context or timeout
@@ -389,13 +428,13 @@ func (s *Service) startPrepare(userID string, t Task, accounts []agents.GitAccou
 				})
 			}
 		}
-		dir, err := s.prepareHost(ctx, userID, t, accounts, identity, func(step string) {
+		dir, containerErr, err := s.prepareHost(ctx, userID, t, accounts, identity, func(step string) {
 			p.last = step
 			if s.Log != nil {
 				s.Log.Info("task host", "taskId", t.ID, "step", step)
 			}
 		})
-		p.dir, p.err = dir, err
+		p.dir, p.err, p.containerErr = dir, err, containerErr
 		if err != nil && s.Log != nil {
 			s.Log.Error("task host preparation failed", "taskId", t.ID, "err", err)
 		}

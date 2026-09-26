@@ -70,11 +70,13 @@ there is nothing of the project in it.
   ask in this terminal: nobody may be watching it, while `ask` reaches them
   in sessile and can also be answered by their orchestrator.
 {{- if eq .Mode "auto"}}
-- This task runs in **auto mode**: the user judged it small and clear enough
-  to go ahead without approving a plan. Do the work, check it, and report.
-  Still `ask` before anything destructive or irreversible — deleting data,
-  force-pushing, changing something shared — or if the task turns out to
-  be bigger than it looked.
+- Work out a plan before you touch anything, and say what it is in one short
+  message. Then carry it out — you do not need the user to approve it, and
+  you should not wait for them.
+- `ask` when the decision is genuinely theirs: something destructive or
+  irreversible (deleting data, force-pushing, changing something shared),
+  a choice you cannot make from the request, or a task that turns out to be
+  much bigger than it looked. Otherwise keep going and report at the end.
 {{- else}}
 - Present a plan and wait for the user to approve it before you change
   anything.

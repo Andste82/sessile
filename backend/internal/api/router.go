@@ -182,9 +182,11 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/agent/git/test", s.testGitAccount)
 		authGroup.POST("/agent/git/import", s.importGitIdentity)
 		authGroup.GET("/agent/notes", s.listNotes)
-		authGroup.GET("/agent/notes/:slug", s.getNote)
-		authGroup.PUT("/agent/notes/:slug", s.putNote)
-		authGroup.DELETE("/agent/notes/:slug", s.deleteNote)
+		// A wildcard, not a parameter: a note may be filed in folders
+		// ("hosts/km-gaming"), and its name is the path (§4.14).
+		authGroup.GET("/agent/notes/*slug", s.getNote)
+		authGroup.PUT("/agent/notes/*slug", s.putNote)
+		authGroup.DELETE("/agent/notes/*slug", s.deleteNote)
 		authGroup.GET("/agent/scripts", s.listScripts)
 		authGroup.GET("/agent/script-examples", s.listScriptExamples)
 		authGroup.POST("/agent/script-examples/:name/install", s.installScriptExample)

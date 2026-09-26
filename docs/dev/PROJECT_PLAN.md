@@ -1135,6 +1135,14 @@ folder, so they survive a rebuild and resume (§4.12.6) keeps working.
 container (SSH agent forwarding), extra user-defined mounts, and a
 per-user custom generic config.
 
+**A container that cannot come up is not a failed task.** The repo is on the
+host either way, and everything but `run(where: "container")` works without
+it, so a failed `devcontainer up` — most often the CLI simply not being
+installed on that host — is recorded and reported, not fatal. The tools keep
+working on the host; a container call says what is wrong and suggests
+running without it. Making it fatal meant a task where even reading a file
+answered `devcontainer: not found`.
+
 #### 4.12.4 The agent's tools
 
 The agent runs on the server, so everything it does to the work it does
@@ -1183,16 +1191,18 @@ nothing can interrupt an agent sitting at its prompt.
 
 #### 4.12.4b Agent registry and modes
 
-**Modes.** `plan` is the default: the agent investigates, proposes a plan,
-and waits for the user to approve it before changing anything. `auto` is for
-a task too small to need that — look something up, run a check, a one-line
-fix: the agent does the work without stopping for a plan or for each
-command, and still `ask`s before anything destructive or shared. The
-orchestrator never picks `auto` on its own: when a task looks small and
-low-risk it asks the user whether to start it in auto mode (§4.18.1).
-`normal` is the CLI's own default between the two. Sessile's approval gate
-for write-effect script calls applies in every mode — it is enforced by
-sessile, not by the agent's permission mode.
+**Modes.** `auto` is the default. The agent still plans first — its
+instructions tell it to work out a plan, say what it is, and then carry it
+out — but nothing stops it at each command. That distinction is the whole
+point: approving a plan is useful, approving every `cat` is not, and in use
+the permission prompts were what made tasks tiresome. In auto mode the CLI's
+own classifier reviews each action and still refuses destructive,
+credential and deployment ones, and the agent `ask`s the user about
+decisions that are genuinely theirs. `plan` is the CLI's own plan mode, for
+work the user wants to approve step by step; `normal` is the CLI's default
+between them. Sessile's approval gate for write-effect script calls applies
+in every mode — it is enforced by sessile, not by the agent's permission
+mode.
 
 
 The agent registry is **built in** (code, not config). Every argv is
@@ -1479,6 +1489,18 @@ Who gets which values:
   the task's instructions file (§4.17.1). All notes are copied into the
   task's `notes/` folder, where the agent reads them with its own tools.
 - A save that looks like it contains a secret gets a warning (not a block).
+
+**Folders, and who writes them.** A note's name may have folders —
+`hosts/km-gaming`, `runbooks/deploy` — up to four deep, each segment an
+ordinary file name, which is what keeps it inside the user's own notes
+directory. Since v0.9 an agent can write notes too: `list_notes`,
+`read_note` and `write_note` are in both tool scopes (§4.17.3), so a task
+that works out how a host is reached can leave that where the next task
+will find it. They are still the user's notes — read into every task,
+edited by the user in sessile — so an agent writes what is worth having
+next time, not its own working state, which belongs in its folder. The
+secret lint still runs, and its warning is returned to the agent: a note
+reaches every task, and so its model.
 
 ### 4.15 Scripts
 

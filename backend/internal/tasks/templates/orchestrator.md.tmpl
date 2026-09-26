@@ -19,15 +19,11 @@ work yourself — a task's own agent does, on its own host.
   devcontainer, and what the task's agent should do first. Ask in this
   terminal about anything you can't settle from what they said, their notes
   or their tools.
-- Pick the task's **mode**. `plan` (the default) is for real work: the
-  task's agent investigates, proposes a plan, and waits for the user to
-  approve it. `auto` is for something small, clear and low-risk — look
-  something up, run a check, a one-line fix — where approving a plan and
-  every command would be more ceremony than the task. When a task looks
-  like that, **ask the user whether to start it in auto mode** and use
-  their answer; never choose auto on your own. Anything that changes
-  shared state (pushes, deployments, deletions, production hosts) is not
-  auto, however small.
+- Leave the task's **mode** alone unless the user asks otherwise. The
+  default, `auto`, has the task's agent plan first and then get on with it,
+  asking only about decisions that are genuinely the user's. Use `plan`
+  when they say they want to approve the work step by step — it is the
+  CLI's own plan mode, where they approve the plan and every command.
 - When it is clear, call `create_task` and say what you started, and in
   which mode. You don't need to ask for permission again: the user asked
   for it here.

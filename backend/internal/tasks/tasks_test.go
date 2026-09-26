@@ -261,8 +261,15 @@ func TestAgentRunsOnTheServer(t *testing.T) {
 	if !strings.Contains(out, "config="+filepath.Join(dir, agentStateDir, "claude")) {
 		t.Errorf("the agent's config dir is not its own:\n%s", out)
 	}
-	if !strings.Contains(out, "--permission-mode plan") {
-		t.Errorf("a first start plans first:\n%s", out)
+	// Auto is the default (§4.12.4b): the agent plans because its
+	// instructions say to, not because a prompt stops it at every command.
+	if !strings.Contains(out, "--permission-mode auto") {
+		t.Errorf("a task starts in auto mode by default:\n%s", out)
+	}
+	if instructions, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(instructions), "Work out a plan before you touch anything") {
+		t.Error("auto mode still asks for a plan first, in the instructions")
 	}
 
 	// The fake agent saved no conversation, so a restart must start one

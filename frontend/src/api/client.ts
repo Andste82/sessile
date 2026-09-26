@@ -113,6 +113,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+// A note may be filed in folders, so its name is a path: each segment is
+// encoded, the slashes are not (§4.14).
+function notePath(slug: string): string {
+  return slug.split('/').map(encodeURIComponent).join('/')
+}
+
 export const api = {
   health: () => request<{ status: string }>('/api/health'),
   config: () => request<AppConfig>('/api/config'),
@@ -237,14 +243,14 @@ export const api = {
   connectionModels: (id: string, refresh = false) =>
     request<ModelsResponse>(`/api/agent/connections/${id}/models${refresh ? '?refresh=1' : ''}`),
   listNotes: () => request<Note[]>('/api/agent/notes'),
-  getNote: (slug: string) => request<Note>(`/api/agent/notes/${encodeURIComponent(slug)}`),
+  getNote: (slug: string) => request<Note>(`/api/agent/notes/${notePath(slug)}`),
   putNote: (slug: string, context: NoteContext, body: string) =>
-    request<Note>(`/api/agent/notes/${encodeURIComponent(slug)}`, {
+    request<Note>(`/api/agent/notes/${notePath(slug)}`, {
       method: 'PUT',
       body: JSON.stringify({ context, body }),
     }),
   deleteNote: (slug: string) =>
-    request<void>(`/api/agent/notes/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
+    request<void>(`/api/agent/notes/${notePath(slug)}`, { method: 'DELETE' }),
   listScripts: () => request<ScriptList>('/api/agent/scripts'),
   listScriptExamples: () => request<ScriptExample[]>('/api/agent/script-examples'),
   installScriptExample: (name: string, opts: { as?: string; update?: boolean } = {}) => {

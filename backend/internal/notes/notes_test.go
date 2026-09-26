@@ -40,13 +40,54 @@ func TestPutGetListDelete(t *testing.T) {
 
 func TestSlugsCantEscape(t *testing.T) {
 	s := New(t.TempDir())
-	for _, slug := range []string{"../x", "a/b", "", "A", ".hidden", strings.Repeat("a", 65)} {
+	for _, slug := range []string{
+		"../x", "a/../../x", "/x", "x/", "a//b", "", "A", ".hidden",
+		strings.Repeat("a", 65), "a/b/c/d/e", // deeper than notes may be filed
+	} {
 		if _, err := s.Put("u1", slug, "", "x"); err == nil {
 			t.Errorf("Put(%q) accepted", slug)
 		}
 		if _, err := s.Get("u1", slug); err == nil {
 			t.Errorf("Get(%q) found something", slug)
 		}
+	}
+}
+
+// Notes may be filed in folders, so an agent can keep what it learns in
+// order: hosts/km-gaming, runbooks/deploy (§4.14).
+func TestNotesInFolders(t *testing.T) {
+	s := New(t.TempDir())
+	if _, err := s.Put("u1", "hosts/km-gaming", ContextOnDemand, "ssh in as root\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put("u1", "runbooks/deploy/staging", ContextAlways, "helm upgrade\n"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("u1", "hosts/km-gaming")
+	if err != nil || got.Body != "ssh in as root\n" {
+		t.Fatalf("get = %+v, %v", got, err)
+	}
+	list, err := s.List("u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var slugs []string
+	for _, n := range list {
+		slugs = append(slugs, n.Slug)
+	}
+	if len(slugs) != 2 || slugs[0] != "hosts/km-gaming" || slugs[1] != "runbooks/deploy/staging" {
+		t.Fatalf("list = %v", slugs)
+	}
+	// A task sees them like any other note.
+	tn, err := s.TaskNotes("u1")
+	if err != nil || len(tn) != 2 {
+		t.Fatalf("task notes = %+v, %v", tn, err)
+	}
+	if err := s.Delete("u1", "hosts/km-gaming"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(s.dir("u1"), "hosts")); !os.IsNotExist(err) {
+		t.Errorf("the empty folder should go with its last note: %v", err)
 	}
 }
 

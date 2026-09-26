@@ -21,7 +21,11 @@ const saving = ref(false)
 const armedDelete = ref(false)
 
 const dirty = computed(() => body.value !== saved.value || context.value !== savedContext.value)
-const slugValid = computed(() => /^[a-z0-9][a-z0-9-]{0,63}$/.test(slug.value))
+// A note may be filed in folders: "hosts/km-gaming" (§4.14).
+const slugValid = computed(() =>
+  slug.value.split('/').length <= 4 &&
+  slug.value.split('/').every((part) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(part)),
+)
 
 async function refresh() {
   try {

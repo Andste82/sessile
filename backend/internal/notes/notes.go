@@ -48,11 +48,28 @@ type Note struct {
 
 var (
 	ErrNotFound = errors.New("note not found")
-	slugRe      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	segmentRe   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 )
 
-// ValidSlug reports whether s may name a note (and so a file).
-func ValidSlug(s string) bool { return slugRe.MatchString(s) }
+// maxDepth bounds how deep a note may be filed.
+const maxDepth = 4
+
+// ValidSlug reports whether s may name a note. A slug may have folders —
+// "hosts/km-gaming", "runbooks/deploy" — so an agent filing what it learns
+// can keep it in order; each segment is still a plain file name, which is
+// what keeps the slug inside the user's own notes directory.
+func ValidSlug(s string) bool {
+	parts := strings.Split(s, "/")
+	if len(parts) == 0 || len(parts) > maxDepth {
+		return false
+	}
+	for _, p := range parts {
+		if !segmentRe.MatchString(p) {
+			return false
+		}
+	}
+	return true
+}
 
 // Store is the notes of every user; a user's notes are only ever reached
 // through their own id (§14.5).
@@ -72,25 +89,30 @@ func (s *Store) dir(userID string) string {
 func (s *Store) List(userID string) ([]Note, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entries, err := os.ReadDir(s.dir(userID))
-	if os.IsNotExist(err) {
-		return []Note{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read notes: %w", err)
-	}
+	root := s.dir(userID)
 	out := []Note{}
-	for _, e := range entries {
-		slug, ok := strings.CutSuffix(e.Name(), ".md")
-		if !ok || e.IsDir() || !ValidSlug(slug) {
-			continue
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
 		}
-		n, err := s.read(userID, slug)
-		if err != nil {
-			continue
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			return nil
+		}
+		slug, ok := strings.CutSuffix(filepath.ToSlash(rel), ".md")
+		if !ok || !ValidSlug(slug) {
+			return nil
+		}
+		n, rerr := s.read(userID, slug)
+		if rerr != nil {
+			return nil
 		}
 		n.Body = ""
 		out = append(out, n)
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read notes: %w", err)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
 	return out, nil
@@ -107,7 +129,7 @@ func (s *Store) Get(userID, slug string) (Note, error) {
 }
 
 func (s *Store) read(userID, slug string) (Note, error) {
-	p := filepath.Join(s.dir(userID), slug+".md")
+	p := filepath.Join(s.dir(userID), filepath.FromSlash(slug)+".md")
 	data, err := os.ReadFile(p)
 	if os.IsNotExist(err) {
 		return Note{}, ErrNotFound
@@ -127,7 +149,8 @@ func (s *Store) read(userID, slug string) (Note, error) {
 // Put creates or replaces a note.
 func (s *Store) Put(userID, slug string, ctx Context, body string) (Note, error) {
 	if !ValidSlug(slug) {
-		return Note{}, fmt.Errorf("a note name is lowercase letters, digits and dashes (up to 64)")
+		return Note{}, fmt.Errorf("a note name is lowercase letters, digits and dashes (up to 64), " +
+			"optionally in folders: \"hosts/km-gaming\"")
 	}
 	if ctx != ContextAlways {
 		ctx = ContextOnDemand
@@ -139,7 +162,9 @@ func (s *Store) Put(userID, slug string, ctx Context, body string) (Note, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dir := s.dir(userID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// A note may be filed in folders, which are made as they are needed.
+	target := filepath.Join(dir, filepath.FromSlash(slug)+".md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return Note{}, fmt.Errorf("create notes dir: %w", err)
 	}
 	content := "---\ncontext: " + string(ctx) + "\n---\n" + body
@@ -159,7 +184,7 @@ func (s *Store) Put(userID, slug string, ctx Context, body string) (Note, error)
 	if err := tmp.Close(); err != nil {
 		return Note{}, err
 	}
-	if err := os.Rename(tmp.Name(), filepath.Join(dir, slug+".md")); err != nil {
+	if err := os.Rename(tmp.Name(), target); err != nil {
 		return Note{}, fmt.Errorf("replace note: %w", err)
 	}
 	return s.read(userID, slug)
@@ -172,9 +197,16 @@ func (s *Store) Delete(userID, slug string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := os.Remove(filepath.Join(s.dir(userID), slug+".md"))
+	p := filepath.Join(s.dir(userID), filepath.FromSlash(slug)+".md")
+	err := os.Remove(p)
 	if os.IsNotExist(err) {
 		return ErrNotFound
+	}
+	// Leave no empty folders behind when the last note in one goes.
+	for dir := filepath.Dir(p); dir != s.dir(userID) && len(dir) > len(s.dir(userID)); dir = filepath.Dir(dir) {
+		if os.Remove(dir) != nil {
+			break
+		}
 	}
 	return err
 }

@@ -353,6 +353,7 @@ func toolName(script, fn string) string { return script + "__" + fn }
 
 func (s *Server) tools(userID, scope string) []Tool {
 	var out []Tool
+	out = append(out, noteTools...)
 	if scope == tasks.ScopeOrchestrator {
 		out = append(out, orchestratorTools...)
 	} else {
@@ -438,6 +439,9 @@ func newCallID() string {
 func (s *Server) call(ctx context.Context, userID, taskID, scope, name string, args json.RawMessage) (string, bool) {
 	if len(args) == 0 || string(args) == "null" {
 		args = json.RawMessage("{}")
+	}
+	if noteToolNames[name] {
+		return s.callNote(userID, name, args)
 	}
 	if scope == tasks.ScopeOrchestrator {
 		if orchestratorToolNames[name] {

@@ -34,7 +34,7 @@ const useDevcontainer = ref(false)
 const dcMode = ref<'auto' | 'repo' | 'generic'>('auto')
 const dockerSocket = ref(false)
 const profileId = ref('')
-const mode = ref<'plan' | 'normal' | 'auto'>('plan')
+const mode = ref<'plan' | 'normal' | 'auto'>('auto')
 const model = ref('')
 const submitting = ref(false)
 const error = ref<string | null>(null)
@@ -65,7 +65,7 @@ watch(
     useDevcontainer.value = false
     dcMode.value = 'auto'
     dockerSocket.value = false
-    mode.value = 'plan'
+    mode.value = 'auto'
     if (hostsStore.hosts.length === 0) void hostsStore.fetchHosts()
     if (!sessions.config) void sessions.fetchConfig()
     await agent.load()
@@ -260,11 +260,11 @@ const inputCls =
         <div :class="labelCls">
           <span class="text-slate-400">Mode</span>
           <div class="flex gap-4 text-sm text-slate-200">
-            <label class="flex items-center gap-2"><input v-model="mode" type="radio" value="plan" class="accent-emerald-400" /> Plan first</label>
-            <label class="flex items-center gap-2"><input v-model="mode" type="radio" value="normal" class="accent-emerald-400" /> Normal</label>
-            <label class="flex items-center gap-2" title="For small, clear tasks: the agent works without asking you to approve a plan or its commands">
+            <label class="flex items-center gap-2" title="The agent plans first, says what it will do, then gets on with it — asking only about decisions that are yours">
               <input v-model="mode" type="radio" value="auto" class="accent-emerald-400" /> Auto
             </label>
+            <label class="flex items-center gap-2" title="You approve the plan and every command"><input v-model="mode" type="radio" value="plan" class="accent-emerald-400" /> Approve each step</label>
+            <label class="flex items-center gap-2" title="The agent CLI's own default"><input v-model="mode" type="radio" value="normal" class="accent-emerald-400" /> Normal</label>
           </div>
         </div>
         <div v-if="profile" :class="labelCls">

@@ -65,9 +65,11 @@ type AgentSpec struct {
 	Mode      string `json:"mode,omitempty"` // plan (default) | normal | auto
 }
 
-// Agent modes (§4.12.4b). Plan is the default: the agent investigates, the
-// user approves its plan, then it works. Auto is for a task too small to
-// need that — the agent works without stopping to ask for approval.
+// Agent modes (§4.12.4b). Auto is the default: the agent plans first because
+// its instructions tell it to, not because a permission prompt stops it —
+// approving every command turned out to be the thing that made tasks
+// tiresome. Plan is the CLI's own plan mode, for work the user wants to
+// approve step by step; normal is the CLI's default in between.
 const (
 	ModePlan   = "plan"
 	ModeNormal = "normal"
@@ -128,7 +130,7 @@ func (s *Spec) Normalize() {
 	s.Epic = strings.TrimSpace(s.Epic)
 	s.Agent.Model = strings.TrimSpace(s.Agent.Model)
 	if s.Agent.Mode == "" {
-		s.Agent.Mode = ModePlan
+		s.Agent.Mode = ModeAuto
 	}
 	s.Request = strings.TrimSpace(s.Request)
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -22,6 +23,12 @@ func (s *Server) notesOK(c *gin.Context) bool {
 	return true
 }
 
+// noteSlug is the note's name from the route: gin hands a wildcard back with
+// its leading slash, and the name never has one.
+func noteSlug(c *gin.Context) string {
+	return strings.Trim(c.Param("slug"), "/")
+}
+
 func (s *Server) listNotes(c *gin.Context) {
 	if !s.notesOK(c) {
 		return
@@ -39,7 +46,7 @@ func (s *Server) getNote(c *gin.Context) {
 	if !s.notesOK(c) {
 		return
 	}
-	n, err := s.notes.Get(c.MustGet(userIDKey).(string), c.Param("slug"))
+	n, err := s.notes.Get(c.MustGet(userIDKey).(string), noteSlug(c))
 	if err != nil {
 		s.respondNoteError(c, err)
 		return
@@ -61,7 +68,7 @@ func (s *Server) putNote(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, CodeValidation, "invalid request body (a note is at most 30 KiB)")
 		return
 	}
-	n, err := s.notes.Put(c.MustGet(userIDKey).(string), c.Param("slug"), body.Context, body.Body)
+	n, err := s.notes.Put(c.MustGet(userIDKey).(string), noteSlug(c), body.Context, body.Body)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 		return
@@ -73,7 +80,7 @@ func (s *Server) deleteNote(c *gin.Context) {
 	if !s.notesOK(c) {
 		return
 	}
-	if err := s.notes.Delete(c.MustGet(userIDKey).(string), c.Param("slug")); err != nil {
+	if err := s.notes.Delete(c.MustGet(userIDKey).(string), noteSlug(c)); err != nil {
 		s.respondNoteError(c, err)
 		return
 	}

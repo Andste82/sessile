@@ -203,6 +203,15 @@ func (s *Server) runOnHost(ctx context.Context, userID, taskID string, client *h
 	}}
 	stop := out.start(200 * time.Millisecond)
 
+	if a.Where == "container" {
+		// The container is the only thing a failed devcontainer stops; the
+		// agent is told what is wrong and can run on the host instead.
+		if err := s.Tasks.Prepared(taskID).Container(ctx, time.Minute); err != nil {
+			return "This task has no usable devcontainer: " + err.Error() +
+				"\nRun without where:\"container\" to work on the host itself.", true
+		}
+	}
+
 	req := hosttools.RunRequest{
 		Command: a.Command, Dir: cwd,
 		Timeout:   time.Duration(a.TimeoutSeconds) * time.Second,

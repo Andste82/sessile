@@ -31,12 +31,6 @@ var orchestratorTools = []Tool{
 		Annotations: map[string]any{"readOnlyHint": true},
 	},
 	{
-		Name:        "list_notes",
-		Description: "The user's notes, with their text. Background about their repos, team and workflow.",
-		InputSchema: emptySchema,
-		Annotations: map[string]any{"readOnlyHint": true},
-	},
-	{
 		Name: "create_task",
 		Description: "Start a task: sessile sets up a folder on the host, clones the repo, and starts the agent in it. " +
 			"Use the user's words for `request` — it is the first message the task's agent gets. " +
@@ -49,7 +43,7 @@ var orchestratorTools = []Tool{
 			"epic":{"type":"string","maxLength":64,"description":"Groups tasks that belong together"},
 			"profileId":{"type":"string","description":"One of list_profiles' ids; default: the user's default profile"},
 			"model":{"type":"string","description":"Optional model id for this task"},
-			"mode":{"type":"string","enum":["plan","auto","normal"],"description":"plan (default): the agent plans and the user approves before it acts. auto: it just does the work — only for small, clear, low-risk tasks, and only when the user said yes to auto"},
+			"mode":{"type":"string","enum":["auto","plan","normal"],"description":"auto (default): the agent plans, says so, and gets on with it, asking only about decisions that are the user's. plan: the CLI's own plan mode, where the user approves the plan and each command — for work they want to follow step by step"},
 			"repo":{"type":"object","properties":{"url":{"type":"string"},"ref":{"type":"string"}},"description":"Main repository to clone"},
 			"devcontainer":{"type":"object","properties":{"mode":{"type":"string","enum":["auto","repo","generic"]},"dockerSocket":{"type":"boolean"}},"description":"Run the task in the repo's devcontainer; needs repo"}}}`),
 	},
@@ -113,8 +107,6 @@ func (s *Server) callOrchestrator(ctx context.Context, userID, name string, args
 		return s.listHosts(userID)
 	case "list_profiles":
 		return s.listProfiles(userID)
-	case "list_notes":
-		return s.listNotes(userID)
 	case "create_task":
 		return s.createTask(userID, args)
 	case "list_tasks":
@@ -133,14 +125,6 @@ func (s *Server) callOrchestrator(ctx context.Context, userID, name string, args
 		return s.waitForEvents(ctx, userID, args)
 	}
 	return "unknown tool " + name, true
-}
-
-func asJSON(v any) (string, bool) {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return "could not encode the result", true
-	}
-	return string(b), false
 }
 
 func (s *Server) listHosts(userID string) (string, bool) {
@@ -186,21 +170,6 @@ func (s *Server) listProfiles(userID string) (string, bool) {
 			Default: p.ID == settings.TaskDefaults.ProfileID})
 	}
 	return asJSON(map[string]any{"profiles": out, "defaultHostId": settings.TaskDefaults.HostID})
-}
-
-func (s *Server) listNotes(userID string) (string, bool) {
-	if s.Notes == nil {
-		return "notes are not available", true
-	}
-	notes, err := s.Notes.TaskNotes(userID)
-	if err != nil {
-		return "could not read the notes", true
-	}
-	out := []map[string]string{}
-	for _, n := range notes {
-		out = append(out, map[string]string{"slug": n.Slug, "title": n.Title, "body": n.Body})
-	}
-	return asJSON(map[string]any{"notes": out})
 }
 
 // createTaskArgs is the orchestrator's flattened form of a TaskSpec.
