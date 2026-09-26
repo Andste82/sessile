@@ -9,6 +9,7 @@ const validSession = {
   shell: 'bash',
   hostId: '',
   hostDisplayName: '',
+  taskId: null,
   group: 'Production',
   status: 'running',
   pid: 42,

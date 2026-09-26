@@ -26,6 +26,7 @@ type hostResponse struct {
 	CustomCommand             string `json:"customCommand"`
 	TrustedHostKeyType        string `json:"trustedHostKeyType"`
 	TrustedHostKeyFingerprint string `json:"trustedHostKeyFingerprint"`
+	TasksDir                  string `json:"tasksDir"`
 	Created                   string `json:"created"`
 }
 
@@ -40,6 +41,7 @@ func toHostResponse(h hosts.Host) hostResponse {
 		CustomCommand:             h.CustomCommand,
 		TrustedHostKeyType:        h.TrustedHostKeyType,
 		TrustedHostKeyFingerprint: h.TrustedHostKeyFingerprint,
+		TasksDir:                  h.EffectiveTasksDir(),
 		Created:                   h.Created.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
@@ -60,6 +62,7 @@ type hostBody struct {
 	TargetOS             string  `json:"targetOS"`
 	TerminalType         string  `json:"terminalType"`
 	CustomCommand        string  `json:"customCommand"`
+	TasksDir             string  `json:"tasksDir"`
 }
 
 func deref(p *string) string {
@@ -90,7 +93,28 @@ func validateHostBody(b hostBody) error {
 	if b.TerminalType == "custom" && strings.TrimSpace(b.CustomCommand) == "" {
 		return errors.New("customCommand is required when terminalType is \"custom\"")
 	}
+	if !validTasksDir(b.TasksDir) {
+		return errors.New("tasksDir must be a path without \"..\", quotes, commas or control characters")
+	}
 	return nil
+}
+
+// validTasksDir accepts "" (the default) or a plain path. It becomes part of
+// the task bootstrap's command line, quoted, but a path with ".." or a line
+// break has no legitimate use here.
+func validTasksDir(p string) bool {
+	if p == "" {
+		return true
+	}
+	if len(p) > 256 || strings.ContainsAny(p, "\x00\r\n'\"`$\\,") {
+		return false
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // hostStore resolves the caller's own hosts.Store — always keyed by the
@@ -143,6 +167,7 @@ func (s *Server) createHost(c *gin.Context) {
 		TargetOS:             hosts.TargetOS(body.TargetOS),
 		TerminalType:         body.TerminalType,
 		CustomCommand:        body.CustomCommand,
+		TasksDir:             normalizeTasksDir(body.TasksDir),
 	})
 	if err != nil {
 		s.log.Error("create host failed", "err", err)
@@ -194,6 +219,7 @@ func (s *Server) updateHost(c *gin.Context) {
 		TargetOS:                  hosts.TargetOS(body.TargetOS),
 		TerminalType:              body.TerminalType,
 		CustomCommand:             body.CustomCommand,
+		TasksDir:                  normalizeTasksDir(body.TasksDir),
 		TrustedHostKeyType:        existing.TrustedHostKeyType,
 		TrustedHostKeyFingerprint: existing.TrustedHostKeyFingerprint,
 	}
@@ -246,4 +272,14 @@ func (s *Server) deleteHost(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// normalizeTasksDir stores the default as "", so a host keeps following the
+// default if it ever changes.
+func normalizeTasksDir(p string) string {
+	p = strings.TrimRight(strings.TrimSpace(p), "/")
+	if p == hosts.DefaultTasksDir {
+		return ""
+	}
+	return p
 }

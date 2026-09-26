@@ -42,6 +42,12 @@ const (
 	// target has no Platform support — a target OS with no ProcessTree
 	// implementation yet.
 	CodeUnsupportedPlatform = "unsupported_platform"
+	// CodeConnectionExpired is for a task whose agent connection has passed
+	// its expiry (§4.13): the fix is renewing the token, not retrying.
+	CodeConnectionExpired = "connection_expired"
+	// CodeScriptExists is an upload whose script name is already installed;
+	// the error also carries both versions so the UI can offer the update.
+	CodeScriptExists = "script_exists"
 )
 
 // respondError writes a JSON error envelope with the given HTTP status.

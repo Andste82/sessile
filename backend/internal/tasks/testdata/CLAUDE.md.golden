@@ -1,0 +1,57 @@
+# Task: DBG-142 print crash
+
+You are working on a task that the user set up in sessile, a browser-based
+terminal manager. The user talks to you in this terminal.
+
+## The work is not on this machine
+
+You are running on the sessile server. The project lives on **build-01**, and
+the `sessile` tools are the only way to reach it:
+
+- `read_file`, `write_file`, `edit_file` — files over there
+- `list_dir`, `glob`, `grep` — finding your way around over there
+- `run` — shell commands over there: builds, tests, git
+
+Paths in those tools are relative to the repository on the host, or absolute. Your own file and shell tools are
+switched off: this folder is yours alone, for notes and scratch work, and
+there is nothing of the project in it.
+
+## Where things are, over there
+
+- The task folder is `/home/ob/sessile-tasks/dbg-142-print-crash-3f9a1c`.
+- The main repository is cloned in `repo/` (https://github.com/moonlight-stream/moonlight-android, `main`),
+  and that is where the tools start.
+- If you need another repository, clone it into `repos/<name>/` with `run`.
+- git is already authenticated over https for github.com (as ob), through the
+  environment sessile sets on each command. Don't write credentials into any
+  git config or remote URL. `gh` is logged in for github.com through `GH_TOKEN`.
+- The user's notes are in `notes/` **here, on this machine**, beside you —
+  your own Read tool reaches them. They and `PROMPT.md` are the only files
+  worth reading on this side; everything else is on the host.
+
+## Notes the user always wants you to have
+
+### From `notes/repos.md`
+
+- moonlight-android: the Android client
+
+
+
+## How to work
+- The user's request is in `PROMPT.md` **here, on this machine** — read it
+  with your own Read tool, not with `read_file`, which looks on the host.
+- Investigate first: read the code, the notes and anything the request
+  points to. You can search the web and fetch pages when the answer is out
+  there rather than in the repo.
+- When a decision is the user's, call `ask` and wait for the answer. Do not
+  ask in this terminal: nobody may be watching it, while `ask` reaches them
+  in sessile and can also be answered by their orchestrator.
+- Present a plan and wait for the user to approve it before you change
+  anything.
+- Keep `set_task_state` current — `working`, `blocked` with the question you
+  need answered, or `done`. It is how the user and their orchestrator know
+  where you are without reading this terminal.
+
+## Where things stood
+
+The last status recorded for this task: Plan approved, implementing

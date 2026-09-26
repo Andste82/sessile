@@ -43,6 +43,67 @@ export interface HostopDoneEvent {
   message: string
 }
 
+// Task agent events (§4.17.4, §5.3): tool activity, held write calls, and
+// the agent's status line.
+export interface TaskToolEvent {
+  type: 'taskTool'
+  taskId: string
+  callId: string
+  name: string
+  status: 'running' | 'ok' | 'error' | 'denied'
+  message: string
+}
+export interface TaskApprovalEvent {
+  type: 'taskApproval'
+  taskId: string
+  callId: string
+  name: string
+  input: unknown
+  status: 'pending' | 'approved' | 'denied' | 'expired'
+}
+export interface TaskSummaryEvent {
+  type: 'taskSummary'
+  taskId: string
+  summary: string
+}
+/** A task marked its own state (§4.18.2). */
+export interface TaskStateEvent {
+  type: 'taskState'
+  taskId: string
+  state: 'working' | 'blocked' | 'done'
+  summary: string
+  question: string
+}
+
+/** A command the agent is running on the task's host (§4.12.4). */
+export interface TaskRunEvent {
+  type: 'taskRun'
+  taskId: string
+  callId: string
+  command: string
+  cwd: string
+  status: 'running' | 'output' | 'ok' | 'error'
+  output: string
+  exitCode?: number
+}
+/** A question the agent is waiting on (§4.12.4). */
+export interface TaskQuestionEvent {
+  type: 'taskQuestion'
+  taskId: string
+  callId: string
+  question: string
+  options?: string[]
+  status: 'pending' | 'answered' | 'expired' | 'gone'
+}
+
+export type TaskEvent =
+  | TaskToolEvent
+  | TaskApprovalEvent
+  | TaskSummaryEvent
+  | TaskStateEvent
+  | TaskRunEvent
+  | TaskQuestionEvent
+
 export type ServerEvent =
   | SessionsEvent
   | SessionEvent
@@ -50,6 +111,7 @@ export type ServerEvent =
   | HostopStartedEvent
   | HostopProgressEvent
   | HostopDoneEvent
+  | TaskEvent
 
 const statuses: Status[] = ['running', 'stopped']
 const targetTypes: TargetType[] = ['local', 'ssh']
@@ -77,6 +139,7 @@ function parseSession(v: unknown): Session | null {
     hostId: str(s.hostId),
     hostDisplayName: str(s.hostDisplayName),
     group: str(s.group),
+    taskId: typeof s.taskId === 'string' && s.taskId ? s.taskId : null,
     status: s.status as Status,
     pid: num(s.pid),
     created: str(s.created),
@@ -144,6 +207,70 @@ export function parseEvent(data: string): ServerEvent | null {
         status: m.status === 'error' ? 'error' : 'ok',
         message: str(m.message),
       }
+    case 'taskTool': {
+      if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
+      const st = ['running', 'ok', 'error', 'denied'].includes(m.status as string) ? m.status : 'error'
+      return {
+        type: 'taskTool',
+        taskId: m.taskId,
+        callId: m.callId,
+        name: str(m.name),
+        status: st as TaskToolEvent['status'],
+        message: str(m.message),
+      }
+    }
+    case 'taskApproval': {
+      if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
+      const st = ['pending', 'approved', 'denied', 'expired'].includes(m.status as string) ? m.status : 'expired'
+      return {
+        type: 'taskApproval',
+        taskId: m.taskId,
+        callId: m.callId,
+        name: str(m.name),
+        input: m.input ?? null,
+        status: st as TaskApprovalEvent['status'],
+      }
+    }
+    case 'taskSummary':
+      if (typeof m.taskId !== 'string') return null
+      return { type: 'taskSummary', taskId: m.taskId, summary: str(m.summary) }
+    case 'taskRun': {
+      if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
+      const st = ['running', 'output', 'ok', 'error'].includes(m.status as string) ? m.status : 'error'
+      return {
+        type: 'taskRun',
+        taskId: m.taskId,
+        callId: m.callId,
+        command: str(m.command),
+        cwd: str(m.cwd),
+        status: st as TaskRunEvent['status'],
+        output: str(m.output),
+        exitCode: typeof m.exitCode === 'number' ? m.exitCode : undefined,
+      }
+    }
+    case 'taskQuestion': {
+      if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
+      const st = ['pending', 'answered', 'expired', 'gone'].includes(m.status as string) ? m.status : 'gone'
+      return {
+        type: 'taskQuestion',
+        taskId: m.taskId,
+        callId: m.callId,
+        question: str(m.question),
+        options: Array.isArray(m.options) ? m.options.filter((o): o is string => typeof o === 'string') : undefined,
+        status: st as TaskQuestionEvent['status'],
+      }
+    }
+    case 'taskState': {
+      if (typeof m.taskId !== 'string') return null
+      if (!['working', 'blocked', 'done'].includes(m.state as string)) return null
+      return {
+        type: 'taskState',
+        taskId: m.taskId,
+        state: m.state as TaskStateEvent['state'],
+        summary: str(m.summary),
+        question: str(m.question),
+      }
+    }
     default:
       // Includes the `error` frame the server sends when it cannot build a
       // snapshot (§5.1). There is nothing to apply, and the subscription

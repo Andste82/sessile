@@ -1,8 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
+import { isTaskShell } from '@/utils/session'
 import { api } from '@/api/client'
 import type { ServerEvent } from '@/api/events'
-import type { AppConfig, CreateSessionBody, Session, UpdateSessionBody } from '@/api/types'
+import type {
+  AppConfig,
+  CreateSessionBody,
+  RestartOptions,
+  Session,
+  UpdateSessionBody,
+} from '@/api/types'
 import { useUiStore } from './ui'
 
 /**
@@ -127,10 +134,15 @@ export const useSessionsStore = defineStore('sessions', () => {
   // because "" is the absence of a group, not a group called "Default" — a
   // user who never touches this feature sees exactly the flat list they saw
   // before it existed (§4.11).
+  // A task's shell pane is left out of the grouped lists: it belongs to its
+  // task's page, beside the agent, and listing both would show one task
+  // twice (§4.12). It is still an ordinary session everywhere else.
+  const listed = computed(() => sessions.value.filter((s) => !isTaskShell(s)))
+
   const grouped = computed<SessionGroup[]>(() => {
-    const ungrouped = sessions.value.filter((s) => s.group === '')
+    const ungrouped = listed.value.filter((s) => s.group === '')
     const named = new Map<string, Session[]>()
-    for (const s of sessions.value) {
+    for (const s of listed.value) {
       if (s.group === '') continue
       const bucket = named.get(s.group)
       if (bucket) bucket.push(s)
@@ -298,8 +310,8 @@ export const useSessionsStore = defineStore('sessions', () => {
   // Gives a stopped session a new shell under the same id, with its scrollback
   // and command history restored. The id is unchanged, so any open tab keeps
   // pointing at the same session and only needs to reconnect.
-  async function restartSession(id: string) {
-    const restarted = await api.restartSession(id)
+  async function restartSession(id: string, opts?: RestartOptions) {
+    const restarted = await api.restartSession(id, opts)
     sessions.value = sessions.value.map((s) => (s.id === id ? restarted : s))
     return restarted
   }

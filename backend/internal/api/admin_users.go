@@ -51,6 +51,11 @@ func (s *Server) deleteUser(c *gin.Context) {
 			s.log.Error("remove hosts.yml for deleted user failed", "id", id, "err", err)
 		}
 	}
+	// hosts.Remove deleted the whole user directory, agent.yml included; drop
+	// the cached copy too so nothing of that account outlives it in memory.
+	if s.agents != nil {
+		s.agents.Evict(id)
+	}
 
 	c.Status(http.StatusNoContent)
 }

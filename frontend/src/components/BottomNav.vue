@@ -7,6 +7,7 @@ import {
   ServerIcon,
   Cog6ToothIcon,
   UsersIcon,
+  CpuChipIcon,
 } from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
 import { useAuthStore } from '@/stores/auth'
@@ -56,6 +57,14 @@ function goTerminal() {
     >
       <ServerIcon class="h-6 w-6" />
       Hosts
+    </RouterLink>
+    <RouterLink
+      to="/agent/settings"
+      class="flex flex-1 flex-col items-center justify-center gap-0.5 text-xs"
+      :class="String(route.name ?? '').startsWith('agent-') ? 'text-emerald-400' : 'text-slate-400'"
+    >
+      <CpuChipIcon class="h-6 w-6" />
+      Agent
     </RouterLink>
     <RouterLink
       to="/settings"

@@ -13,8 +13,8 @@ import (
 func (s *Store) Insert(i session.Info) error {
 	_, err := s.db.Exec(
 		`INSERT INTO sessions (id, name, directory, shell, status, created, last_activity,
-		                       user_id, target_type, host_id, host_display_name, group_name)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                       user_id, target_type, host_id, host_display_name, group_name, task_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name=excluded.name,
 		   directory=excluded.directory,
@@ -25,10 +25,11 @@ func (s *Store) Insert(i session.Info) error {
 		   target_type=excluded.target_type,
 		   host_id=excluded.host_id,
 		   host_display_name=excluded.host_display_name,
-		   group_name=excluded.group_name`,
+		   group_name=excluded.group_name,
+		   task_id=excluded.task_id`,
 		i.ID, i.Name, i.Directory, i.Shell, string(i.Status),
 		i.Created.UTC().Format(time.RFC3339), i.LastActivity.UTC().Format(time.RFC3339),
-		i.UserID, string(i.TargetType), i.HostID, i.HostDisplayName, i.Group,
+		i.UserID, string(i.TargetType), i.HostID, i.HostDisplayName, i.Group, i.TaskID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
@@ -61,13 +62,18 @@ func (s *Store) Delete(id string) error {
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
+	// A task is 1:1 with its session (§4.12.8): the row goes with it. The
+	// task's folder on the target stays.
+	if _, err := s.db.Exec(`DELETE FROM tasks WHERE session_id=?`, id); err != nil {
+		return fmt.Errorf("delete task of session: %w", err)
+	}
 	return nil
 }
 
 // selectColumns lists every column scan expects, in order — shared by Get
 // and LoadStopped so the two queries can never drift apart.
 const selectColumns = `id, name, directory, shell, status, created, last_activity,
-	                       user_id, target_type, host_id, host_display_name, group_name`
+	                       user_id, target_type, host_id, host_display_name, group_name, task_id`
 
 // Get returns a single session's persisted metadata.
 func (s *Store) Get(id string) (session.Info, bool, error) {
@@ -139,6 +145,11 @@ func (s *Store) DeleteStoppedBefore(cutoff time.Time) ([]string, error) {
 		`DELETE FROM sessions WHERE status='stopped' AND last_activity < ?`, before); err != nil {
 		return nil, fmt.Errorf("delete expired: %w", err)
 	}
+	for _, id := range ids {
+		if _, err := s.db.Exec(`DELETE FROM tasks WHERE session_id=?`, id); err != nil {
+			return nil, fmt.Errorf("delete task of expired session: %w", err)
+		}
+	}
 	return ids, nil
 }
 
@@ -156,7 +167,7 @@ func scan(sc scanner) (session.Info, error) {
 	if err := sc.Scan(&info.ID, &info.Name, &info.Directory, &info.Shell,
 		&status, &created, &lastAct,
 		&info.UserID, &targetType, &info.HostID, &info.HostDisplayName,
-		&info.Group); err != nil {
+		&info.Group, &info.TaskID); err != nil {
 		return session.Info{}, err
 	}
 	info.Status = session.Status(status)

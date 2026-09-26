@@ -14,14 +14,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Andste82/sessile/backend/internal/agents"
 	"github.com/Andste82/sessile/backend/internal/api"
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
+	"github.com/Andste82/sessile/backend/internal/confine"
 	"github.com/Andste82/sessile/backend/internal/hosts"
+	"github.com/Andste82/sessile/backend/internal/mcp"
+	"github.com/Andste82/sessile/backend/internal/notes"
+	"github.com/Andste82/sessile/backend/internal/scripts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/sshpty"
 	"github.com/Andste82/sessile/backend/internal/storage"
+	"github.com/Andste82/sessile/backend/internal/tasks"
 	"github.com/Andste82/sessile/backend/internal/ws"
 	"github.com/Andste82/sessile/backend/web"
 )
@@ -49,6 +55,24 @@ func (r *hostResolver) Resolve(userID, hostID string) (sshpty.Target, string, er
 }
 
 func main() {
+	// The agent's MCP bridge is a mode of this binary (§4.12.4): the agent
+	// runs on this machine, so there is nothing to deploy.
+	if len(os.Args) > 1 && os.Args[1] == "mcp-bridge" {
+		if err := runMCPBridge(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "sessile mcp-bridge:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// Confinement is applied in a re-exec of this binary, between fork and
+	// exec, which Go gives no other hook for (§4.12.9).
+	if len(os.Args) > 1 && os.Args[1] == "confine-exec" {
+		if err := runConfineExec(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "sessile:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(os.Args[1:]); err != nil {
 		// --version and --help are requests, not failures: they must exit 0 and
 		// must not be reported as "fatal". flag has already printed the usage
@@ -117,6 +141,47 @@ func run(args []string) error {
 	wsHandler := ws.NewHandler(manager, cfg, log)
 
 	srv := api.NewServer(cfg, manager, wsHandler, log, cfg.WorkspaceDir, serverCfg, users, webSessions, hostsRegistry)
+	agentsRegistry := agents.NewRegistry(cfg.DataDir)
+	srv.SetAgents(agentsRegistry, agents.NewProber())
+	notesStore := notes.New(cfg.DataDir)
+	srv.SetNotes(notesStore)
+	scriptRunner := scripts.NewRunner(cfg.DataDir, log)
+	scriptRunner.GitToken = api.GitTokenResolver(agentsRegistry)
+	scriptStore := scripts.NewStore(cfg.DataDir)
+	srv.SetScripts(scriptStore, scriptRunner)
+	taskService := &tasks.Service{
+		DB: store, Agents: agentsRegistry, Hosts: hostsRegistry, Log: log,
+		Notes:             notesStore,
+		DataDir:           cfg.DataDir,
+		WorkspaceTasksDir: ".sessile/tasks",
+	}
+	defer taskService.CloseHosts()
+	mcpServer := mcp.New(scriptStore, scriptRunner, taskService, manager.PublishHostop, log)
+	mcpServer.Version = config.Version
+	mcpServer.AllowScripts = func() bool { return serverCfg.Get().ScriptsAllowed() }
+	// The orchestrator's view of sessile (§4.18.1).
+	mcpServer.Hosts, mcpServer.Agents, mcpServer.Notes, mcpServer.Sessions = hostsRegistry, agentsRegistry, notesStore, manager
+	taskService.Tools = mcpServer
+	taskService.Sessions = manager
+	taskService.AllowUnconfined = cfg.AllowUnconfinedAgents
+	if self, err := os.Executable(); err == nil {
+		taskService.SelfExe = self
+	} else {
+		log.Error("cannot find the sessile binary; agents cannot be confined", "err", err)
+	}
+	if !confine.Supported() {
+		if cfg.AllowUnconfinedAgents {
+			log.Warn("agents run unconfined: this kernel has no Landlock, and --allow-unconfined-agents is set. " +
+				"An agent can read anything sessile can, including every user's host credentials")
+		} else {
+			log.Warn("agents will not start: this kernel has no Landlock (Linux 5.13+). " +
+				"Start with --allow-unconfined-agents to run them anyway, knowing an agent can read anything sessile can")
+		}
+	}
+	manager.SetTaskEvents(mcpServer)
+	srv.SetMCP(mcpServer)
+	manager.SetTaskLauncher(taskService)
+	srv.SetTasks(taskService)
 	handler := srv.Router(dist)
 
 	httpServer := &http.Server{

@@ -399,6 +399,22 @@ const stepBtn =
               </span>
             </span>
           </label>
+          <label class="flex cursor-pointer items-start gap-3">
+            <input
+              :checked="adminConfig.allowAgentScripts !== false"
+              type="checkbox"
+              class="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-emerald-400"
+              @change="adminConfig.allowAgentScripts = ($event.target as HTMLInputElement).checked"
+            />
+            <span>
+              <span class="text-sm text-slate-200">Allow agent scripts</span>
+              <span class="mt-1 block text-xs text-slate-500">
+                Lets users install and run scripts (their agents' tools) on this server. A script is code
+                running as sessile's own user, so it can read what sessile can read — every user's hosts and
+                settings included. On by default; turn it off if your users don't trust each other.
+              </span>
+            </span>
+          </label>
 
           <p v-if="adminSaveError" class="text-sm text-rose-400">{{ adminSaveError }}</p>
 

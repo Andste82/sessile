@@ -1,0 +1,47 @@
+{
+  "name": "jira",
+  "version": "1.0.0",
+  "description": "Jira issue tracker: read and search tickets, comment, create.",
+  "runtime": "python3",
+  "settings": [
+    {"name": "JIRA_URL", "label": "Server URL", "type": "url", "required": true, "context": true,
+     "help": "e.g. https://your-company.atlassian.net or https://jira.example.com"},
+    {"name": "JIRA_PROJECT", "label": "Default project key", "type": "string", "context": true,
+     "help": "e.g. DBG; used when a new ticket names no project"},
+    {"name": "JIRA_AUTH", "label": "Jira kind", "type": "choice", "options": ["cloud", "server"], "required": true,
+     "help": "cloud: Atlassian Cloud (e-mail + API token). server: Server / Data Center (personal access token)."},
+    {"name": "JIRA_USER", "label": "E-mail (Cloud only)", "type": "string"},
+    {"name": "JIRA_TOKEN", "label": "API token / personal access token", "type": "secret", "required": true,
+     "help": "Cloud: id.atlassian.com → Security → API tokens. Server/DC: Profile → Personal Access Tokens."}
+  ],
+  "check": "whoami",
+  "guidance": [
+    "Ticket keys look like PROJ-123. When the user names one, read it before planning.",
+    "Use search with JQL to find related tickets, e.g. `project = DBG AND text ~ \"print\"`.",
+    "Commenting and creating tickets change Jira; they are writes and need the user's approval. Comment when a PR for the ticket is open."
+  ],
+  "timeoutSeconds": 60,
+  "functions": [
+    {"name": "whoami", "effect": "read", "description": "Check the connection: the user the token belongs to.",
+     "input": {"type": "object"}},
+    {"name": "read_ticket", "effect": "read",
+     "description": "Read one ticket: summary, description, status, type, priority, assignee, labels, links, sub-tasks and the latest comments.",
+     "input": {"type": "object", "required": ["key"], "additionalProperties": false,
+               "properties": {"key": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+-[0-9]+$", "description": "Ticket key, e.g. DBG-142"}}}},
+    {"name": "search", "effect": "read",
+     "description": "Search tickets with JQL. Returns key, summary, status, type and assignee for each match.",
+     "input": {"type": "object", "required": ["jql"], "additionalProperties": false,
+               "properties": {"jql": {"type": "string", "minLength": 1, "maxLength": 2000},
+                              "max": {"type": "integer", "minimum": 1, "maximum": 100}}}},
+    {"name": "add_comment", "effect": "write", "description": "Add a comment to a ticket.",
+     "input": {"type": "object", "required": ["key", "body"], "additionalProperties": false,
+               "properties": {"key": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+-[0-9]+$"},
+                              "body": {"type": "string", "minLength": 1, "maxLength": 32000}}}},
+    {"name": "create_ticket", "effect": "write", "description": "Create a ticket. Returns its key.",
+     "input": {"type": "object", "required": ["summary"], "additionalProperties": false,
+               "properties": {"summary": {"type": "string", "minLength": 1, "maxLength": 255},
+                              "description": {"type": "string", "maxLength": 32000},
+                              "issuetype": {"type": "string", "description": "e.g. Task, Bug, Story; default Task"},
+                              "project": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$", "description": "Project key; default: the configured one"}}}}
+  ]
+}

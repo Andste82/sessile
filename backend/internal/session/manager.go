@@ -61,6 +61,9 @@ type Manager struct {
 	// construction — a setter rather than a NewManager parameter so the many
 	// tests that never create an SSH session don't all need to pass one).
 	hostResolver HostResolver
+	// taskLauncher resolves task sessions (§4.12); nil until SetTaskLauncher.
+	taskLauncher TaskLauncher
+	taskEvents   TaskEvents
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -185,8 +188,23 @@ func (m *Manager) Restart(id, userID string) (Info, error) {
 	prev := m.live(id)
 
 	var s *Session
-	switch meta.TargetType {
-	case TargetSSH:
+	switch {
+	case meta.TaskID != "" && meta.TargetType == TargetSSH:
+		// A task's shell pane: the host as the task resolves it now, with the
+		// same pinned-key checks any SSH restart makes.
+		if m.taskLauncher == nil {
+			return Info{}, ErrNoTaskLauncher
+		}
+		sh, lerr := m.taskLauncher.ShellLaunch(meta.UserID, meta.TaskID)
+		if lerr != nil {
+			return Info{}, lerr
+		}
+		s, err = m.spawnSSH(meta.ID, meta.UserID, meta.Name, sh.HostID, sh.HostDisplayName, sh.Target, meta.Created)
+	case meta.TaskID != "":
+		// The agent session re-resolves everything through its launcher: the
+		// connection's current token, the folder's files (§4.12.6).
+		s, err = m.spawnTask(meta.ID, meta.UserID, meta.Name, meta.TaskID, meta.Created)
+	case meta.TargetType == TargetSSH:
 		// SSH credentials are never persisted to sqlite (§8), so a restart
 		// re-resolves the *current* host config — including its current
 		// pinned host-key fingerprint — rather than reusing anything saved
@@ -543,6 +561,7 @@ func (m *Manager) readLoop(s *Session) {
 		// as a stopped session that nothing can remove.
 		if !s.isDiscarded() {
 			m.publishSession(info)
+			m.taskExited(info)
 		}
 	}
 	// Reap the shell process (single reaper), close the master, then signal

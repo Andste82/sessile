@@ -52,6 +52,12 @@ backend/
     terminal/        local PTY start / resize / signal wrappers
     storage/         SQLite open + migration + queries
     config/          flag/env configuration
+    agents/          agent.yml — connections, profiles, Git accounts; vendor tests and model lists
+    tasks/           task specs, bootstrap templates (task.sh, agent.sh, task.ps1), task launch
+    notes/           per-user markdown notes
+    scripts/         script extensions: zip install, settings, venv runner, built-in examples
+    mcp/             the sessile MCP server task agents reach their tools through
+  cmd/sessile-mcp/   the bridge tasks upload to their hosts (make bridge embeds it)
   web/               embeds the built SPA
 frontend/
   src/

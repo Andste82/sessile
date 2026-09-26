@@ -64,7 +64,22 @@ type Host struct {
 	TrustedHostKeyType        string `yaml:"trustedHostKeyType,omitempty"`
 	TrustedHostKeyFingerprint string `yaml:"trustedHostKeyFingerprint,omitempty"`
 
+	// TasksDir is where task folders go on this host (§4.12), relative to
+	// the SSH login directory unless absolute. "" means DefaultTasksDir.
+	TasksDir string `yaml:"tasksDir,omitempty"`
+
 	Created time.Time `yaml:"created"`
+}
+
+// DefaultTasksDir is a host's task folder root when it sets none.
+const DefaultTasksDir = ".sessile/tasks"
+
+// EffectiveTasksDir returns TasksDir, or the default.
+func (h Host) EffectiveTasksDir() string {
+	if h.TasksDir == "" {
+		return DefaultTasksDir
+	}
+	return h.TasksDir
 }
 
 // SSHTarget builds the connection target sshpty.Start (and

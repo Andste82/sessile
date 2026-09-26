@@ -13,11 +13,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Andste82/sessile/backend/internal/agents"
 	"github.com/Andste82/sessile/backend/internal/auth"
 	"github.com/Andste82/sessile/backend/internal/config"
 	"github.com/Andste82/sessile/backend/internal/hosts"
+	"github.com/Andste82/sessile/backend/internal/mcp"
+	"github.com/Andste82/sessile/backend/internal/notes"
+	"github.com/Andste82/sessile/backend/internal/scripts"
 	"github.com/Andste82/sessile/backend/internal/serverconfig"
 	"github.com/Andste82/sessile/backend/internal/session"
+	"github.com/Andste82/sessile/backend/internal/tasks"
 	"github.com/Andste82/sessile/backend/internal/ws"
 )
 
@@ -60,6 +65,23 @@ type Server struct {
 	webSessions *auth.SessionStore
 	hosts       *hosts.Registry
 
+	// agents and prober back the agent settings routes (§4.13, §4.16). Set
+	// with SetAgents; nil in tests that don't exercise them.
+	agents *agents.Registry
+	prober *agents.Prober
+	// tasks is the task service (§4.12); nil where tests don't need it.
+	tasks *tasks.Service
+	// imports holds tokens read by "Import from host" until saved (§4.16).
+	imports gitImports
+	// notes is the per-user notes store (§4.14).
+	notes *notes.Store
+	// scriptStore and scriptRunner back the script extensions (§4.15).
+	scriptStore  *scripts.Store
+	scriptRunner *scripts.Runner
+	// mcp is the sessile MCP server task agents reach their tools through
+	// (§4.17): approvals and tool-list changes go through it.
+	mcp *mcp.Server
+
 	// opsMu guards ops: in-flight Delete/Copy hostops (§4.10, §5.2), keyed by
 	// opId. Entries are removed once a client has had a chance to observe
 	// the terminal state — see hostops_ops.go.
@@ -75,6 +97,14 @@ func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handl
 		users: users, webSessions: webSessions, hosts: hostsRegistry,
 		ops: make(map[string]*hostopStatus),
 	}
+}
+
+// SetAgents wires the agent settings store and the vendor prober (§4.13).
+// A setter rather than more NewServer parameters: most tests construct a
+// Server without either.
+func (s *Server) SetAgents(registry *agents.Registry, prober *agents.Prober) {
+	s.agents = registry
+	s.prober = prober
 }
 
 // Router builds the Gin engine with all routes registered.
@@ -144,6 +174,39 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.DELETE("/sessions/:id/hostops/files", s.deleteHostFile)
 		authGroup.GET("/sessions/:id/hostops/ops/:opId", s.getHostopStatus)
 		authGroup.GET("/directories", s.listDirectories)
+		authGroup.GET("/agent/connection-kinds", s.listConnectionKinds)
+		authGroup.GET("/agent/settings", s.getAgentSettings)
+		authGroup.PUT("/agent/settings", s.putAgentSettings)
+		authGroup.POST("/agent/connections/test", s.testConnection)
+		authGroup.GET("/agent/connections/:id/models", s.listConnectionModels)
+		authGroup.POST("/agent/git/test", s.testGitAccount)
+		authGroup.POST("/agent/git/import", s.importGitIdentity)
+		authGroup.GET("/agent/notes", s.listNotes)
+		// A wildcard, not a parameter: a note may be filed in folders
+		// ("hosts/km-gaming"), and its name is the path (§4.14).
+		authGroup.GET("/agent/notes/*slug", s.getNote)
+		authGroup.PUT("/agent/notes/*slug", s.putNote)
+		authGroup.DELETE("/agent/notes/*slug", s.deleteNote)
+		authGroup.GET("/agent/scripts", s.listScripts)
+		authGroup.GET("/agent/script-examples", s.listScriptExamples)
+		authGroup.POST("/agent/script-examples/:name/install", s.installScriptExample)
+		authGroup.GET("/agent/script-examples/:name/zip", s.downloadScriptExample)
+		authGroup.GET("/agent/scripts/:name/zip", s.exportScript)
+		authGroup.DELETE("/agent/scripts/:name", s.removeScript)
+		authGroup.PUT("/agent/scripts/:name/settings", s.putScriptSettings)
+		authGroup.POST("/agent/scripts/:name/check", s.checkScript)
+		authGroup.POST("/agent/scripts/:name/run", s.runScript)
+		authGroup.POST("/agent/scripts/:name/rebuild", s.rebuildScript)
+		authGroup.GET("/orchestrator", s.getOrchestrator)
+		authGroup.POST("/orchestrator", s.openOrchestrator)
+		authGroup.POST("/tasks", s.createTask)
+		authGroup.GET("/tasks", s.listTasks)
+		authGroup.GET("/tasks/:id", s.getTask)
+		authGroup.GET("/tasks/:id/approvals", s.listApprovals)
+		authGroup.POST("/tasks/:id/approvals/:callId", s.decideApproval)
+		authGroup.GET("/tasks/:id/questions", s.listQuestions)
+		authGroup.POST("/tasks/:id/answer", s.answerQuestion)
+		authGroup.POST("/tasks/:id/shell", s.openTaskShell)
 	}
 
 	// Download/upload get their own routes outside authGroup's blanket
@@ -154,6 +217,15 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 	// memory regardless of size — the size cap that used to exist here
 	// was a consequence of buffering the whole file, not an independent
 	// safety property worth keeping once that stopped being true.
+	// A script zip (§4.15.1) is too big for the JSON cap and small enough
+	// for a cap of its own.
+	scriptUpload := r.Group("/api")
+	scriptUpload.Use(s.requireAuth())
+	scriptUpload.Use(limitBody(scripts.MaxZip))
+	{
+		scriptUpload.POST("/agent/scripts", s.installScript)
+	}
+
 	authOnly := r.Group("/api")
 	authOnly.Use(s.requireAuth())
 	{
