@@ -1176,6 +1176,13 @@ the same machine.
 generates, and Landlock makes that true rather than requested (§4.12.9). The
 work is on the host; the folder on the server is the agent's own.
 
+**Web search and fetch are allowed**, in both scopes. An agent that cannot
+look anything up answers from memory and says so, which is worst exactly
+when the question is what some API does today. It is not a security line
+either: confinement bounds the filesystem, not the network, and a web page
+is the same kind of untrusted text as the ticket description or README the
+agent already reads.
+
 #### 4.12.4a Asking the user
 
 `ask` holds the tool call open. The question reaches the user's task panel

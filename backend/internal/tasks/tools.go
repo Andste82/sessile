@@ -47,9 +47,17 @@ type toolsSetup struct {
 // can be answered by whoever is there (§4.12.4a) — and a task that asks
 // where nobody is looking is a task that has quietly stopped.
 var deniedBuiltins = []string{
-	"Bash", "BashOutput", "KillShell", "WebFetch", "WebSearch", "NotebookEdit",
+	"Bash", "BashOutput", "KillShell", "NotebookEdit",
 	"AskUserQuestion",
 }
+
+// webTools are allowed on purpose. An agent that cannot look anything up
+// answers from memory and says so, which is worse than useless when the
+// question is what some API does today. It is not a security line either:
+// confinement bounds the filesystem, not the network (§4.12.9), and reading
+// a web page is the same kind of untrusted text as a ticket description or a
+// README the agent already reads.
+var webTools = []string{"WebSearch", "WebFetch"}
 
 func newToken() string {
 	b := make([]byte, 24)
@@ -81,7 +89,7 @@ func mcpFiles(a agents.Agent, t toolsSetup) []file {
 			"permissions": map[string]any{
 				// Both spellings: which one a CLI version honours has moved,
 				// and an extra rule costs nothing.
-				"allow": []string{"mcp__sessile", "mcp__sessile__*"},
+				"allow": append([]string{"mcp__sessile", "mcp__sessile__*"}, webTools...),
 				"deny":  deniedBuiltins,
 			},
 		}, "", "  ")
