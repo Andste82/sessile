@@ -287,11 +287,16 @@ var builtins = []Tool{
 			"state":{"type":"string","enum":["working","blocked","done"]},
 			"summary":{"type":"string","maxLength":200,"description":"One-line status; keeps the sidebar current"},
 			"question":{"type":"string","maxLength":2000,"description":"What you are waiting for, when blocked"}}}`),
+		// Read-only as far as the work goes: it writes sessile's own status
+		// line, not anything on the user's machines. Without the hint, a task
+		// in plan mode stops to ask before it can even say what it is doing.
+		Annotations: map[string]any{"readOnlyHint": true},
 	},
 	{
 		Name:        "set_task_summary",
 		Description: "Set this task's one-line status, shown to the user in sessile's sidebar and dashboard. Keep it current: e.g. \"Plan approved, implementing\", \"PR #412 open, CI running\".",
 		InputSchema: json.RawMessage(`{"type":"object","required":["summary"],"properties":{"summary":{"type":"string","minLength":1,"maxLength":200}}}`),
+		Annotations: map[string]any{"readOnlyHint": true},
 	},
 	{
 		Name:        "task_info",

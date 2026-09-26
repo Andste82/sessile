@@ -33,6 +33,9 @@ var askTool = Tool{
 	InputSchema: json.RawMessage(`{"type":"object","required":["question"],"properties":{
 		"question":{"type":"string","minLength":1,"maxLength":2000},
 		"options":{"type":"array","items":{"type":"string"},"maxItems":6,"description":"Suggested answers, if the choice is between a few things"}}}`),
+	// Asking changes nothing: stopping the agent to approve a question would
+	// be one prompt to allow another.
+	Annotations: map[string]any{"readOnlyHint": true},
 }
 
 // question is one held ask.

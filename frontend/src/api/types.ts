@@ -382,6 +382,8 @@ export interface TaskWithApprovals extends Task {
 export interface RestartOptions {
   rebuildContainer?: boolean
   fresh?: boolean
+  /** Change the task's mode from this start on (§4.12.4b). */
+  mode?: 'auto' | 'plan' | 'normal'
 }
 
 export interface GitImportResponse {

@@ -31,6 +31,7 @@ const restartError = ref<string | null>(null)
 // devcontainer (§4.12.6); both default off — a plain restart resumes.
 const restartFresh = ref(false)
 const rebuildContainer = ref(false)
+const restartMode = ref<'' | 'auto' | 'plan' | 'normal'>('')
 const task = ref<Task | null>(null)
 const isTask = computed(() => !!session.value?.taskId)
 
@@ -145,10 +146,18 @@ async function restart() {
   try {
     session.value = await store.restartSession(
       id.value,
-      isTask.value ? { fresh: restartFresh.value, rebuildContainer: rebuildContainer.value } : undefined,
+      isTask.value
+        ? {
+            fresh: restartFresh.value,
+            rebuildContainer: rebuildContainer.value,
+            ...(restartMode.value ? { mode: restartMode.value } : {}),
+          }
+        : undefined,
     )
     restartFresh.value = false
     rebuildContainer.value = false
+    restartMode.value = ''
+    if (task.value) void api.getTask(task.value.id).then((t) => (task.value = t))
     reloadNonce.value++
   } catch (e) {
     // Another browser on this session got there first. Not a failure: this
@@ -385,6 +394,17 @@ watch(
               <label v-if="task?.spec.devcontainer" class="flex items-center gap-1.5 text-xs text-slate-400">
                 <input v-model="rebuildContainer" type="checkbox" class="accent-emerald-400" />
                 Rebuild the container
+              </label>
+              <!-- A task keeps the mode it was created with, and a restart
+                   is where the user changes their mind about it. -->
+              <label class="flex items-center gap-1.5 text-xs text-slate-400">
+                Mode
+                <select v-model="restartMode" class="rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-xs text-slate-200">
+                  <option value="">Unchanged ({{ task?.spec.agent.mode || 'auto' }})</option>
+                  <option value="auto">Auto</option>
+                  <option value="plan">Approve each step</option>
+                  <option value="normal">Normal</option>
+                </select>
               </label>
             </template>
             <span v-if="restartError" class="w-full text-center text-xs text-rose-400">{{

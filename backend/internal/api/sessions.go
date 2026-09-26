@@ -171,7 +171,7 @@ func (s *Server) restartSession(c *gin.Context) {
 			return
 		}
 	}
-	if s.tasks != nil && (opts.RebuildContainer || opts.Fresh) {
+	if s.tasks != nil && (opts.RebuildContainer || opts.Fresh || opts.Mode != "") {
 		if info, err := s.manager.Get(id, userID); err == nil && info.TaskID != "" {
 			s.tasks.RequestRestart(info.TaskID, opts)
 			defer s.tasks.ClearRestart(info.TaskID)

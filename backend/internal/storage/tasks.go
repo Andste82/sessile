@@ -124,6 +124,15 @@ func (s *Store) TaskBySession(sessionID, userID string) (TaskRow, bool, error) {
 	return t, true, nil
 }
 
+// SetTaskSpec replaces a task's spec, for a setting the user changed after
+// it was created (§4.12.4b).
+func (s *Store) SetTaskSpec(id, specJSON string) error {
+	if _, err := s.db.Exec(`UPDATE tasks SET spec_json=? WHERE id=?`, specJSON, id); err != nil {
+		return fmt.Errorf("set task spec: %w", err)
+	}
+	return nil
+}
+
 // SetTaskDir records where the task's folder is on its target.
 func (s *Store) SetTaskDir(id, dir string) error {
 	if _, err := s.db.Exec(`UPDATE tasks SET dir=? WHERE id=?`, dir, id); err != nil {

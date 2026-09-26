@@ -232,6 +232,10 @@ func (s *Service) Discard(id string) {
 type RestartOptions struct {
 	RebuildContainer bool `json:"rebuildContainer"`
 	Fresh            bool `json:"fresh"`
+	// Mode changes how the agent runs from here on (§4.12.4b) and is saved
+	// on the task: a task started in plan mode before its user decided they
+	// would rather not approve every command shouldn't have to be recreated.
+	Mode string `json:"mode,omitempty"`
 }
 
 // RequestRestart records options for the task's next start; Launch consumes
@@ -328,6 +332,15 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 		toolsText = s.Tools.ToolsSection(userID, scope)
 	}
 	restart := s.takeRestart(t.ID)
+	if restart.Mode != "" && restart.Mode != t.Spec.Agent.Mode {
+		if err := s.setMode(userID, &t, restart.Mode); err != nil {
+			return session.TaskLaunch{}, err
+		}
+		// The argv and the instructions both depend on the mode.
+		if ln, ok = resolveLaunch(profile.Agent, conn.Kind, t.Spec.Agent.Mode, model, t.Spec.Request != ""); !ok {
+			return session.TaskLaunch{}, fmt.Errorf("unknown agent %q", profile.Agent)
+		}
+	}
 	dir := s.AgentDir(userID, t.ID)
 
 	return session.TaskLaunch{
@@ -391,6 +404,25 @@ func (s *Service) Launch(userID, taskID string) (session.TaskLaunch, error) {
 			return argv, env, nil
 		},
 	}, nil
+}
+
+// setMode records a new mode on the task, so every start from here on uses
+// it (§4.12.4b).
+func (s *Service) setMode(userID string, t *Task, mode string) error {
+	spec := t.Spec
+	spec.Agent.Mode = mode
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return err
+	}
+	if err := s.DB.SetTaskSpec(t.ID, string(data)); err != nil {
+		return err
+	}
+	t.Spec = spec
+	return nil
 }
 
 // hasConversation reports whether the agent has a saved conversation to

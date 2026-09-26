@@ -311,6 +311,79 @@ func TestAgentRunsOnTheServer(t *testing.T) {
 	}
 }
 
+// A task keeps the mode it was created with, and a restart is where the
+// user changes their mind about it (§4.12.4b).
+func TestRestartChangesTheMode(t *testing.T) {
+	svc, mgr, dir, info := taskFixture(t)
+	defer mgr.Shutdown()
+
+	svc.RequestRestart(info.TaskID, RestartOptions{Mode: ModePlan})
+	if _, err := mgr.Restart(info.ID, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	waitStopped(t, mgr, info.ID)
+	out := readSession(t, mgr, info.ID)
+	last := out[strings.LastIndex(out, "FAKE-CLAUDE"):]
+	if !strings.Contains(last, "--permission-mode plan") {
+		t.Errorf("the restart should have switched to plan mode:\n%s", last)
+	}
+	// It sticks: the next start uses it too, without asking again.
+	got, err := svc.Get("u1", info.TaskID)
+	if err != nil || got.Spec.Agent.Mode != ModePlan {
+		t.Fatalf("task mode = %q (%v), want it saved", got.Spec.Agent.Mode, err)
+	}
+	if instructions, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(instructions), "wait for the user to approve") {
+		t.Error("the instructions should follow the new mode")
+	}
+}
+
+// taskFixture is a server-side agent ready to run: a fake CLI on PATH, a
+// profile, a manager, and one task already started and stopped.
+func taskFixture(t *testing.T) (*Service, *session.Manager, string, session.Info) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	dataDir, root, binDir := t.TempDir(), t.TempDir(), t.TempDir()
+	fake := "#!/bin/sh\necho \"FAKE-CLAUDE args=[$*]\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+
+	db, err := storage.Open(filepath.Join(dataDir, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	reg := agents.NewRegistry(dataDir)
+	st, _ := reg.For("u1")
+	if _, err := st.Update(func(s *agents.Settings) error {
+		s.Connections = []agents.Connection{{ID: "c1", Name: "Max", Kind: "claude-subscription", Fields: map[string]string{"token": "tok-123"}}}
+		s.Profiles = []agents.Profile{{ID: "p1", Name: "Claude", Agent: agents.AgentClaude, ConnectionID: "c1"}}
+		return nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := &Service{DB: db, Agents: reg, Hosts: hosts.NewRegistry(dataDir), Log: log, DataDir: dataDir,
+		AllowUnconfined: true}
+	mgr := session.NewManager(root, []string{"sh"}, 1<<16, dataDir, db, log)
+	mgr.SetTaskLauncher(svc)
+	svc.Sessions = mgr
+
+	info, err := svc.Create("u1", Spec{Name: "Mode task", Target: "local",
+		Agent: AgentSpec{ProfileID: "p1"}, Request: "do it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStopped(t, mgr, info.ID)
+	return svc, mgr, svc.AgentDir("u1", info.TaskID), info
+}
+
 // readSession returns what a session has printed so far.
 func readSession(t *testing.T, mgr *session.Manager, id string) string {
 	t.Helper()

@@ -79,7 +79,9 @@ func mcpFiles(a agents.Agent, t toolsSetup) []file {
 		// loudly instead of quietly editing the wrong machine (E13, M46).
 		settings, _ := json.MarshalIndent(map[string]any{
 			"permissions": map[string]any{
-				"allow": []string{"mcp__sessile"},
+				// Both spellings: which one a CLI version honours has moved,
+				// and an extra rule costs nothing.
+				"allow": []string{"mcp__sessile", "mcp__sessile__*"},
 				"deny":  deniedBuiltins,
 			},
 		}, "", "  ")
