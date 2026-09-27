@@ -58,6 +58,12 @@ type Config struct {
 	// right fix is HTTPS, and this exists for operators who have deliberately
 	// decided a trusted LAN without TLS is good enough for them.
 	InsecureCookies bool
+	// AllowUnconfinedAgents starts task agents and scripts even where
+	// Landlock cannot confine them (§4.12.9, E14). Off by default: an
+	// unconfined agent on the server can read everything sessile can,
+	// including every user's host credentials and tokens, so an operator on
+	// a kernel without Landlock has to say so deliberately.
+	AllowUnconfinedAgents bool
 }
 
 // Parse builds a Config from the given argument list (excluding the program
@@ -81,6 +87,9 @@ func Parse(args []string) (*Config, error) {
 	allowOrigin := fs.String("allow-origin", env("TSM_ALLOW_ORIGIN", ""), "additional allowed WebSocket origin")
 	insecureCookies := fs.Bool("insecure-cookies", envBool("TSM_INSECURE_COOKIES", false),
 		"drop the session cookie's Secure attribute so login works over plain HTTP on a non-localhost address (only for a trusted network without TLS)")
+	allowUnconfined := fs.Bool("allow-unconfined-agents", envBool("TSM_ALLOW_UNCONFINED_AGENTS", false),
+		"start task agents even where Landlock cannot confine them; such an agent can read anything sessile can, "+
+			"including every user's host credentials")
 	showVersion := fs.Bool("version", false, "print version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -170,7 +179,8 @@ func Parse(args []string) (*Config, error) {
 		LogLevel:    *logLevel,
 		AllowOrigin: *allowOrigin,
 
-		InsecureCookies: *insecureCookies,
+		InsecureCookies:       *insecureCookies,
+		AllowUnconfinedAgents: *allowUnconfined,
 	}, nil
 }
 

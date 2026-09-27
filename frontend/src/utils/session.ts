@@ -5,6 +5,16 @@ import type { Session } from '@/api/types'
  * started. cwd follows `cd`; directory is what the session was created with and
  * is all that is left once the session stops.
  */
+/**
+ * A task's shell pane on its host (§4.12): the task's agent session is the
+ * task, and this is one of its panes, so the lists show the task once rather
+ * than twice. Since v0.9 a task's agent always runs on the sessile server,
+ * which is what makes the SSH half of a task its shell.
+ */
+export function isTaskShell(s: Session): boolean {
+  return s.taskId !== '' && s.targetType === 'ssh'
+}
+
 export function displayDirectory(s: Session): string {
   return s.cwd || s.directory
 }

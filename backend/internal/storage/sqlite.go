@@ -44,6 +44,8 @@ var migrationColumns = []struct{ name, ddl string }{
 	// Rows written before this migration get '', which is exactly "no group"
 	// (§4.11) — nothing to backfill.
 	{"group_name", `ALTER TABLE sessions ADD COLUMN group_name TEXT NOT NULL DEFAULT ''`},
+	// M32 (§12e): the task a session runs, '' for an ordinary session.
+	{"task_id", `ALTER TABLE sessions ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`},
 }
 
 // migrate applies migrationColumns, skipping any column that already exists.
@@ -66,8 +68,28 @@ func migrate(db *sql.DB) error {
 // columnExists reports whether the sessions table already has column —
 // always that one hardcoded table, so this never interpolates anything
 // caller-supplied into the PRAGMA statement.
+func migrateTasks(db *sql.DB) error {
+	for _, m := range tasksMigrationColumns {
+		exists, err := tableColumnExists(db, "tasks", m.name)
+		if err != nil {
+			return fmt.Errorf("check tasks column %s: %w", m.name, err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.Exec(m.ddl); err != nil {
+			return fmt.Errorf("add tasks column %s: %w", m.name, err)
+		}
+	}
+	return nil
+}
+
 func columnExists(db *sql.DB, column string) (bool, error) {
-	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+	return tableColumnExists(db, "sessions", column)
+}
+
+func tableColumnExists(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return false, err
 	}
@@ -114,6 +136,14 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if _, err := db.Exec(tasksSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply tasks schema: %w", err)
+	}
+	if err := migrateTasks(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate tasks schema: %w", err)
 	}
 	if err := migrate(db); err != nil {
 		db.Close()

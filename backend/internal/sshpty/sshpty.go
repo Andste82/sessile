@@ -52,6 +52,14 @@ type Target struct {
 	// *ErrHostKeyChanged instead of connecting when this doesn't match what
 	// the server presents.
 	TrustedHostKeyFingerprint string
+
+	// Task, when set, makes this a task session (§4.12.2). Start calls it on
+	// the connected client before any command runs, so the task folder is
+	// written over this same connection — no second dial, no second trust
+	// decision — and runs the command it returns instead of TerminalType.
+	// That command is always one of internal/tasks' fixed forms, never
+	// caller input.
+	Task func(client *ssh.Client) (command string, err error)
 }
 
 // dialTimeout bounds the SSH handshake, separately from any timeout on the
@@ -83,21 +91,21 @@ type PTY struct {
 // Start dials target, requests a PTY, and starts its configured command.
 // Rows/cols size the initial window, exactly like terminal.Start's local
 // equivalent.
-func Start(t Target, rows, cols uint16) (*PTY, error) {
+// Dial connects to the target and returns the client, with the same pinned
+// host-key check Start makes (§4.5.1) — a task's tools reach its host through
+// this, so they can never take a trust decision Start would have refused.
+func Dial(t Target) (*ssh.Client, error) {
 	methods, err := authMethods(t)
 	if err != nil {
 		return nil, err
 	}
-
 	address := ensurePort(t.Address)
-	cfg := &ssh.ClientConfig{
+	client, err := ssh.Dial("tcp", address, &ssh.ClientConfig{
 		User:            t.Username,
 		Auth:            methods,
 		HostKeyCallback: pinnedHostKeyCallback(t.TrustedHostKeyFingerprint),
 		Timeout:         dialTimeout,
-	}
-
-	client, err := ssh.Dial("tcp", address, cfg)
+	})
 	if err != nil {
 		// Host-key rejections come back wrapped by x/crypto/ssh's handshake
 		// error; unwrap them so callers can type-switch on the originals
@@ -111,6 +119,14 @@ func Start(t Target, rows, cols uint16) (*PTY, error) {
 			return nil, changed
 		}
 		return nil, fmt.Errorf("ssh dial %s: %w", address, err)
+	}
+	return client, nil
+}
+
+func Start(t Target, rows, cols uint16) (*PTY, error) {
+	client, err := Dial(t)
+	if err != nil {
+		return nil, err
 	}
 
 	session, err := client.NewSession()
@@ -153,8 +169,23 @@ func Start(t Target, rows, cols uint16) (*PTY, error) {
 	if cmd == "custom" {
 		cmd = t.CustomCommand
 	}
+	terminalType := t.TerminalType
+	if t.Task != nil {
+		taskCmd, err := t.Task(client)
+		if err != nil {
+			_ = stdinR.Close()
+			_ = stdinW.Close()
+			_ = stdoutR.Close()
+			_ = stdoutW.Close()
+			_ = session.Close()
+			_ = client.Close()
+			return nil, fmt.Errorf("prepare task: %w", err)
+		}
+		// Wrapped like a custom command: real shell syntax, run by sh.
+		cmd, terminalType = taskCmd, "custom"
+	}
 
-	pidFilePath, startCmd := wrapWithPIDRecording(t.TargetOS, t.TerminalType, cmd)
+	pidFilePath, startCmd := wrapWithPIDRecording(t.TargetOS, terminalType, cmd)
 
 	if err := session.Start(startCmd); err != nil {
 		_ = stdinR.Close()

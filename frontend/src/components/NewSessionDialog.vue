@@ -14,6 +14,7 @@ import DirectoryBrowser from './DirectoryBrowser.vue'
 import GroupInput from './GroupInput.vue'
 import HostKeyTrustDialog from './HostKeyTrustDialog.vue'
 import type { CreateSessionBody, HostKeyErrorDetails, Session } from '@/api/types'
+import { useTaskDialog } from '@/composables/useTaskDialog'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{
@@ -23,6 +24,14 @@ const emit = defineEmits<{
 
 const store = useSessionsStore()
 const hostsStore = useHostsStore()
+const taskDialog = useTaskDialog()
+
+// "Task" in the new-session dialog (§7): the task form is its own dialog;
+// this hands over to it.
+function switchToTask() {
+  emit('close')
+  taskDialog.show()
+}
 
 // One picker for the session's target (§12b M18): every configured SSH host,
 // plus "This host (local)" as an ordinary entry in the same list when the
@@ -156,6 +165,12 @@ function retryAfterTrust() {
             <DialogTitle class="text-lg font-semibold text-slate-100">
               New session
             </DialogTitle>
+            <p class="mt-1 text-xs text-slate-400">
+              Or set it up as a
+              <button type="button" class="text-emerald-400 hover:text-emerald-300" @click="switchToTask">
+                task
+              </button>: a repo, a devcontainer and your coding agent, ready to go.
+            </p>
 
             <form class="mt-5 flex flex-col gap-4" @submit.prevent="submit">
               <label class="flex flex-col gap-1 text-sm">

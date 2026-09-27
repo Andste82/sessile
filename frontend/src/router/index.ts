@@ -32,6 +32,28 @@ const routes = [
     meta: { title: 'Hosts' },
   },
   {
+    path: '/agent',
+    redirect: '/agent/settings',
+  },
+  {
+    path: '/agent/settings',
+    name: 'agent-settings',
+    component: () => import('@/pages/AgentSettingsPage.vue'),
+    meta: { title: 'Agent' },
+  },
+  {
+    path: '/agent/notes',
+    name: 'agent-notes',
+    component: () => import('@/pages/NotesPage.vue'),
+    meta: { title: 'Notes' },
+  },
+  {
+    path: '/agent/scripts',
+    name: 'agent-scripts',
+    component: () => import('@/pages/ScriptsPage.vue'),
+    meta: { title: 'Scripts' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/pages/SettingsPage.vue'),

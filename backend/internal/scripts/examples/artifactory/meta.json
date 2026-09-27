@@ -1,0 +1,36 @@
+{
+  "name": "artifactory",
+  "version": "1.0.0",
+  "description": "JFrog Artifactory: search artifacts, read their details, browse repository paths.",
+  "runtime": "python3",
+  "settings": [
+    {"name": "ARTIFACTORY_URL", "label": "Artifactory URL", "type": "url", "required": true, "context": true,
+     "help": "including /artifactory, e.g. https://example.jfrog.io/artifactory"},
+    {"name": "ARTIFACTORY_REPO", "label": "Default repository", "type": "string", "context": true},
+    {"name": "ARTIFACTORY_TOKEN", "label": "Access token", "type": "secret", "required": true,
+     "help": "JFrog → your profile → Generate an Identity Token (or an access token from an admin)"}
+  ],
+  "check": "ping",
+  "guidance": [
+    "Search by file name with * wildcards, e.g. `app-*.apk`; narrow to a repository when you know it.",
+    "Paths are relative to a repository: `com/example/app/1.2.0/app-1.2.0.jar`."
+  ],
+  "timeoutSeconds": 60,
+  "functions": [
+    {"name": "ping", "effect": "read", "description": "Check the connection: the repositories the token can see.",
+     "input": {"type": "object"}},
+    {"name": "search", "effect": "read", "description": "Find artifacts by file name (wildcards allowed).",
+     "input": {"type": "object", "required": ["name"], "additionalProperties": false,
+               "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 255},
+                              "repo": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"}}}},
+    {"name": "artifact_info", "effect": "read",
+     "description": "An artifact's size, checksums, dates and download URL.",
+     "input": {"type": "object", "required": ["path"], "additionalProperties": false,
+               "properties": {"path": {"type": "string", "minLength": 1, "pattern": "^[^.][^?#]*$"},
+                              "repo": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"}}}},
+    {"name": "list_path", "effect": "read", "description": "List a folder in a repository.",
+     "input": {"type": "object", "additionalProperties": false,
+               "properties": {"path": {"type": "string", "pattern": "^[^.?#]*$"},
+                              "repo": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"}}}}
+  ]
+}

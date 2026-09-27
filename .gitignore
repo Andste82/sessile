@@ -7,6 +7,10 @@
 # Go embed directive stays valid; real assets are produced by `make build`).
 /backend/web/dist/assets/
 /backend/web/dist/favicon.svg
+/backend/web/dist/icons/
+/backend/web/dist/manifest.webmanifest
+/backend/web/dist/sw.js
+
 
 # Runtime state
 /sandbox/

@@ -49,10 +49,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 
 # --- Stage 3a: ubuntu runtime ----------------------------------------------
 FROM ubuntu:24.04 AS runtime-ubuntu
-# wget is not in the base image and the healthcheck needs it.
+# wget is not in the base image and the healthcheck needs it. python3 and
+# python3-venv run users' agent scripts (§4.15); git and curl are what a
+# local-host task's bootstrap uses to clone and to install an agent (§4.12).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          bash ca-certificates tini wget \
+         python3 python3-venv git curl \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /config /workspace
 # Without this the shells inherit glibc's C locale, which is ASCII-only: bash
@@ -79,8 +82,9 @@ CMD ["--data-dir=/config", "--workspace-dir=/workspace", "--shells=bash"]
 
 # --- Stage 3b: alpine runtime (default) ------------------------------------
 # alpine, not scratch: sessions spawn real shells, so bash must be present.
+# python3 (venv included) runs agent scripts; git and curl serve local tasks.
 FROM alpine:3 AS runtime-alpine
-RUN apk add --no-cache bash ca-certificates tini \
+RUN apk add --no-cache bash ca-certificates tini python3 git curl \
     && mkdir -p /config /workspace
 # musl treats its C locale as UTF-8, so this is belt-and-braces here — but it
 # keeps both variants identical rather than relying on that difference.

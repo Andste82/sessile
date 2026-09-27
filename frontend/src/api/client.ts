@@ -1,6 +1,27 @@
 // Typed fetch wrappers around the REST API (PROJECT_PLAN.md §6).
 import type {
   AdminConfig,
+  AgentSettings,
+  AgentSettingsBody,
+  ConnectionKind,
+  GitImportResponse,
+  Note,
+  NoteContext,
+  OrchestratorRef,
+  PendingApproval,
+  ModelsResponse,
+  RestartOptions,
+  Script,
+  ScriptCheck,
+  ScriptExample,
+  ScriptList,
+  ScriptRunResult,
+  ScriptSettingsBody,
+  Task,
+  TaskQuestion,
+  TaskSpec,
+  TaskWithApprovals,
+  TestResult,
   AppConfig,
   AuthStatus,
   Credentials,
@@ -92,6 +113,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+// A note may be filed in folders, so its name is a path: each segment is
+// encoded, the slashes are not (§4.14).
+function notePath(slug: string): string {
+  return slug.split('/').map(encodeURIComponent).join('/')
+}
+
 export const api = {
   health: () => request<{ status: string }>('/api/health'),
   config: () => request<AppConfig>('/api/config'),
@@ -116,8 +143,41 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
-  restartSession: (id: string) =>
-    request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),
+  // Options only mean something for a task session (§4.12.6); an ordinary
+  // restart sends no body at all.
+  restartSession: (id: string, opts?: RestartOptions) =>
+    request<Session>(`/api/sessions/${id}/restart`, {
+      method: 'POST',
+      ...(opts && (opts.fresh || opts.rebuildContainer) ? { body: JSON.stringify(opts) } : {}),
+    }),
+  createTask: (spec: TaskSpec) =>
+    request<Session>('/api/tasks', { method: 'POST', body: JSON.stringify(spec) }),
+  getTask: (id: string) => request<Task>(`/api/tasks/${id}`),
+  /** Which groups have an orchestrator (§4.18). */
+  orchestrators: () => request<{ orchestrators: OrchestratorRef[] }>('/api/orchestrator'),
+  /** One group's orchestrator, if it has ever been opened; "" is the general one. */
+  getOrchestrator: (group = '') =>
+    request<OrchestratorRef>(`/api/orchestrator?group=${encodeURIComponent(group)}`),
+  /** Open it: created the first time, restarted when it has stopped. */
+  openOrchestrator: (profileId?: string, group = '') =>
+    request<Session>('/api/orchestrator', {
+      method: 'POST',
+      body: JSON.stringify({ ...(profileId ? { profileId } : {}), group }),
+    }),
+  listTasks: () => request<TaskWithApprovals[]>('/api/tasks'),
+  taskApprovals: (id: string) => request<PendingApproval[]>(`/api/tasks/${id}/approvals`),
+  /** What a task is waiting to be told (§4.12.4). */
+  taskQuestions: (id: string) => request<TaskQuestion[]>(`/api/tasks/${id}/questions`),
+  /** Answer it — the agent is holding that call open. */
+  answerTask: (id: string, answer: string, callId?: string) =>
+    request<void>(`/api/tasks/${id}/answer`, {
+      method: 'POST',
+      body: JSON.stringify(callId ? { answer, callId } : { answer }),
+    }),
+  /** Open (or reopen) a task's shell pane on its host. */
+  openTaskShell: (id: string) => request<Session>(`/api/tasks/${id}/shell`, { method: 'POST' }),
+  decideApproval: (id: string, callId: string, approve: boolean) =>
+    request<void>(`/api/tasks/${id}/approvals/${callId}`, { method: 'POST', body: JSON.stringify({ approve }) }),
   processTree: (id: string, scope?: 'session' | 'all') =>
     request<ProcessTreeResponse>(
       `/api/sessions/${id}/hostops/process-tree${scope ? `?scope=${scope}` : ''}`,
@@ -176,6 +236,64 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  connectionKinds: () => request<ConnectionKind[]>('/api/agent/connection-kinds'),
+  agentSettings: () => request<AgentSettings>('/api/agent/settings'),
+  putAgentSettings: (body: AgentSettingsBody) =>
+    request<AgentSettings>('/api/agent/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  testConnection: (body: { id?: string; kind: string; fields: Record<string, string> }) =>
+    request<TestResult>('/api/agent/connections/test', { method: 'POST', body: JSON.stringify(body) }),
+  connectionModels: (id: string, refresh = false) =>
+    request<ModelsResponse>(`/api/agent/connections/${id}/models${refresh ? '?refresh=1' : ''}`),
+  listNotes: () => request<Note[]>('/api/agent/notes'),
+  getNote: (slug: string) => request<Note>(`/api/agent/notes/${notePath(slug)}`),
+  putNote: (slug: string, context: NoteContext, body: string) =>
+    request<Note>(`/api/agent/notes/${notePath(slug)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ context, body }),
+    }),
+  deleteNote: (slug: string) =>
+    request<void>(`/api/agent/notes/${notePath(slug)}`, { method: 'DELETE' }),
+  listScripts: () => request<ScriptList>('/api/agent/scripts'),
+  listScriptExamples: () => request<ScriptExample[]>('/api/agent/script-examples'),
+  installScriptExample: (name: string, opts: { as?: string; update?: boolean } = {}) => {
+    const q = new URLSearchParams()
+    if (opts.as) q.set('as', opts.as)
+    if (opts.update) q.set('update', 'true')
+    return request<Script>(`/api/agent/script-examples/${name}/install${q.size ? `?${q}` : ''}`, { method: 'POST' })
+  },
+  putScriptSettings: (name: string, body: ScriptSettingsBody) =>
+    request<Script>(`/api/agent/scripts/${name}/settings`, { method: 'PUT', body: JSON.stringify(body) }),
+  checkScript: (name: string, body?: ScriptSettingsBody) =>
+    request<ScriptCheck>(`/api/agent/scripts/${name}/check`, {
+      method: 'POST',
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }),
+  runScript: (name: string, fn: string, input: unknown) =>
+    request<ScriptRunResult>(`/api/agent/scripts/${name}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ function: fn, input }),
+    }),
+  rebuildScript: (name: string) => request<Script>(`/api/agent/scripts/${name}/rebuild`, { method: 'POST' }),
+  removeScript: (name: string) => request<void>(`/api/agent/scripts/${name}`, { method: 'DELETE' }),
+  // A zip goes up as the raw body, not JSON (§4.15.1).
+  uploadScript: (zip: Blob, opts: { as?: string; update?: boolean } = {}) => {
+    const q = new URLSearchParams()
+    if (opts.as) q.set('as', opts.as)
+    if (opts.update) q.set('update', 'true')
+    return request<Script>(`/api/agent/scripts${q.size ? `?${q}` : ''}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: zip,
+    })
+  },
+  importGitIdentity: (hostId: string, gitHost: string) =>
+    request<GitImportResponse>('/api/agent/git/import', {
+      method: 'POST',
+      body: JSON.stringify({ hostId, gitHost }),
+    }),
+  testGitAccount: (body: { id?: string; host: string; token?: string }) =>
+    request<TestResult>('/api/agent/git/test', { method: 'POST', body: JSON.stringify(body) }),
 
   listUsers: () => request<User[]>('/api/admin/users'),
   deleteUser: (id: string) => request<void>(`/api/admin/users/${id}`, { method: 'DELETE' }),

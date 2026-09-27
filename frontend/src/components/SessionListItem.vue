@@ -13,6 +13,7 @@ import StatusDot from './StatusDot.vue'
 import type { Session } from '@/api/types'
 import { displayCommand, displayDirectory, displayTitle } from '@/utils/session'
 import { relativeTime } from '@/utils/time'
+import { useTasksStore } from '@/stores/tasks'
 
 const props = defineProps<{ session: Session }>()
 const emit = defineEmits<{
@@ -23,7 +24,14 @@ const emit = defineEmits<{
 
 const command = computed(() => displayCommand(props.session))
 const directory = computed(() => displayDirectory(props.session))
-const title = computed(() => displayTitle(props.session))
+const tasks = useTasksStore()
+// A task's card leads with the agent's own status line (§4.17.4) where the
+// window title would otherwise be.
+const title = computed(() => {
+  const summary = props.session.taskId ? tasks.tasks[props.session.taskId]?.summary : ''
+  return summary || displayTitle(props.session)
+})
+const pending = computed(() => tasks.pendingCount(props.session.taskId))
 const isSSH = computed(() => props.session.targetType === 'ssh')
 // The header badge that names the shell for a local session has nothing to
 // show there for an SSH one — directory and shell are both "" by design
@@ -40,6 +48,17 @@ const targetBadge = computed(() => (isSSH.value ? 'ssh' : props.session.shell))
     <div class="flex items-center gap-2">
       <StatusDot :status="session.status" />
       <span class="truncate font-medium text-slate-100">{{ session.name }}</span>
+      <span
+        v-if="session.taskId"
+        class="shrink-0 rounded border border-slate-600 px-1 text-[10px] uppercase tracking-wide text-slate-400"
+        >task</span
+      >
+      <span
+        v-if="pending"
+        class="shrink-0 rounded bg-amber-500 px-1 text-[10px] font-semibold text-slate-900"
+        :title="`${pending} waiting for your approval`"
+        >approve</span
+      >
       <span class="ml-auto font-mono text-xs text-slate-400">{{ targetBadge }}</span>
       <button
         v-if="session.status === 'stopped'"

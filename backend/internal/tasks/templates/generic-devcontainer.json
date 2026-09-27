@@ -1,0 +1,10 @@
+{
+  "//": "sessile's generic devcontainer (PROJECT_PLAN.md §4.12.3), used for a repo without its own config.",
+  "name": "sessile generic",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "remoteUser": "vscode"
+}

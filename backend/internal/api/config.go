@@ -17,15 +17,18 @@ type configResponse struct {
 	Shells         []string `json:"shells"`
 	Version        string   `json:"version"`
 	AllowLocalHost bool     `json:"allowLocalHost"`
+	// AllowAgentScripts is whether this server runs user scripts (§4.15).
+	AllowAgentScripts bool `json:"allowAgentScripts"`
 }
 
 // getConfig returns the installed shells from the allowlist, the
 // application version, and whether local-host sessions are permitted.
 func (s *Server) getConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, configResponse{
-		Shells:         installedShells(s.cfg.Shells),
-		Version:        config.Version,
-		AllowLocalHost: s.serverConfig.Get().AllowLocalHost,
+		Shells:            installedShells(s.cfg.Shells),
+		Version:           config.Version,
+		AllowLocalHost:    s.serverConfig.Get().AllowLocalHost,
+		AllowAgentScripts: s.serverConfig.Get().ScriptsAllowed(),
 	})
 }
 

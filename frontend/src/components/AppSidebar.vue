@@ -1,16 +1,30 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router'
-import { HomeIcon, ServerIcon, Cog6ToothIcon, UsersIcon } from '@heroicons/vue/24/outline'
+import {
+  HomeIcon,
+  ServerIcon,
+  Cog6ToothIcon,
+  UsersIcon,
+  CpuChipIcon,
+  SparklesIcon,
+  ChatBubbleLeftRightIcon,
+} from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import StatusDot from './StatusDot.vue'
+import { useTaskDialog } from '@/composables/useTaskDialog'
+import { useTasksStore } from '@/stores/tasks'
+import { useOrchestrator } from '@/composables/useOrchestrator'
 import GroupHeader from './GroupHeader.vue'
 
 const store = useSessionsStore()
 const auth = useAuthStore()
 const ui = useUiStore()
 const route = useRoute()
+const taskDialog = useTaskDialog()
+const tasks = useTasksStore()
+const orchestrator = useOrchestrator()
 
 function isTerminal(id: string) {
   return route.name === 'terminal' && route.params.id === id
@@ -63,6 +77,40 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
         <span class="hidden lg:inline">Hosts</span>
       </RouterLink>
       <RouterLink
+        to="/agent/settings"
+        class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-800"
+        :class="{ 'bg-slate-800 text-slate-100': String(route.name ?? '').startsWith('agent-') }"
+        title="Agent"
+      >
+        <CpuChipIcon class="h-5 w-5 shrink-0" />
+        <span class="hidden lg:inline">Agent</span>
+      </RouterLink>
+      <button
+        type="button"
+        class="flex items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-slate-800"
+        title="New task"
+        @click="taskDialog.show()"
+      >
+        <SparklesIcon class="h-5 w-5 shrink-0" />
+        <span class="hidden lg:inline">New task…</span>
+      </button>
+      <button
+        type="button"
+        class="flex items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+        title="Orchestrator — the one for everything outside a group"
+        :disabled="orchestrator.busy.value"
+        @click="orchestrator.open()"
+      >
+        <ChatBubbleLeftRightIcon class="h-5 w-5 shrink-0" />
+        <span class="hidden lg:inline">Orchestrator</span>
+      </button>
+      <p
+        v-if="orchestrator.error.value"
+        class="hidden px-3 pb-1 text-xs text-amber-400 lg:block"
+      >
+        {{ orchestrator.error.value }}
+      </p>
+      <RouterLink
         to="/settings"
         class="flex items-center gap-3 rounded-md px-3 py-2.5 text-sm text-slate-300 hover:bg-slate-800"
         :class="{ 'bg-slate-800 text-slate-100': route.name === 'settings' }"
@@ -92,10 +140,13 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
         <GroupHeader
           v-if="g.name"
           dense
+          orchestrator
           :name="g.name"
           :count="g.sessions.length"
           :collapsed="ui.isGroupCollapsed('sidebar', g.name)"
+          :busy="orchestrator.busy.value"
           @toggle="ui.toggleGroup('sidebar', g.name)"
+          @orchestrator="orchestrator.open(g.name)"
         />
         <RouterLink
           v-for="s in visible(g)"
@@ -106,6 +157,12 @@ function visible(group: { name: string; sessions: typeof store.sessions }) {
         >
           <StatusDot :status="s.status" />
           <span class="truncate">{{ s.name }}</span>
+          <span
+            v-if="tasks.pendingCount(s.taskId)"
+            class="ml-auto h-2 w-2 shrink-0 rounded-full bg-amber-400"
+            title="Waiting for your approval"
+          />
+          <span v-else-if="s.taskId" class="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-slate-500">task</span>
         </RouterLink>
       </template>
       <p

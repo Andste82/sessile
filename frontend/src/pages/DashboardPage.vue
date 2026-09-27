@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { PlusIcon } from '@heroicons/vue/24/solid'
+import { ChatBubbleLeftRightIcon } from '@heroicons/vue/24/outline'
 import { useSessionsStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
 import { useHostsStore } from '@/stores/hosts'
@@ -12,12 +13,16 @@ import EditSessionDialog from '@/components/EditSessionDialog.vue'
 import GroupHeader from '@/components/GroupHeader.vue'
 import HostKeyTrustDialog from '@/components/HostKeyTrustDialog.vue'
 import type { HostKeyErrorDetails, Session } from '@/api/types'
+import { useTaskDialog } from '@/composables/useTaskDialog'
+import { useOrchestrator } from '@/composables/useOrchestrator'
 
 const store = useSessionsStore()
 const ui = useUiStore()
 const hostsStore = useHostsStore()
 const router = useRouter()
 const dialogOpen = ref(false)
+const taskDialog = useTaskDialog()
+const orchestrator = useOrchestrator()
 // The session being edited, and the dialog's open state in one: null is closed.
 const editing = ref<Session | null>(null)
 
@@ -98,7 +103,22 @@ function retryRestartAfterTrust() {
     >
       <h1 class="text-lg font-semibold tracking-tight">Sessions</h1>
       <button
-        class="ml-auto flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-500"
+        class="ml-auto flex items-center gap-2 rounded-md border border-slate-600 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-800 disabled:opacity-60"
+        title="Talk to the orchestrator"
+        :disabled="orchestrator.busy.value"
+        @click="orchestrator.open()"
+      >
+        <ChatBubbleLeftRightIcon class="h-4 w-4" />
+        <span class="hidden sm:inline">Orchestrator</span>
+      </button>
+      <button
+        class="flex items-center gap-2 rounded-md border border-slate-600 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-800"
+        @click="taskDialog.show()"
+      >
+        <PlusIcon class="h-4 w-4" /> New task
+      </button>
+      <button
+        class="flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-500"
         @click="dialogOpen = true"
       >
         <PlusIcon class="h-4 w-4" /> New session
@@ -147,10 +167,13 @@ function retryRestartAfterTrust() {
           <GroupHeader
             v-if="g.name"
             class="col-span-full"
+            orchestrator
             :name="g.name"
             :count="g.sessions.length"
             :collapsed="ui.isGroupCollapsed('dashboard', g.name)"
+            :busy="orchestrator.busy.value"
             @toggle="ui.toggleGroup('dashboard', g.name)"
+            @orchestrator="orchestrator.open(g.name)"
           />
           <SessionListItem
             v-for="s in ui.isGroupCollapsed('dashboard', g.name) ? [] : g.sessions"

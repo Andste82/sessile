@@ -1,0 +1,38 @@
+{
+  "name": "jenkins",
+  "version": "1.0.0",
+  "description": "Jenkins CI: job status, build log tails, and triggering builds.",
+  "runtime": "python3",
+  "settings": [
+    {"name": "JENKINS_URL", "label": "Server URL", "type": "url", "required": true, "context": true,
+     "help": "e.g. https://ci.example.com"},
+    {"name": "JENKINS_USER", "label": "User", "type": "string", "required": true},
+    {"name": "JENKINS_TOKEN", "label": "API token", "type": "secret", "required": true,
+     "help": "Jenkins → your user → Security → API Token → Add new token"}
+  ],
+  "check": "whoami",
+  "guidance": [
+    "Jobs are named by their path, with folders: e.g. `team/app/main` for a multibranch branch job.",
+    "After pushing, check the job's status; when a build failed, read the log tail before changing code.",
+    "Triggering a build is a write and needs the user's approval."
+  ],
+  "timeoutSeconds": 60,
+  "functions": [
+    {"name": "whoami", "effect": "read", "description": "Check the connection: the user the token belongs to.",
+     "input": {"type": "object"}},
+    {"name": "job_status", "effect": "read",
+     "description": "A job's last build: number, result (SUCCESS, FAILURE, …) or still running, when, how long, and its URL.",
+     "input": {"type": "object", "required": ["job"], "additionalProperties": false,
+               "properties": {"job": {"type": "string", "pattern": "^[^/][^?#]*$", "description": "Job path, folders separated by /"}}}},
+    {"name": "build_log_tail", "effect": "read",
+     "description": "The last lines of a build's console log (default: the last build).",
+     "input": {"type": "object", "required": ["job"], "additionalProperties": false,
+               "properties": {"job": {"type": "string", "pattern": "^[^/][^?#]*$"},
+                              "build": {"type": "integer", "minimum": 1},
+                              "lines": {"type": "integer", "minimum": 1, "maximum": 2000}}}},
+    {"name": "trigger_build", "effect": "write", "description": "Start a build of a job, with optional parameters.",
+     "input": {"type": "object", "required": ["job"], "additionalProperties": false,
+               "properties": {"job": {"type": "string", "pattern": "^[^/][^?#]*$"},
+                              "parameters": {"type": "object"}}}}
+  ]
+}

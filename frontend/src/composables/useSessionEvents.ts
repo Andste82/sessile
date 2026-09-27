@@ -1,5 +1,6 @@
 import { onMounted, onUnmounted } from 'vue'
 import { eventsWsURL, parseEvent } from '@/api/events'
+import { useTasksStore } from '@/stores/tasks'
 import { useSessionsStore } from '@/stores/sessions'
 import { emitHostopEvent } from '@/composables/useHostopEvents'
 import { backoffSteps } from '@/utils/reconnect'
@@ -51,6 +52,8 @@ export function useSessionEvents() {
       if (!parsed) return
       if (parsed.type === 'hostopStarted' || parsed.type === 'hostopProgress' || parsed.type === 'hostopDone') {
         emitHostopEvent(parsed)
+      } else if (parsed.type === 'taskTool' || parsed.type === 'taskApproval' || parsed.type === 'taskSummary') {
+        useTasksStore().applyEvent(parsed)
       } else {
         store.applyEvent(parsed)
       }

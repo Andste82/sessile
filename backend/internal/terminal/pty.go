@@ -80,9 +80,23 @@ func (p *PTY) Read(b []byte) (int, error) {
 // extraEnv is appended last and so overrides anything of the same name inherited
 // from the server; it carries the per-session history settings (§8).
 func Start(shellPath, dir string, rows, cols uint16, extraEnv []string) (*PTY, error) {
-	cmd := exec.Command(shellPath)
+	return StartArgs(shellPath, nil, dir, rows, cols, extraEnv)
+}
+
+// StartArgs is Start with arguments: a local task session runs its fixed
+// bootstrap (`sh <task dir>/task.sh`, §4.12.2) rather than a bare shell.
+//
+// dropEnv names variables the child must not inherit from the server, by
+// prefix. A shell passes none — it is the user's own shell, and the server's
+// environment is the one they would get on that machine anyway. A task's
+// agent passes the agent families (§4.12.9): what configures an agent must
+// come from the task's connection, not from whatever the operator's shell
+// happened to hold when they started sessile. extraEnv is still appended
+// afterwards, so the task's own values are unaffected.
+func StartArgs(path string, args []string, dir string, rows, cols uint16, extraEnv []string, dropEnv ...string) (*PTY, error) {
+	cmd := exec.Command(path, args...)
 	cmd.Dir = dir
-	cmd.Env = shellEnv(os.Environ(), extraEnv)
+	cmd.Env = shellEnv(dropPrefixes(os.Environ(), dropEnv), extraEnv)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols})
@@ -106,6 +120,30 @@ func Start(shellPath, dir string, rows, cols uint16, extraEnv []string) (*PTY, e
 // with a BEL and zsh renders it as <ffffffff>; musl is more forgiving, which is
 // why this only bites on the glibc images. An explicit locale always wins:
 // callers who really want C keep it.
+// dropPrefixes removes every parent variable whose name starts with one of
+// the prefixes. Matching is on the name only, and case-sensitively: the
+// environment is, on the platforms sessile runs a local task on.
+func dropPrefixes(parent, prefixes []string) []string {
+	if len(prefixes) == 0 {
+		return parent
+	}
+	out := make([]string, 0, len(parent))
+	for _, kv := range parent {
+		name, _, _ := strings.Cut(kv, "=")
+		blocked := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(name, p) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 func shellEnv(parent, extra []string) []string {
 	env := append(append([]string{}, parent...), "TERM=xterm-256color")
 	if !hasLocale(parent) {
