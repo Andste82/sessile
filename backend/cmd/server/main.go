@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -164,6 +165,10 @@ func run(args []string) error {
 	taskService.Tools = mcpServer
 	taskService.Sessions = manager
 	taskService.AllowUnconfined = cfg.AllowUnconfinedAgents
+	taskService.Limits = func() (int, int) {
+		c := serverCfg.Get()
+		return c.Slots(), c.Jobs(runtime.NumCPU())
+	}
 	if self, err := os.Executable(); err == nil {
 		taskService.SelfExe = self
 	} else {

@@ -416,6 +416,40 @@ const stepBtn =
             </span>
           </label>
 
+          <!-- How much of a host a task's builds may use at once (§4.12.5). -->
+          <div class="flex flex-wrap gap-4">
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-slate-200">Heavy commands at once, per host</span>
+              <input
+                v-model.number="adminConfig.taskSlots"
+                type="number"
+                min="1"
+                max="16"
+                placeholder="2"
+                class="w-28 rounded-md border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+              />
+              <span class="text-xs text-slate-500">
+                Builds and test suites queue behind this; everything else an agent runs starts at once.
+              </span>
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-sm text-slate-200">Build parallelism each gets</span>
+              <input
+                v-model.number="adminConfig.taskJobs"
+                type="number"
+                min="1"
+                max="128"
+                placeholder="cores ÷ slots"
+                class="w-28 rounded-md border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-slate-100"
+              />
+              <span class="text-xs text-slate-500">
+                Set as <code>MAKEFLAGS</code>, <code>CMAKE_BUILD_PARALLEL_LEVEL</code>,
+                <code>CARGO_BUILD_JOBS</code>, <code>GOFLAGS</code>. Empty divides the host's cores by the
+                slots. Lower it if builds on this machine are memory-hungry.
+              </span>
+            </label>
+          </div>
+
           <p v-if="adminSaveError" class="text-sm text-rose-400">{{ adminSaveError }}</p>
 
           <div class="mt-1 flex items-center gap-3">

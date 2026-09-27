@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"github.com/Andste82/sessile/backend/internal/agents"
 )
@@ -59,6 +60,13 @@ var deniedBuiltins = []string{
 // README the agent already reads.
 var webTools = []string{"WebSearch", "WebFetch"}
 
+// toolCallTimeout is how long an agent CLI should wait on one sessile tool
+// call. A build is one call, and it can run for an hour; the CLIs' own
+// defaults are minutes (codex's was 60 seconds), which would abort the call
+// while the command carried on running on the host with nobody reading the
+// result (§4.12.5).
+const toolCallTimeout = 2 * time.Hour
+
 func newToken() string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
@@ -109,7 +117,9 @@ func mcpFiles(a agents.Agent, t toolsSetup) []file {
 			{agentStateDir + "/claude/.claude.json", append(onboarded, '\n'), 0o600},
 		}
 	case agents.AgentGemini:
-		gem := map[string]any{"command": t.bridge, "args": args, "trust": true}
+		// Per-server timeout, for the same reason as claude's below.
+		gem := map[string]any{"command": t.bridge, "args": args, "trust": true,
+			"timeout": toolCallTimeout.Milliseconds()}
 		cfg, _ := json.MarshalIndent(map[string]any{"mcpServers": map[string]any{"sessile": gem}}, "", "  ")
 		return []file{{".gemini/settings.json", append(cfg, '\n'), 0o600}}
 	}

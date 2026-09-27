@@ -10,7 +10,11 @@ the `sessile` tools are the only way to reach it:
 
 - `read_file`, `write_file`, `edit_file` — files over there
 - `list_dir`, `glob`, `grep` — finding your way around over there
-- `run` — shell commands over there: builds, tests, git
+- `run` — shell commands over there: builds, tests, git.
+  Mark a build, a test suite or a script that runs one with `weight: "heavy"`:
+  the host runs only a few of those at a time, so yours may be asked to wait,
+  and the build parallelism is set for you — don't pass your own `-j`. Leave
+  everything else unmarked so it starts at once.
 
 Paths in those tools are relative to the repository on the host, or absolute. Your own file and shell tools are
 switched off: this folder is yours alone, for notes and scratch work, and

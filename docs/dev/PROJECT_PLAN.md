@@ -1246,7 +1246,51 @@ The flags were checked against the current docs and source on 2026-09-18
 change, so they live in one table in code and get rechecked when M32 is
 built.
 
-#### 4.12.5 The agent CLI
+#### 4.12.5 Heavy work: slots and build parallelism
+
+Four agents each running `make -j16` is how a machine ends up swapping, and
+a swapping machine is slower for all four of them than a queue would have
+been — including for the tasks that only wanted to read a file. So a host
+runs a **few heavy commands at a time**, and everything else starts at once.
+
+- **Two settings** (§9): how many heavy commands run at once per host
+  (default 2), and the build parallelism each gets (default the host's cores
+  divided by the slots). The second is exported as `MAKEFLAGS`,
+  `CMAKE_BUILD_PARALLEL_LEVEL`, `CARGO_BUILD_JOBS` and `GOFLAGS` — `CL=/MPn`
+  on Windows — so a build uses the operator's number rather than guessing
+  from `nproc`.
+- **The agent says what is heavy**, with `weight: "heavy"` on `run`. It wrote
+  the command and knows whether it builds something; sessile fills in the
+  obvious cases (`make`, `ninja`, `cargo build`, `docker build`, a `./x.sh`)
+  for the agent that forgets. The defaults lean light: a wrong "heavy" makes
+  an agent wait to read a file, a wrong "light" runs one extra build.
+- **Waiting answers rather than hangs.** A caller waits 45 seconds, and is
+  then told to come back — with how many are ahead of it and how long the
+  oldest has been running. Its place is held for five minutes, so retrying
+  does not send it to the back. Blocking silently for longer would hit the
+  CLIs' own tool-call timeouts, and an agent that thinks a tool is broken
+  starts inventing ways around it.
+- **Nothing is ever suspended.** A slot is taken before a command starts and
+  given back when it ends. A command already running is left alone, so a
+  build never stops holding a lock it took.
+- The queue is per host, shared by every task on it, and the task panel shows
+  `queued` so a waiting task does not look like an idle one.
+
+**Agent tool-call timeouts.** One build is one tool call, and the CLIs give
+up on a call long before an hour: codex's limit was 60 seconds by default,
+and Claude Code's idle timeout would abort a quiet call. Sessile sets them
+generously (`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, `MCP_TOOL_TIMEOUT`, codex's
+`tool_timeout_sec`, gemini's per-server `timeout`), because the failure is
+nasty: the CLI abandons the call while the command keeps running on the host
+with nobody reading the result.
+
+**What this does not do** is stop a single command overrunning the machine:
+nothing caps one build's memory, and a `./build.sh` an agent forgot to mark
+runs unqueued. A cgroup limit (Linux) would make it exact, and measuring
+what each command actually used would catch the mislabelled ones; both are
+future work, and neither is needed while the numbers are set sensibly.
+
+#### 4.12.6 The agent CLI
 
 One install, on the sessile server, by whoever runs it — the Docker image
 carries it, and a bare-metal operator installs it once the way they install
@@ -1263,7 +1307,7 @@ sessile server") instead of starting a session that cannot work.
 | `codex` | `npm install -g @openai/codex` |
 | `gemini` | `npm install -g @google/gemini-cli` (needs Node ≥ 20) |
 
-#### 4.12.6 Recovering a task after a restart
+#### 4.12.7 Recovering a task after a restart
 
 The task folder (`task.json`, instructions, the repo, and inside containers
 the agent's state) holds everything, so a task is recoverable from its
@@ -1295,7 +1339,7 @@ nothing except the `tasks` row.
   MCP config points at the same socket path, so resumed conversations keep
   their tools.
 
-#### 4.12.7 Models
+#### 4.12.8 Models
 
 When the user picks an agent (in a profile, or in the task form), sessile offers a **model list fetched with the user's own
 credentials** and shows **the user's current default**.
@@ -1339,7 +1383,7 @@ A **profile** is `{id, name, agent, connectionId, model?}`: an agent, the
 connection that authenticates it (§4.13), and optionally a model. For
 example "Claude (Bedrock, Opus)" or "Claude (my Max plan)".
 
-#### 4.12.8 Persistence and lifecycle
+#### 4.12.9 Persistence and lifecycle
 
 - New SQLite table `tasks(id, session_id, user_id, host_id, dir, spec_json, created)`.
   It's 1:1 with a session and scoped by `user_id`. Session JSON gains
@@ -1353,7 +1397,7 @@ example "Claude (Bedrock, Opus)" or "Claude (my Max plan)".
 - Host-key 409 responses are reused unchanged. A task never connects
   silently.
 
-#### 4.12.9 What an agent may touch, and what it holds
+#### 4.12.10 What an agent may touch, and what it holds
 
 The agent runs on the sessile server, as sessile's own OS user, which can
 otherwise read `--data-dir`: every user's `hosts.yml` with its plaintext SSH
@@ -2046,7 +2090,7 @@ a cursor to continue from. The events, per user:
 |---|---|
 | `taskState` | a task called `set_task_state` |
 | `taskSummary` | a task's status line changed |
-| `taskRun` | a command on the task's host: started, output (coalesced per tick), finished with its exit code |
+| `taskRun` | a command on the task's host: queued, started, output (coalesced per tick), finished with its exit code |
 | `taskQuestion` | a task asked the user something, or the question was answered |
 | `taskExited` | a task's session stopped — its agent finished, or died |
 | `taskCreated` | a task started, by the form or by the orchestrator |
@@ -2803,6 +2847,10 @@ allowRegistration: false   # self-service signup on the login page
 allowLocalHost: false      # permit local-shell sessions on this server
 allowAgentScripts: true    # v0.8: users may install and run scripts on this
                            # server (§4.15) — equal to shell access here; the
+taskSlots: 2               # heavy commands at once per host (§4.12.5);
+                           # builds and test suites queue, everything else runs
+taskJobs: 0                # build parallelism each slot gets; 0 divides the
+                           # host's cores by taskSlots
                            # operator's off switch (§11)
 ```
 

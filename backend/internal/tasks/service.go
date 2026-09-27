@@ -57,6 +57,10 @@ type Service struct {
 	// its confinement. Set once at startup; empty means confinement cannot
 	// be applied, which is refused like a kernel without Landlock.
 	SelfExe string
+	// Limits reports the operator's settings for heavy work (§4.12.5): how
+	// many commands run at once per host, and the build parallelism each
+	// gets. nil takes the defaults.
+	Limits func() (slots, jobs int)
 	// WorkspaceTasksDir is a local-host task's folder root relative to the
 	// workspace (§4.12).
 	WorkspaceTasksDir string
@@ -66,6 +70,7 @@ type Service struct {
 	local   map[string]net.Listener   // each agent's tool socket, by task id
 	conns   map[string]*hostConn      // each task's host connection, by task id
 	preps   map[string]*prepare       // host preparation in flight, by task id
+	queues  map[string]*slotQueue     // heavy work per host (§4.12.5), by host key
 }
 
 // Task is a stored task, decoded.
@@ -496,6 +501,10 @@ func agentEnv(dir string, conn agents.Connection, ln launch, model string) []str
 		[2]string{"XDG_CONFIG_HOME", filepath.Join(dir, ".config")},
 		[2]string{"XDG_DATA_HOME", filepath.Join(dir, ".local", "share")},
 		[2]string{"XDG_RUNTIME_DIR", filepath.Join(dir, "run")},
+		// One tool call can be an hour-long build; the CLI must not give up
+		// on it and leave the command running unread (§4.12.5).
+		[2]string{"CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", "0"},
+		[2]string{"MCP_TOOL_TIMEOUT", "7200000"},
 	)
 	out := make([]string, 0, len(pairs))
 	for _, kv := range pairs {

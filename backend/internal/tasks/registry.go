@@ -89,6 +89,10 @@ var registry = map[agents.Agent]agentDef{
 	},
 }
 
+// codexToolTimeout is codex's per-tool-call limit, which defaults to a
+// minute — less than one build (§4.12.5).
+var codexToolTimeout = []string{"-c", "mcp_servers.sessile.tool_timeout_sec=7200"}
+
 // codexAPIKeyArgs make the interactive codex read an API key from
 // OPENAI_API_KEY: its built-in provider only uses a login, and the TUI
 // doesn't pick the variable up on its own (§4.13).
@@ -140,6 +144,9 @@ func resolveLaunch(a agents.Agent, connKind, mode, model string, hasRequest bool
 		} else if def.ModelFlag != "" {
 			common = append(common, def.ModelFlag, model)
 		}
+	}
+	if a == agents.AgentCodex {
+		common = append(common, codexToolTimeout...)
 	}
 	if a == agents.AgentCodex && connKind == "codex-api" {
 		common = append(common, codexAPIKeyArgs...)

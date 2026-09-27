@@ -59,11 +59,15 @@ var hostTools = []Tool{
 		Name: "run",
 		Description: "Run a shell command on the host — builds, tests, git, anything. " +
 			"It runs in the task's repo by default, or in cwd. Set where:\"container\" to run it inside the task's devcontainer. " +
-			"Returns the exit code and the output; the user sees it live.",
+			"Returns the exit code and the output; the user sees it live.\n" +
+			"Say weight:\"heavy\" for a build, a test suite or a script that does either: the host runs only a few of those at " +
+			"once, so your command may queue, and the build parallelism is set for you (don't pass your own -j). " +
+			"Everything else runs straight away — don't mark a grep heavy.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["command"],"properties":{
 			"command":{"type":"string"},
 			"cwd":{"type":"string","description":"Relative to the task folder, or absolute"},
 			"where":{"type":"string","enum":["host","container"]},
+			"weight":{"type":"string","enum":["heavy","light"],"description":"heavy: a build, a test suite, or a script that runs one"},
 			"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}`),
 	},
 }
@@ -90,6 +94,7 @@ type hostArgs struct {
 	Command        string `json:"command"`
 	Cwd            string `json:"cwd"`
 	Where          string `json:"where"`
+	Weight         string `json:"weight"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
@@ -191,6 +196,25 @@ func (s *Server) runOnHost(ctx context.Context, userID, taskID string, client *h
 		cwd = hostPath(dir, repo, a.Cwd)
 	}
 	callID := newCallID()
+
+	// Heavy work queues: a host runs a few builds at once, not one per task
+	// (§4.12.5). Everything else starts straight away.
+	heavy := isHeavy(a.Command, a.Weight)
+	if heavy {
+		hostKey := "local"
+		if t, err := s.Tasks.Get(userID, taskID); err == nil && t.HostID != "" {
+			hostKey = t.HostID
+		}
+		s.publish(userID, RunMsg{Type: "taskRun", TaskID: taskID, CallID: callID,
+			Command: a.Command, Cwd: cwd, Status: "queued"})
+		release, state, ok := s.Tasks.Slot(ctx, hostKey, taskID, callID)
+		if !ok {
+			s.publish(userID, RunMsg{Type: "taskRun", TaskID: taskID, CallID: callID, Status: "dropped"})
+			return queuedMessage(state), false
+		}
+		defer release()
+	}
+
 	s.publish(userID, RunMsg{Type: "taskRun", TaskID: taskID, CallID: callID,
 		Command: a.Command, Cwd: cwd, Status: "running"})
 
@@ -217,7 +241,7 @@ func (s *Server) runOnHost(ctx context.Context, userID, taskID string, client *h
 		Timeout:   time.Duration(a.TimeoutSeconds) * time.Second,
 		Container: a.Where == "container",
 		Workspace: repo,
-		Env:       s.gitEnvFor(userID, taskID),
+		Env:       append(s.gitEnvFor(userID, taskID), s.buildEnvFor(heavy, client)...),
 		OnOutput:  out.write,
 	}
 	res, err := client.Run(ctx, req)
@@ -296,6 +320,36 @@ func (p *outputPump) start(every time.Duration) func() {
 		close(p.done)
 		p.flush()
 	}
+}
+
+// queuedMessage tells the agent to come back, and what it is waiting for. It
+// is not an error: the command was not run, and the agent should do
+// something else and retry rather than treat the tool as broken.
+func queuedMessage(st SlotStateView) string {
+	var b strings.Builder
+	b.WriteString("Not started yet: this host runs a few heavy commands at a time and they are all busy")
+	if st.Running > 0 && st.Oldest > 0 {
+		fmt.Fprintf(&b, " (%d running, the oldest for %s)", st.Running, st.Oldest.Round(time.Second))
+	}
+	b.WriteString(".")
+	if st.Ahead > 0 {
+		fmt.Fprintf(&b, " %d task(s) are ahead of you.", st.Ahead)
+	}
+	b.WriteString(" Your place is held for a few minutes — do something else and call run again, " +
+		"or run something light in the meantime.")
+	return b.String()
+}
+
+// SlotStateView is tasks.SlotState, named here so this file reads on its own.
+type SlotStateView = tasks.SlotState
+
+// buildEnvFor is the parallelism a heavy command may use (§4.12.5). A light
+// command gets none: it is not building anything.
+func (s *Server) buildEnvFor(heavy bool, client *hosttools.Client) [][2]string {
+	if !heavy {
+		return nil
+	}
+	return s.Tasks.BuildEnv(0, client.Windows())
 }
 
 // gitEnvFor is the task's Git credential environment, set on this one command

@@ -47,7 +47,15 @@ async function answer(text?: string) {
 }
 
 function runMark(r: { status: string; exitCode?: number }) {
-  if (r.status === 'running' || r.status === 'output') return '›'
+  switch (r.status) {
+    case 'queued':
+      return '⏳'
+    case 'dropped':
+      return '⏸'
+    case 'running':
+    case 'output':
+      return '›'
+  }
   return r.exitCode === 0 ? '✓' : '✗'
 }
 function runClass(status: string) {
@@ -56,6 +64,9 @@ function runClass(status: string) {
       return 'text-emerald-400'
     case 'error':
       return 'text-rose-400'
+    case 'queued':
+    case 'dropped':
+      return 'text-amber-400'
     default:
       return 'text-slate-500'
   }
@@ -207,6 +218,8 @@ function ago(at: number) {
             <p class="flex items-start gap-2 font-mono text-xs text-slate-200">
               <span :class="runClass(r.status)">{{ runMark(r) }}</span>
               <span class="min-w-0 flex-1 break-all">{{ r.command }}</span>
+              <span v-if="r.status === 'queued'" class="shrink-0 text-[10px] uppercase text-amber-400">queued</span>
+              <span v-else-if="r.status === 'dropped'" class="shrink-0 text-[10px] uppercase text-amber-400">waiting for a slot</span>
             </p>
             <pre
               v-if="r.output"

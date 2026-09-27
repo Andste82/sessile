@@ -82,7 +82,7 @@ export interface TaskRunEvent {
   callId: string
   command: string
   cwd: string
-  status: 'running' | 'output' | 'ok' | 'error'
+  status: 'queued' | 'running' | 'output' | 'ok' | 'error' | 'dropped'
   output: string
   exitCode?: number
 }
@@ -236,7 +236,9 @@ export function parseEvent(data: string): ServerEvent | null {
       return { type: 'taskSummary', taskId: m.taskId, summary: str(m.summary) }
     case 'taskRun': {
       if (typeof m.taskId !== 'string' || typeof m.callId !== 'string') return null
-      const st = ['running', 'output', 'ok', 'error'].includes(m.status as string) ? m.status : 'error'
+      const st = ['queued', 'running', 'output', 'ok', 'error', 'dropped'].includes(m.status as string)
+        ? m.status
+        : 'error'
       return {
         type: 'taskRun',
         taskId: m.taskId,

@@ -23,7 +23,7 @@ export interface RunActivity {
   callId: string
   command: string
   cwd: string
-  status: 'running' | 'output' | 'ok' | 'error'
+  status: 'queued' | 'running' | 'output' | 'ok' | 'error' | 'dropped'
   output: string
   exitCode?: number
   at: number

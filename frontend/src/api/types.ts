@@ -101,6 +101,10 @@ export interface AdminConfig {
   allowRegistration: boolean
   allowLocalHost: boolean
   allowAgentScripts?: boolean // absent means on (§9)
+  /** Heavy commands at once per host, and the build parallelism each gets
+   *  (§4.12.5). 0/absent takes the defaults. */
+  taskSlots?: number
+  taskJobs?: number
 }
 
 export type AuthMethod = 'password' | 'privateKey'

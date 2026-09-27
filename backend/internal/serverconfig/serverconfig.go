@@ -29,6 +29,39 @@ type Config struct {
 	// defaults to on, so it is a pointer: absent (a config.yml from before
 	// scripts existed) means on, and only an explicit false turns it off.
 	AllowAgentScripts *bool `yaml:"allowAgentScripts,omitempty" json:"allowAgentScripts,omitempty"`
+	// TaskSlots is how many heavy commands may run at once on one host
+	// (§4.12.5): builds and test suites, not the reads and greps an agent
+	// issues all day. 0 means the default of 2. One host's slots are shared
+	// by every task on it, whoever started them.
+	TaskSlots int `yaml:"taskSlots,omitempty" json:"taskSlots,omitempty"`
+	// TaskJobs is the build parallelism each slot gets, exported as
+	// MAKEFLAGS and friends. 0 derives it from the host's cores and the slot
+	// count, which is what an operator wants unless a build is unusually
+	// memory-hungry.
+	TaskJobs int `yaml:"taskJobs,omitempty" json:"taskJobs,omitempty"`
+}
+
+// Slots resolves TaskSlots' default.
+func (c Config) Slots() int {
+	if c.TaskSlots > 0 {
+		return c.TaskSlots
+	}
+	return 2
+}
+
+// Jobs resolves TaskJobs against a host's core count: the cores a slot may
+// use, at least one.
+func (c Config) Jobs(hostCores int) int {
+	if c.TaskJobs > 0 {
+		return c.TaskJobs
+	}
+	if hostCores <= 0 {
+		hostCores = 4
+	}
+	if n := hostCores / c.Slots(); n > 0 {
+		return n
+	}
+	return 1
 }
 
 // ScriptsAllowed resolves AllowAgentScripts' default.
