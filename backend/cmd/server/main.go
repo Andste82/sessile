@@ -50,7 +50,13 @@ func (r *hostResolver) Resolve(userID, hostID string) (sshpty.Target, string, er
 }
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	args := os.Args[1:]
+	cmd := run
+	if len(args) > 0 && args[0] == adoptCommand {
+		args = args[1:]
+		cmd = func(a []string) error { return runAdopt(a, os.Stdout, os.Stderr) }
+	}
+	if err := cmd(args); err != nil {
 		// --version and --help are requests, not failures: they must exit 0 and
 		// must not be reported as "fatal". flag has already printed the usage
 		// text by the time ErrHelp surfaces.
@@ -93,38 +99,12 @@ func run(args []string) error {
 			"and see Upgrading in the README before creating an admin account",
 			"data-dir", cfg.DataDir)
 	}
-	state, _, err := upgrade.ReadState(cfg.DataDir)
-	if err != nil {
-		return err
-	}
-	if err := upgrade.CheckLayout(cfg.DataDir, state); err != nil {
-		return fmt.Errorf("%w — run that release again, or restore a backup from %s",
-			err, upgrade.BackupsDir(cfg.DataDir))
-	}
-
 	// Open the metadata store; it migrates the schema (backing up first) and
 	// reconciles any session left "running" by a previous process to
 	// "stopped" on open (§8).
-	store, err := storage.OpenWith(cfg.DB, storage.Options{
-		BeforeMigrate: func(p storage.Pending) error {
-			dir, err := upgrade.Backup(cfg.DataDir, fmt.Sprintf("schema-v%d", p.From), p.Snapshot, time.Now())
-			if errors.Is(err, upgrade.ErrPruneFailed) {
-				log.Warn("could not remove old backups", "err", err)
-			} else if err != nil {
-				return fmt.Errorf("back up before migrating sessions.db from schema %d to %d "+
-					"(nothing was migrated): %w", p.From, p.To, err)
-			}
-			log.Info("backup written before migration", "dir", dir, "from-schema", p.From, "to-schema", p.To)
-			return nil
-		},
-	})
-	var tooNew *storage.SchemaTooNewError
-	if errors.As(err, &tooNew) {
-		return fmt.Errorf("%w — run that release again, or restore a backup from %s",
-			err, upgrade.BackupsDir(cfg.DataDir))
-	}
+	store, state, err := openStore(cfg.DataDir, cfg.DB, log)
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return err
 	}
 	defer store.Close()
 	log.Info("store ready", "db", cfg.DB, "schema-version", storage.SchemaVersion())

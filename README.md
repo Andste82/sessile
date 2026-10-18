@@ -250,6 +250,20 @@ That backup is a safety net, not a replacement for step 1: it only covers
 start because the data directory was written by a newer release, either run
 that newer release again or restore one of those backups.
 
+**Sessions from 0.3.x or older** have no owner, because accounts did not
+exist yet, and so they are invisible to every user. The startup log says
+how many there are. To hand them to a user, create that account first,
+then stop the server and run:
+
+```bash
+docker compose stop sessile
+docker compose run --rm sessile adopt-sessions --data-dir=/config --user=<username>
+docker compose start sessile
+```
+
+They come back as stopped sessions, with their scrollback. They are local
+shells, so restarting them needs `allowLocalHost` on (Settings, as admin).
+
 Running shells do not survive a restart, an upgrade included. Sessions come
 back as stopped, with their scrollback and history, and can be restarted
 from the UI.

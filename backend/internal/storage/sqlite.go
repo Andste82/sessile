@@ -241,10 +241,7 @@ func OpenWith(path string, opts Options) (*Store, error) {
 		}
 		if existing {
 			p := Pending{From: version, To: len(migrations), Snapshot: func(dest string) error {
-				if _, err := db.Exec(`VACUUM INTO ?`, dest); err != nil {
-					return fmt.Errorf("vacuum into %s: %w", dest, err)
-				}
-				return nil
+				return snapshot(db, dest)
 			}}
 			if err := opts.BeforeMigrate(p); err != nil {
 				db.Close()
@@ -262,6 +259,21 @@ func OpenWith(path string, opts Options) (*Store, error) {
 	}
 
 	return &Store{db: db}, nil
+}
+
+// snapshot writes a consistent copy of db to dest with VACUUM INTO.
+func snapshot(db *sql.DB, dest string) error {
+	if _, err := db.Exec(`VACUUM INTO ?`, dest); err != nil {
+		return fmt.Errorf("vacuum into %s: %w", dest, err)
+	}
+	return nil
+}
+
+// Snapshot writes a consistent copy of the database to dest, which must not
+// exist yet — the same copy Pending.Snapshot makes before a migration, for a
+// backup taken at any other time (§12e M34).
+func (s *Store) Snapshot(dest string) error {
+	return snapshot(s.db, dest)
 }
 
 // Close closes the underlying database.

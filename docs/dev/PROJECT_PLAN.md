@@ -148,6 +148,8 @@ Ring buffer implementation: a simple `[]byte` with copy-on-overflow is fine
 ```
 backend/
   cmd/server/main.go        # flag parsing, wiring, graceful shutdown
+  cmd/server/store.go       # openStore: guards + backup + migration (§12e)
+  cmd/server/adopt.go       # `sessile adopt-sessions` (§11, §12e M34)
   internal/
     api/                    # Gin handlers + router setup + middleware
       router.go
@@ -1557,6 +1559,12 @@ whatever the operator points them at, e.g. a compose file mounting
 `./data/config:/config` and `./data/workspace:/workspace` so both still live
 under one `./data` folder on the host (§10).
 
+One subcommand exists besides the server itself:
+`sessile adopt-sessions --data-dir=<dir> --user=<username>` (§11, §12e M34).
+It takes `--data-dir` (with the same `TSM_DATA_DIR` fallback) and `--user`,
+and nothing else. It refuses a directory without `sessions.db` or
+`users.yml` instead of creating them.
+
 The retired flags `--root`, `--db` and `--dev` are ordinary unknown flags
 now (`189a602` removed their custom errors): a command line that still has
 one fails to start with "flag provided but not defined". What replaced each
@@ -1754,6 +1762,20 @@ layout and §11 for what they do and don't encrypt.
   response (download) or the next read of the aborted request body
   (upload) fails on its own, `io.Copy` returns, and the deferred `Close`
   runs.
+- **Ownerless sessions are adopted offline, by the operator, by name — never
+  over the API and never automatically** (§12e M34). Rows from before
+  accounts have `user_id=''` and are invisible to everyone, admins included
+  (§4.3, §10). `sessile adopt-sessions --data-dir=… --user=<username>` hands
+  all of them to one user, resolving the name through `users.yml`. It runs
+  against the data directory, not the server, while the server is stopped,
+  and takes a backup first (M32). An admin endpoint would be the first
+  route that changes who owns a session, and its existence would turn
+  per-user scoping into a policy an admin can override. Assigning them
+  automatically (to the first admin, say) would guess at an ownership
+  nobody declared. Whoever can run a command against the data directory can
+  already read `users.yml`, every `hosts.yml` and the database itself.
+  That person is the trusted operator (see host credentials above), so the
+  command adds no capability they did not already have.
 - Rate limiting: still deferred — not added in this pass either. Login
   brute-forcing is the main gap this leaves open; worth revisiting before a
   wider deployment than "an admin who trusts their own users."

@@ -113,6 +113,25 @@ func (s *Store) CountOwnerless() (int, error) {
 	return n, nil
 }
 
+// AdoptOwnerless assigns every ownerless session to userID and returns how
+// many it changed. It is only ever called by the offline adopt-sessions
+// command (§12e M34, §11), with an id resolved from users.yml — never from a
+// request, which is why no API route reaches it.
+func (s *Store) AdoptOwnerless(userID string) (int, error) {
+	if userID == "" {
+		return 0, fmt.Errorf("adopt ownerless sessions: empty user id")
+	}
+	res, err := s.db.Exec(`UPDATE sessions SET user_id=? WHERE user_id=''`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("adopt ownerless sessions: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("adopt ownerless sessions: %w", err)
+	}
+	return int(n), nil
+}
+
 // DeleteStoppedBefore removes stopped sessions whose last activity predates
 // cutoff and returns the ids it removed, so the caller can discard their
 // scrollback and history too.

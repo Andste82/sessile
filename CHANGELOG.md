@@ -27,6 +27,10 @@ README under [Upgrading](README.md#upgrading).
   the resolved path. After an upgrade, that almost always means a volume
   that is not mounted where it used to be. Sessions without an owner (from
   0.3.x and older) are counted in a warning on every start.
+- New command `sessile adopt-sessions --data-dir=<dir> --user=<username>`
+  hands every session without an owner to one user. Run it while the server
+  is stopped. It takes a backup first, and a second run changes nothing. See
+  0.5.0, step 3.
 
 ### Upgrade / Breaking
 
@@ -117,9 +121,17 @@ all four steps below **before** starting 0.5.0 or later for the first time.
 3. **Old sessions have no owner.** Accounts are new in this release, and
    sessions created before it have no user. Every session belongs to exactly
    one user, so these show up for nobody, not even the admin. They are still
-   in `sessions.db`, together with their scrollback and history, but no
-   release so far has a way to show them in the UI. Keep a backup of
-   `/config` from before the upgrade so they are not lost.
+   in `sessions.db`, together with their scrollback and history. From the
+   release after 0.7.0 on, the `adopt-sessions` command hands them to a
+   user: create the admin account, stop the server, then run
+
+   ```bash
+   docker compose run --rm sessile adopt-sessions --data-dir=/config --user=<username>
+   ```
+
+   Releases 0.5.0 to 0.7.0 have no way to show them. Keep them in
+   `sessions.db` (and a backup of `/config`) until you are on a release
+   that has the command.
 
 4. **Local shells are off by default.** Every session from 0.3.x is a local
    shell on the server itself, and the new `allowLocalHost` setting starts
