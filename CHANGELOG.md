@@ -12,6 +12,13 @@ README under [Upgrading](README.md#upgrading).
 
 ## Unreleased
 
+Downgrades: the guard below only exists from this release on. 0.7.0 and
+older do not read the schema version, so nothing stops them from starting
+on a database a newer release has migrated. Going back to 0.7.0 from this
+release still works, because schema version 1 has exactly the columns
+0.7.0 knows. Once a later release adds a migration step, going back past
+it means restoring a backup.
+
 - `sessions.db` records its schema version (`PRAGMA user_version`), and
   every schema change is a numbered migration step that is applied
   completely or not at all. A release refuses to start on a database a
