@@ -1340,6 +1340,8 @@ of it ever written into SQLite:
   sessions.db
   scrollback/<session-id>.bin
   history/<session-id>
+  backups/                   # written before every migration, newest 3 kept
+  .sessile-state.yml         # lastVersion + layoutVersion (see below)
 
 <workspace-dir>/           # --workspace-dir; /workspace in Docker; defaults to
                             # <data-dir>/workspace when unset (§9) — the shared
@@ -1373,9 +1375,44 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_activity     TEXT NOT NULL
 );
 ```
-Rows created before the migration carry `user_id=''` and become invisible
-under strict per-owner scoping (§4.3, §10) — an expected, one-time
-consequence of adding auth to a previously single-tenant table.
+Rows created before the migration carry `user_id=''` and are invisible
+under strict per-owner scoping (§4.3, §10). They are not lost: the operator
+hands them to a user explicitly and offline with `adopt-sessions` (M34,
+§12e). Nothing assigns them automatically.
+
+### Schema versions, backups and upgrades
+
+An upgrade across any number of releases must either start with all the
+data or stop with an error that says what is wrong. Losing data silently is
+never an acceptable result. Three mechanisms make that hold (§12e):
+
+- **Versioned migrations (`internal/storage`).** The schema version is
+  `PRAGMA user_version`. `migrations` is an ordered list of steps; step *n*
+  takes the database from version *n-1* to *n*. Every step runs in its own
+  transaction together with the `user_version` bump (SQLite DDL is
+  transactional), so a failed step leaves the database at the previous
+  version, never halfway. `user_version = 0` means a database from before
+  versioning, whatever release wrote it. Step 1 is the column check the
+  project used to run on every start (`PRAGMA table_info` + `ADD COLUMN`),
+  and it is the one step written to cope with every older shape: it brings
+  any of them to version 1. Every later step can assume the exact schema of
+  the version before it, and may rewrite data, not only add columns.
+- **Downgrade guard.** A `user_version` higher than the number of known
+  migrations means a newer release has already touched the database. The
+  server refuses to start, names both versions and points at the backups
+  below. Older code never runs on a newer schema.
+- **Backup before every migration.** If at least one step is pending, the
+  server first writes the database with `VACUUM INTO` to
+  `<data-dir>/backups/` (consistent even in WAL mode, no CGO), plus
+  copies of `config.yml`, `users.yml` and every `users/*/hosts.yml`, all
+  mode `0600` because they contain credentials. The newest three backups are
+  kept. If the backup fails, nothing is migrated and the server does not
+  start.
+
+`<data-dir>/.sessile-state.yml` records the app version that last ran on the
+directory (`lastVersion`) and the version of the file layout
+(`layoutVersion`). It is the hook for a future YAML or directory migration,
+and it shows a downgrade even when there is no database yet.
 
 Web login sessions are **not** persisted anywhere (§10) — they live only in
 an in-memory token store, by design.
@@ -1500,9 +1537,13 @@ whatever the operator points them at, e.g. a compose file mounting
 `./data/config:/config` and `./data/workspace:/workspace` so both still live
 under one `./data` folder on the host (§10).
 
-A `--root` flag is now rejected with a helpful error pointing at
-`--workspace-dir` instead, following the same retired-flag-with-a-helpful-
-error pattern `--db`'s removal already established in `internal/config`.
+The retired flags `--root`, `--db` and `--dev` are ordinary unknown flags
+now (`189a602` removed their custom errors): a command line that still has
+one fails to start with "flag provided but not defined". What replaced each
+of them is in `CHANGELOG.md` under 0.2.0 and 0.5.0, which is where an
+operator who hits that error after an upgrade will look. Every future flag
+removal gets an entry in the changelog's "Upgrade / Breaking" part of the
+release that removes it.
 
 `config.yml` (`internal/serverconfig`), created with hand-editable defaults
 on first run, admin-editable afterward via `PUT /api/admin/config` (§6):
@@ -2024,6 +2065,101 @@ dashboard silently rearrange the strip.
 in a second tab, and the other list is untouched; the session currently open
 stays visible in the sidebar even when its group is collapsed; a user with no
 groups sees exactly the layout they saw before this feature.
+
+---
+
+## 12e. Milestones — Safe Upgrades Between Releases (v0.8)
+
+**Goal:** after an update across any number of versions, the container
+starts with all its data or stops with a clear error. Data is never lost
+silently (§8, "Schema versions, backups and upgrades").
+
+**Where this starts.** Before this block, `internal/storage` added missing
+columns on every start (`ALTER TABLE ADD COLUMN` after a `PRAGMA table_info`
+check). That is idempotent, but there was no schema version, no data
+migration, no backup and no downgrade guard. The jump from v0.3.x to v0.5.0
+broke several things and said nothing about it: the compose file moved
+`/config` from the named volume `sessile-config` to the bind mount
+`./data/config` (so the new compose file started on an empty directory,
+with the old data still in the volume); M17 left old sessions with
+`user_id=''`, invisible to everyone; old sessions are `target_type=local`
+while `allowLocalHost` defaults to off; and `--root`/`--db` were removed
+(`189a602`), so a custom `command:` using them no longer started.
+
+Running shells still do not survive a container restart. Metadata,
+scrollback and history persist and sessions come back `stopped`; this block
+does not change that.
+
+### M30 — Plan and docs
+§8 and §9 describe versioned migrations, backups and the state file; the
+"one-time consequence" sentence on ownerless sessions points at M34 instead.
+New `CHANGELOG.md`, one section per release, each with an
+**"Upgrade / Breaking"** part; v0.3 → v0.5 filled in after the fact (volume
+→ bind mount with a copy recipe, `--root`/`--db` removed, `user_id=''`,
+`allowLocalHost` off). README gains **"Upgrading"**: back up `/config`
+first, read the changelog, do not change the volume mounts.
+✅ *Verify:* with only the README and the changelog, a v0.3 setup can be
+brought up to date without losing data. Walk through it once by hand.
+
+### M31 — Versioned SQLite migrations and downgrade guard
+`internal/storage`: an ordered `migrations []func(*sql.Tx) error`, the
+version in `PRAGMA user_version`. `user_version = 0` is a pre-versioning
+database from any release; step 1 is the old idempotent column check and
+brings every one of them to version 1. Each step runs in its own
+transaction together with the version bump. A `user_version` above the
+number of known migrations stops the start with both versions and a pointer
+at the M32 backups. Tests: SQL-dump fixtures under `storage/testdata/`
+(readable and diffable, no binaries), one per released schema — v0.1–v0.3,
+v0.5, v0.6+ — migrated by a table-driven test that checks columns and
+content, plus a test for the downgrade refusal.
+✅ *Verify:* `go vet ./... && go test ./...`; open a real v0.3.2
+`sessions.db`: every row is there, `user_version` is current, a second
+start changes nothing.
+
+### M32 — Automatic backup before every migration
+With at least one step pending, `VACUUM INTO
+'<data-dir>/backups/sessions.db.v<old>-<RFC3339>.bak'` runs first, and
+`users.yml`, `config.yml` and `users/*/hosts.yml` are copied into the same
+backup (mode `0600`). The newest three backups are kept. A failed backup
+means no migration and no start. New `<data-dir>/.sessile-state.yml` with
+`lastVersion` and `layoutVersion`.
+✅ *Verify:* start on an old database → the backup exists and the migration
+ran. With `backups/` read-only → a clear refusal, database unchanged.
+
+### M33 — Startup diagnostics
+A freshly created or empty `--data-dir` logs a **loud WARN** with the
+resolved path and "upgrading? check your volume mounts (`docker inspect`)".
+Sessions with `user_id=''` log a WARN with their count and the M34 command.
+`GET /api/health` stays as it is, so the protocol does not change.
+✅ *Verify:* a container on an empty mount → the warning in `docker logs`;
+on an old database → the count of ownerless sessions is logged.
+
+### M34 — Adopting ownerless sessions explicitly
+An offline CLI subcommand, run while the server is stopped:
+`docker compose run --rm sessile adopt-sessions --data-dir=/config
+--user=<username>`. It assigns every `user_id=''` row to that user,
+resolved through `users.yml` so nobody has to look up an id. It takes an
+M32 backup first and prints the count. **Deliberately no API endpoint and
+nothing automatic** — per-user scoping (§4.3, §10) stays untouched, and
+whoever can run commands on the host is the trusted operator anyway
+(recorded in §11).
+✅ *Verify:* adopt an old database → the sessions show up for that user as
+`stopped` and restart with their scrollback; a second run reports 0.
+
+### M35 — Upgrade test in CI and release
+`scripts/upgrade-smoke.sh`: start the **previous published image** from
+GHCR on a volume, create an admin and a session with scrollback over the
+API, stop it; start the **new image** on the same volume; check that login
+works, the session is there and `stopped`, and a backup exists. Wired into
+`ci.yml` (alpine/ubuntu matrix) and `release.yml` before publishing — a
+failure blocks the release. Optionally also from the oldest supported
+release (v0.5.0), so multi-version jumps are covered.
+✅ *Verify:* deliberately break a migration → CI goes red.
+
+**Deliberately not included:** a migration library (golang-migrate and the
+like — the stack is fixed, and this is about fifty lines); another change
+of the volume layout (exactly that kind of change is what loses data); an
+automatic adoption of ownerless sessions (see M34).
 
 ---
 
