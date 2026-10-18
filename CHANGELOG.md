@@ -17,6 +17,12 @@ README under [Upgrading](README.md#upgrading).
   completely or not at all. A release refuses to start on a database a
   newer release has already migrated, instead of writing into a schema it
   does not know.
+- Before every migration, the server backs up `sessions.db`, `config.yml`,
+  `users.yml` and every `hosts.yml` to `<data-dir>/backups/<time>-schema-v<n>/`
+  and keeps the newest three. If the backup fails, nothing is migrated and
+  the server does not start.
+- New file `<data-dir>/.sessile-state.yml` records the release that last
+  ran on the directory. Do not edit it.
 
 ### Upgrade / Breaking
 

@@ -160,19 +160,55 @@ func migrate(db *sql.DB, from int) error {
 	return nil
 }
 
+// tableExists reports whether the database has a sessions table at all — the
+// difference between an existing database at user_version 0 and a new one.
+func tableExists(db *sql.DB) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='sessions'`).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("check for sessions table: %w", err)
+	}
+	return n > 0, nil
+}
+
+// Pending describes the migration Open is about to run, for
+// Options.BeforeMigrate.
+type Pending struct {
+	From, To int
+	// Snapshot writes a consistent copy of the database, as it is before the
+	// migration, to dest — which must not exist yet. It uses VACUUM INTO,
+	// which reads through the open connection, so the copy is consistent even
+	// with uncheckpointed WAL frames and needs no file-level copying.
+	Snapshot func(dest string) error
+}
+
+// Options adjusts Open.
+type Options struct {
+	// BeforeMigrate, if set, runs when an existing database has at least one
+	// migration step pending, before the first step. An error from it stops
+	// Open with the database untouched (§12e M32: no backup, no migration).
+	// It is not called for a new database: there is nothing to back up.
+	BeforeMigrate func(Pending) error
+}
+
 // Store is a SQLite-backed session metadata store.
 type Store struct {
 	db *sql.DB
 }
 
-// Open opens (creating parent dirs and the file as needed) the database at
-// path, migrates it to SchemaVersion, and reconciles orphaned sessions: any
+// Open is OpenWith with no options.
+func Open(path string) (*Store, error) {
+	return OpenWith(path, Options{})
+}
+
+// OpenWith opens (creating parent dirs and the file as needed) the database
+// at path, migrates it to SchemaVersion, and reconciles orphaned sessions: any
 // row still marked running belongs to a shell that died with the previous
 // process, so it is transitioned to stopped (§3, §8).
 //
 // A database already past SchemaVersion is refused with *SchemaTooNewError
 // before anything is written to it.
-func Open(path string) (*Store, error) {
+func OpenWith(path string, opts Options) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("create db dir: %w", err)
@@ -196,6 +232,25 @@ func Open(path string) (*Store, error) {
 	if version > len(migrations) {
 		db.Close()
 		return nil, &SchemaTooNewError{Path: path, Found: version, Known: len(migrations)}
+	}
+	if version < len(migrations) && opts.BeforeMigrate != nil {
+		existing, err := tableExists(db)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		if existing {
+			p := Pending{From: version, To: len(migrations), Snapshot: func(dest string) error {
+				if _, err := db.Exec(`VACUUM INTO ?`, dest); err != nil {
+					return fmt.Errorf("vacuum into %s: %w", dest, err)
+				}
+				return nil
+			}}
+			if err := opts.BeforeMigrate(p); err != nil {
+				db.Close()
+				return nil, err
+			}
+		}
 	}
 	if err := migrate(db, version); err != nil {
 		db.Close()

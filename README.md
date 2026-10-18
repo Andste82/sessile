@@ -243,6 +243,13 @@ as long as that directory is the same before and after. In order:
    docker compose pull && docker compose up -d
    ```
 
+When an upgrade changes the database, sessile first writes a backup of it
+and of the YAML files to `/config/backups/` and keeps the newest three.
+That backup is a safety net, not a replacement for step 1: it only covers
+`/config`, and only the releases that include it. If a release refuses to
+start because the data directory was written by a newer release, either run
+that newer release again or restore one of those backups.
+
 Running shells do not survive a restart, an upgrade included. Sessions come
 back as stopped, with their scrollback and history, and can be restarted
 from the UI.

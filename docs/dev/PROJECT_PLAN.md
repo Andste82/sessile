@@ -202,8 +202,12 @@ backend/
     serverconfig/
       serverconfig.go          # config.yml store
     storage/
-      sqlite.go             # open + migrate
+      sqlite.go             # open + versioned migrations (§8)
       sessions.go            # CRUD queries (now user/target scoped)
+      testdata/              # SQL dumps of every released schema (§12e M31)
+    upgrade/
+      backup.go              # backups/ before a migration (§8, §12e M32)
+      state.go               # .sessile-state.yml + layout downgrade guard
     config/
       config.go             # CLI flags (--data-dir, --shells, …)
 frontend/                   # see §7
@@ -1402,18 +1406,33 @@ never an acceptable result. Three mechanisms make that hold (§12e):
   migrations means a newer release has already touched the database. The
   server refuses to start, names both versions and points at the backups
   below. Older code never runs on a newer schema.
-- **Backup before every migration.** If at least one step is pending, the
-  server first writes the database with `VACUUM INTO` to
-  `<data-dir>/backups/` (consistent even in WAL mode, no CGO), plus
-  copies of `config.yml`, `users.yml` and every `users/*/hosts.yml`, all
-  mode `0600` because they contain credentials. The newest three backups are
-  kept. If the backup fails, nothing is migrated and the server does not
-  start.
+- **Backup before every migration (`internal/upgrade`).** If an existing
+  database has at least one step pending, the server first writes
+  `<data-dir>/backups/<UTC time>-schema-v<old>/`: `sessions.db` via
+  `VACUUM INTO` (consistent even in WAL mode, no CGO), plus copies of
+  `config.yml`, `users.yml` and every `users/*/hosts.yml`. Directories are
+  `0700` and files `0600`, because they contain credentials. The time is
+  ISO 8601 basic format (`20261018T190002Z`), not RFC 3339, since a colon is
+  not a legal file-name character on a Windows-backed bind mount. A backup is
+  assembled under a `.partial` name and renamed into place only when
+  complete. The newest three backups are kept. If the backup fails, nothing
+  is migrated and the server does not start. A new, empty database has
+  nothing to back up and skips this. Scrollback and history are not part of
+  it: no migration touches them.
 
 `<data-dir>/.sessile-state.yml` records the app version that last ran on the
 directory (`lastVersion`) and the version of the file layout
-(`layoutVersion`). It is the hook for a future YAML or directory migration,
-and it shows a downgrade even when there is no database yet.
+(`layoutVersion`, `upgrade.LayoutVersion`, currently 1). It is the hook for a
+future YAML or directory migration, and it shows a downgrade even when there
+is no database yet: a `layoutVersion` above the build's own stops the start
+the same way a too-new schema does. `lastVersion` is only logged when it
+changes. Release, `dev` and `git describe` versions do not order reliably,
+so nothing is refused on that value.
+
+Order on startup matters: the state check, the store open (with its backup
+and migration) and the state write happen **before** `config.yml`,
+`users.yml` or anything else in the data directory is opened, so a refused
+start leaves the directory as it found it.
 
 Web login sessions are **not** persisted anywhere (§10) — they live only in
 an in-memory token store, by design.
@@ -2118,10 +2137,13 @@ content, plus a test for the downgrade refusal.
 start changes nothing.
 
 ### M32 — Automatic backup before every migration
-With at least one step pending, `VACUUM INTO
-'<data-dir>/backups/sessions.db.v<old>-<RFC3339>.bak'` runs first, and
+With at least one step pending, `VACUUM INTO` writes the
+database into `<data-dir>/backups/<time>-schema-v<old>/` first, and
 `users.yml`, `config.yml` and `users/*/hosts.yml` are copied into the same
-backup (mode `0600`). The newest three backups are kept. A failed backup
+directory (mode `0600`). One directory per backup, not one file named
+`sessions.db.v<old>-<RFC3339>.bak` as first drafted: that keeps the
+database and the YAML of one backup together, and lets pruning count whole
+backups. The time format has no colons, see §8. The newest three backups are kept. A failed backup
 means no migration and no start. New `<data-dir>/.sessile-state.yml` with
 `lastVersion` and `layoutVersion`.
 ✅ *Verify:* start on an old database → the backup exists and the migration

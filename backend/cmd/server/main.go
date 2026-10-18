@@ -22,6 +22,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/sshpty"
 	"github.com/Andste82/sessile/backend/internal/storage"
+	"github.com/Andste82/sessile/backend/internal/upgrade"
 	"github.com/Andste82/sessile/backend/internal/ws"
 	"github.com/Andste82/sessile/backend/web"
 )
@@ -81,6 +82,55 @@ func run(args []string) error {
 		return fmt.Errorf("load embedded frontend: %w", err)
 	}
 
+	// Before anything else writes to the data directory: refuse one a newer
+	// release has already upgraded, and back it up before migrating it
+	// (§8, §12e). Every later step may create or rewrite files in it.
+	state, _, err := upgrade.ReadState(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	if err := upgrade.CheckLayout(cfg.DataDir, state); err != nil {
+		return fmt.Errorf("%w — run that release again, or restore a backup from %s",
+			err, upgrade.BackupsDir(cfg.DataDir))
+	}
+
+	// Open the metadata store; it migrates the schema (backing up first) and
+	// reconciles any session left "running" by a previous process to
+	// "stopped" on open (§8).
+	store, err := storage.OpenWith(cfg.DB, storage.Options{
+		BeforeMigrate: func(p storage.Pending) error {
+			dir, err := upgrade.Backup(cfg.DataDir, fmt.Sprintf("schema-v%d", p.From), p.Snapshot, time.Now())
+			if errors.Is(err, upgrade.ErrPruneFailed) {
+				log.Warn("could not remove old backups", "err", err)
+			} else if err != nil {
+				return fmt.Errorf("back up before migrating sessions.db from schema %d to %d "+
+					"(nothing was migrated): %w", p.From, p.To, err)
+			}
+			log.Info("backup written before migration", "dir", dir, "from-schema", p.From, "to-schema", p.To)
+			return nil
+		},
+	})
+	var tooNew *storage.SchemaTooNewError
+	if errors.As(err, &tooNew) {
+		return fmt.Errorf("%w — run that release again, or restore a backup from %s",
+			err, upgrade.BackupsDir(cfg.DataDir))
+	}
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer store.Close()
+	log.Info("store ready", "db", cfg.DB, "schema-version", storage.SchemaVersion())
+
+	if state.LastVersion != "" && state.LastVersion != config.Version {
+		log.Info("version changed since the last start", "from", state.LastVersion, "to", config.Version)
+	}
+	if err := upgrade.WriteState(cfg.DataDir, upgrade.State{
+		LastVersion:   config.Version,
+		LayoutVersion: upgrade.LayoutVersion,
+	}); err != nil {
+		return err
+	}
+
 	serverCfg, err := serverconfig.Open(filepath.Join(cfg.DataDir, "config.yml"))
 	if err != nil {
 		return fmt.Errorf("open config.yml: %w", err)
@@ -97,15 +147,6 @@ func run(args []string) error {
 	defer webSessions.Stop()
 
 	hostsRegistry := hosts.NewRegistry(cfg.DataDir)
-
-	// Open the metadata store; it reconciles any session left "running" by a
-	// previous process to "stopped" on open (§8).
-	store, err := storage.Open(cfg.DB)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-	defer store.Close()
-	log.Info("store ready", "db", cfg.DB, "schema-version", storage.SchemaVersion())
 
 	manager := session.NewManager(cfg.WorkspaceDir, cfg.Shells, cfg.BufferSize, cfg.DataDir, store, log)
 	manager.SetHostResolver(&hostResolver{registry: hostsRegistry})
