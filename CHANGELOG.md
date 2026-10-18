@@ -93,17 +93,25 @@ all four steps below **before** starting 0.5.0 or later for the first time.
    ```bash
    docker compose down
    mkdir -p data/config data/workspace
+   # Copies /old into /new, but only into an empty /new, and lists the result.
+   copy='[ -z "$(ls -A /new)" ] || { echo "/new is not empty, nothing copied"; exit 1; }
+         cp -a /old/. /new/ && ls -A /new'
    # Compose prefixes the volume with the project name, which defaults to
    # the directory name. `docker volume ls | grep sessile-config` shows it.
    docker run --rm -v <project>_sessile-config:/old -v "$PWD/data/config:/new" \
-     alpine sh -c 'cp -an /old/. /new/'
+     alpine sh -c "$copy"
    # The workspace moved too. Skip this if ./workspace does not exist.
-   cp -an workspace/. data/workspace/
+   docker run --rm -v "$PWD/workspace:/old" -v "$PWD/data/workspace:/new" \
+     alpine sh -c "$copy"
    ```
 
-   `cp -n` never overwrites, so running it twice is harmless. Remove the old
-   volume only after the new version has started and your data is there
-   (`docker volume rm <project>_sessile-config`).
+   The first listing must show `sessions.db`. If it is empty, stop: the
+   volume name is wrong. The copy refuses a non-empty target instead of
+   merging into it, so running it twice is harmless. Do not reach for
+   `cp -an` here: with `-n`, BusyBox `cp` (which the alpine image has)
+   silently copies nothing into an existing directory and still exits 0.
+   Remove the old volume only after the new version has started and your
+   data is there (`docker volume rm <project>_sessile-config`).
 
 2. **`--root` and `--db` are gone.** If you wrote your own `command:` or
    start the binary by hand, change these flags or the server will not start
