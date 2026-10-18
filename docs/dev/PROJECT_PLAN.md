@@ -2203,6 +2203,10 @@ works, the session is there and `stopped`, and a backup exists. Wired into
 `ci.yml` (alpine/ubuntu matrix) and `release.yml` before publishing — a
 failure blocks the release. Optionally also from the oldest supported
 release (v0.5.0), so multi-version jumps are covered.
+In the release workflow it runs against the image already pushed to GHCR,
+like `verify-image`, so a failure cannot take the image tags back. It does
+stop the GitHub release, which is what announces the version. The scrollback
+check needs `cmd/wsclient`, hence Go in the docker CI job.
 ✅ *Verify:* deliberately break a migration → CI goes red.
 
 **Deliberately not included:** a migration library (golang-migrate and the
@@ -2232,6 +2236,14 @@ automatic adoption of ownerless sessions (see M34).
   message codec; no E2E framework in v0.x.
 - CI (GitHub Actions): `go vet`, `go test ./...`, `npm run build`,
   `npm run test` on push.
+- **Upgrades (§12e).** `internal/storage/testdata/` has a SQL dump of every
+  released schema, and a table test migrates each of them. A release that
+  changes the schema adds its dump. `scripts/upgrade-smoke.sh <old> <new>`
+  does the operator's upgrade with real images on one pair of bind mounts:
+  account, session, scrollback (through a restart and a replay) and the
+  pre-migration backup must all survive. CI runs it on every PR, for both
+  variants, from the previous release and from 0.5.0. The release workflow
+  runs it against the pushed image before the GitHub release is published.
 
 ---
 
