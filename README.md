@@ -208,6 +208,66 @@ Check what you are running:
 docker run --rm ghcr.io/andste82/sessile:latest --version
 ```
 
+## Upgrading
+
+All of sessile's state is in `/config` (`--data-dir`). An upgrade is safe
+as long as that directory is the same before and after. In order:
+
+1. **Back up `/config`.** With the compose file above, that is
+   `./data/config`:
+
+   ```bash
+   docker compose down
+   tar czf sessile-config-$(date +%F).tgz -C data config
+   ```
+
+   The archive contains `users.yml` and every user's `hosts.yml`, and
+   `hosts.yml` holds SSH credentials in plaintext. Store it as carefully
+   as the original.
+
+2. **Read the [changelog](CHANGELOG.md).** Read the "Upgrade / Breaking"
+   part of every release between the version you run now and the one you
+   are moving to. Skipping versions is fine, but skipping those parts is
+   not. 0.3.x → 0.5.0 in particular needs steps by hand.
+
+3. **Do not change the volume mounts** in the same step as the upgrade. A
+   container that starts on an empty or wrong directory looks just like a
+   fresh install: no sessions, and a prompt to create the first admin. If
+   you see that after an upgrade, stop and check the mounts
+   (`docker inspect sessile --format '{{json .Mounts}}'`) before you create
+   anything.
+
+4. **Pull and start** the new version:
+
+   ```bash
+   docker compose pull && docker compose up -d
+   ```
+
+When an upgrade changes the database, sessile first writes a backup of it
+and of the YAML files to `/config/backups/` and keeps the newest three.
+That backup is a safety net, not a replacement for step 1: it only covers
+`/config`, and only the releases that include it. If a release refuses to
+start because the data directory was written by a newer release, either run
+that newer release again or restore one of those backups.
+
+**Sessions from 0.3.x or older** have no owner, because accounts did not
+exist yet, and so they are invisible to every user. The startup log says
+how many there are. To hand them to a user, create that account first,
+then stop the server and run:
+
+```bash
+docker compose stop sessile
+docker compose run --rm sessile adopt-sessions --data-dir=/config --user=<username>
+docker compose start sessile
+```
+
+They come back as stopped sessions, with their scrollback. They are local
+shells, so restarting them needs `allowLocalHost` on (Settings, as admin).
+
+Running shells do not survive a restart, an upgrade included. Sessions come
+back as stopped, with their scrollback and history, and can be restarted
+from the UI.
+
 ## Configuration
 
 Every option is a CLI flag with an environment-variable fallback.
