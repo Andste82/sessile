@@ -103,6 +103,16 @@ func (s *Store) LoadStopped() ([]session.Info, error) {
 	return out, rows.Err()
 }
 
+// CountOwnerless returns how many sessions have no owner: rows written before
+// accounts existed (§8), invisible to every user until adopted (§12e M34).
+func (s *Store) CountOwnerless() (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM sessions WHERE user_id=''`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count ownerless sessions: %w", err)
+	}
+	return n, nil
+}
+
 // DeleteStoppedBefore removes stopped sessions whose last activity predates
 // cutoff and returns the ids it removed, so the caller can discard their
 // scrollback and history too.

@@ -2152,6 +2152,10 @@ ran. With `backups/` read-only → a clear refusal, database unchanged.
 ### M33 — Startup diagnostics
 A freshly created or empty `--data-dir` logs a **loud WARN** with the
 resolved path and "upgrading? check your volume mounts (`docker inspect`)".
+"Empty" means no `sessions.db`, `users.yml`, `config.yml` or state file
+(`upgrade.LooksFresh`), checked before anything creates them. The
+directory itself proves nothing: `config.Parse` creates it, and
+`<data-dir>/workspace` inside it, and an empty mount may hold `lost+found`.
 Sessions with `user_id=''` log a WARN with their count and the M34 command.
 `GET /api/health` stays as it is, so the protocol does not change.
 ✅ *Verify:* a container on an empty mount → the warning in `docker logs`;

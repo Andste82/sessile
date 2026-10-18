@@ -82,9 +82,17 @@ func run(args []string) error {
 		return fmt.Errorf("load embedded frontend: %w", err)
 	}
 
-	// Before anything else writes to the data directory: refuse one a newer
-	// release has already upgraded, and back it up before migrating it
-	// (§8, §12e). Every later step may create or rewrite files in it.
+	// Before anything else writes to the data directory: say so loudly if it
+	// holds nothing, refuse one a newer release has already upgraded, and
+	// back it up before migrating it (§8, §12e). Every later step may create
+	// or rewrite files in it.
+	if upgrade.LooksFresh(cfg.DataDir) {
+		log.Warn("data directory is empty: starting as a new install. "+
+			"Fine on a first start. If this is an upgrade, STOP: your data is not where the server is looking. "+
+			"Check the volume mounts (docker inspect <container> --format '{{json .Mounts}}') "+
+			"and see Upgrading in the README before creating an admin account",
+			"data-dir", cfg.DataDir)
+	}
 	state, _, err := upgrade.ReadState(cfg.DataDir)
 	if err != nil {
 		return err
@@ -120,6 +128,15 @@ func run(args []string) error {
 	}
 	defer store.Close()
 	log.Info("store ready", "db", cfg.DB, "schema-version", storage.SchemaVersion())
+	if n, err := store.CountOwnerless(); err != nil {
+		log.Error("count ownerless sessions failed", "err", err)
+	} else if n > 0 {
+		log.Warn("sessions without an owner are invisible to every user. "+
+			"They predate accounts (0.3.x and older). To hand them to a user, stop the server and run "+
+			"'sessile adopt-sessions --data-dir=<data-dir> --user=<username>' "+
+			"(Docker: docker compose run --rm sessile adopt-sessions --data-dir=/config --user=<username>)",
+			"count", n, "data-dir", cfg.DataDir)
+	}
 
 	if state.LastVersion != "" && state.LastVersion != config.Version {
 		log.Info("version changed since the last start", "from", state.LastVersion, "to", config.Version)

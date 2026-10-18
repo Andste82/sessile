@@ -171,6 +171,15 @@ func TestMigrateReleasedSchemas(t *testing.T) {
 						got.ID, got.Name, got.UserID, got.Group, got.TargetType, w)
 				}
 			}
+			ownerless := 0
+			for _, w := range tc.rows {
+				if w.userID == "" {
+					ownerless++
+				}
+			}
+			if n, err := st.CountOwnerless(); err != nil || n != ownerless {
+				t.Errorf("CountOwnerless = (%d, %v), want %d", n, err, ownerless)
+			}
 			before := dumpRows(t, st)
 			st.Close()
 

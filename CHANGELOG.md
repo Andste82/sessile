@@ -23,6 +23,10 @@ README under [Upgrading](README.md#upgrading).
   the server does not start.
 - New file `<data-dir>/.sessile-state.yml` records the release that last
   ran on the directory. Do not edit it.
+- A start on a data directory with no state at all logs a loud warning with
+  the resolved path. After an upgrade, that almost always means a volume
+  that is not mounted where it used to be. Sessions without an owner (from
+  0.3.x and older) are counted in a warning on every start.
 
 ### Upgrade / Breaking
 
