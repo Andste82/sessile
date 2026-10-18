@@ -66,6 +66,22 @@ func backups(t *testing.T, dir string) []string {
 	return names
 }
 
+// rawStatus reads one row's status without going through storage.Open,
+// which would reconcile it.
+func rawStatus(t *testing.T, dir, id string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status string
+	if err := db.QueryRow(`SELECT status FROM sessions WHERE id=?`, id).Scan(&status); err != nil {
+		t.Fatalf("read status of %s: %v", id, err)
+	}
+	return status
+}
+
 func TestAdoptSessions(t *testing.T) {
 	dir, aliceID := adoptDataDir(t)
 
@@ -81,6 +97,11 @@ func TestAdoptSessions(t *testing.T) {
 	// adopting.
 	if b := backups(t, dir); len(b) != 2 || !strings.HasSuffix(b[0], "-adopt") && !strings.HasSuffix(b[1], "-adopt") {
 		t.Errorf("backups = %v, want a schema-v0 and an adopt backup", b)
+	}
+	// It did not reconcile: a "running" row is the server's to judge, and a
+	// server may be up next to this command.
+	if got := rawStatus(t, dir, "crashed-0000-0000-0000-000000000000"); got != "running" {
+		t.Errorf("status of the running row after adopt = %q, want it left running", got)
 	}
 
 	st, err := storage.Open(filepath.Join(dir, "sessions.db"))

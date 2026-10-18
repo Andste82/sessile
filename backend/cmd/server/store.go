@@ -15,7 +15,10 @@ import (
 // release has already upgraded, and back the directory up before any
 // migration step runs. It returns the state file as it was before this
 // start, for the caller to log and rewrite.
-func openStore(dataDir, dbPath string, log *slog.Logger) (*storage.Store, upgrade.State, error) {
+//
+// keepRunning is for every caller but the server: only the process that owns
+// the shells may conclude that a "running" row's shell is gone.
+func openStore(dataDir, dbPath string, keepRunning bool, log *slog.Logger) (*storage.Store, upgrade.State, error) {
 	state, _, err := upgrade.ReadState(dataDir)
 	if err != nil {
 		return nil, upgrade.State{}, err
@@ -37,6 +40,7 @@ func openStore(dataDir, dbPath string, log *slog.Logger) (*storage.Store, upgrad
 			log.Info("backup written before migration", "dir", dir, "from-schema", p.From, "to-schema", p.To)
 			return nil
 		},
+		KeepRunning: keepRunning,
 	})
 	var tooNew *storage.SchemaTooNewError
 	if errors.As(err, &tooNew) {

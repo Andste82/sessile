@@ -102,7 +102,7 @@ func run(args []string) error {
 	// Open the metadata store; it migrates the schema (backing up first) and
 	// reconciles any session left "running" by a previous process to
 	// "stopped" on open (§8).
-	store, state, err := openStore(cfg.DataDir, cfg.DB, log)
+	store, state, err := openStore(cfg.DataDir, cfg.DB, false, log)
 	if err != nil {
 		return err
 	}

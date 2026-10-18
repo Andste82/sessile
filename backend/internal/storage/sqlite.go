@@ -189,6 +189,11 @@ type Options struct {
 	// Open with the database untouched (§12e M32: no backup, no migration).
 	// It is not called for a new database: there is nothing to back up.
 	BeforeMigrate func(Pending) error
+	// KeepRunning skips the running → stopped reconcile. Only the server may
+	// decide that a session's shell is gone, because only the server owns
+	// the shells. A tool opening the database next to it (adopt-sessions)
+	// must not mark a live session stopped.
+	KeepRunning bool
 }
 
 // Store is a SQLite-backed session metadata store.
@@ -253,9 +258,11 @@ func OpenWith(path string, opts Options) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
-	if _, err := db.Exec(`UPDATE sessions SET status='stopped' WHERE status='running'`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("reconcile running sessions: %w", err)
+	if !opts.KeepRunning {
+		if _, err := db.Exec(`UPDATE sessions SET status='stopped' WHERE status='running'`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("reconcile running sessions: %w", err)
+		}
 	}
 
 	return &Store{db: db}, nil

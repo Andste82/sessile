@@ -93,7 +93,12 @@ func runAdopt(args []string, out, errOut io.Writer) error {
 	}
 
 	log := slog.New(slog.NewTextHandler(errOut, nil))
-	store, _, err := openStore(dir, dbPath, log)
+	// keepRunning: if the server is up after all, against the advice above,
+	// its live sessions must stay "running" in the database. Marking them
+	// stopped is the server's call, made on its own next start. The rows
+	// this command changes are never live: an ownerless session predates
+	// every release that could still be serving it.
+	store, _, err := openStore(dir, dbPath, true, log)
 	if err != nil {
 		return err
 	}
