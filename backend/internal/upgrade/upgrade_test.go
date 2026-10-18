@@ -249,6 +249,35 @@ func TestBackupPrunesOldest(t *testing.T) {
 	}
 }
 
+// A ".partial" left by a backup that was killed mid-way is not a backup: it
+// must not count towards KeepBackups, so it cannot push a real backup out a
+// generation early, and pruning must not touch it either.
+func TestBackupPruneIgnoresStalePartial(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(BackupsDir(dir), "20250101T000000Z-schema-v0.partial")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var made []string
+	for i := 0; i < KeepBackups; i++ {
+		b, err := Backup(dir, "schema-v0", nil, start.Add(time.Duration(i)*time.Hour))
+		if err != nil {
+			t.Fatalf("Backup %d: %v", i, err)
+		}
+		made = append(made, b)
+	}
+	for _, b := range made {
+		if _, err := os.Stat(b); err != nil {
+			t.Errorf("real backup %s was pruned with only %d real backups present: %v",
+				filepath.Base(b), KeepBackups, err)
+		}
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Errorf("stale .partial was removed by pruning: %v", err)
+	}
+}
+
 // Two backups in the same second get distinct names.
 func TestBackupSameSecond(t *testing.T) {
 	dir := t.TempDir()

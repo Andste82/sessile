@@ -28,8 +28,10 @@ const KeepBackups = 3
 const backupTimeFormat = "20060102T150405Z"
 
 // backupName matches a completed backup directory. A ".partial" one is an
-// interrupted backup and never counts as one of the KeepBackups.
-var backupName = regexp.MustCompile(`^\d{8}T\d{6}Z-[a-z0-9.-]+$`)
+// interrupted backup and never counts as one of the KeepBackups — hence no
+// dot in the label class: every label is dotless (schema-v<n>, adopt, with
+// an optional -<n> collision suffix), and a dot would let "….partial" match.
+var backupName = regexp.MustCompile(`^\d{8}T\d{6}Z-[a-z0-9-]+$`)
 
 // BackupsDir is where Backup writes, under dataDir.
 func BackupsDir(dataDir string) string {
