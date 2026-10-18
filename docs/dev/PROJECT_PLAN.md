@@ -1354,7 +1354,8 @@ Sessions table schema (run as an embedded migration on startup; `M17`/§12b
 added the four auth/target columns to the v0.1–v0.2 table via
 `ALTER TABLE ... ADD COLUMN`, guarded by a `PRAGMA table_info` check since
 this was the project's first real schema migration; `M27`/§12d added
-`group_name` the same way). The column is `group_name`, not `group`: `GROUP`
+`group_name` the same way; since `M31`/§12e those checks are migration
+step 1, below). The column is `group_name`, not `group`: `GROUP`
 is a SQL keyword, and a column that has to be quoted at every use is a trap
 for the next hand-written query. A row that predates it carries `''`, which is
 "no group" (§4.11) — nothing to backfill:

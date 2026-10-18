@@ -105,7 +105,7 @@ func run(args []string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer store.Close()
-	log.Info("store ready", "db", cfg.DB)
+	log.Info("store ready", "db", cfg.DB, "schema-version", storage.SchemaVersion())
 
 	manager := session.NewManager(cfg.WorkspaceDir, cfg.Shells, cfg.BufferSize, cfg.DataDir, store, log)
 	manager.SetHostResolver(&hostResolver{registry: hostsRegistry})

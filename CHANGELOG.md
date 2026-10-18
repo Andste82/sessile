@@ -12,6 +12,12 @@ README under [Upgrading](README.md#upgrading).
 
 ## Unreleased
 
+- `sessions.db` records its schema version (`PRAGMA user_version`), and
+  every schema change is a numbered migration step that is applied
+  completely or not at all. A release refuses to start on a database a
+  newer release has already migrated, instead of writing into a schema it
+  does not know.
+
 ### Upgrade / Breaking
 
 None.
