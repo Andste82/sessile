@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
 import type { ServerEvent } from '@/api/events'
 import type { AppConfig, CreateSessionBody, Session, UpdateSessionBody } from '@/api/types'
+import { compareNames, compareSessions } from '@/utils/naturalSort'
 import { useUiStore } from './ui'
 
 /**
@@ -123,12 +124,15 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   // Sessions in display order: the ungrouped ones first and unlabelled, then
-  // each named group alphabetically. Ungrouped goes first and headerless
+  // each named group, with the sessions inside every block, all in natural name
+  // order (`utils/naturalSort`). This is the one place that order is decided, so
+  // the dashboard and the sidebar always agree, and the `sessions` array itself
+  // keeps its API order. Ungrouped goes first and headerless
   // because "" is the absence of a group, not a group called "Default" — a
   // user who never touches this feature sees exactly the flat list they saw
   // before it existed (§4.11).
   const grouped = computed<SessionGroup[]>(() => {
-    const ungrouped = sessions.value.filter((s) => s.group === '')
+    const ungrouped = sessions.value.filter((s) => s.group === '').sort(compareSessions)
     const named = new Map<string, Session[]>()
     for (const s of sessions.value) {
       if (s.group === '') continue
@@ -137,8 +141,8 @@ export const useSessionsStore = defineStore('sessions', () => {
       else named.set(s.group, [s])
     }
     const out: SessionGroup[] = ungrouped.length > 0 ? [{ name: '', sessions: ungrouped }] : []
-    for (const name of [...named.keys()].sort((a, b) => a.localeCompare(b))) {
-      out.push({ name, sessions: named.get(name)! })
+    for (const name of [...named.keys()].sort(compareNames)) {
+      out.push({ name, sessions: named.get(name)!.sort(compareSessions) })
     }
     return out
   })
@@ -148,9 +152,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   // its last session is deleted. Used for the create/edit dialogs' suggestions
   // and by the grouped views.
   const groupNames = computed(() =>
-    [...new Set(sessions.value.map((s) => s.group).filter((g) => g !== ''))].sort((a, b) =>
-      a.localeCompare(b),
-    ),
+    [...new Set(sessions.value.map((s) => s.group).filter((g) => g !== ''))].sort(compareNames),
   )
 
   const byId = computed(

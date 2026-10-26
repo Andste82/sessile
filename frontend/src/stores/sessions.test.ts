@@ -304,6 +304,53 @@ describe('grouped', () => {
     expect(store.grouped[0].name).toBe('')
   })
 
+  it('orders sessions by name naturally within each block, ungrouped included', () => {
+    const store = useSessionsStore()
+    store.sessions = [
+      session({ id: '1', name: 'web10', group: 'Prod' }),
+      session({ id: '2', name: 'Web2', group: 'Prod' }),
+      session({ id: '3', name: 'b10' }),
+      session({ id: '4', name: 'B2' }),
+    ]
+    expect(store.grouped.map((g) => [g.name, g.sessions.map((s) => s.name)])).toEqual([
+      ['', ['B2', 'b10']],
+      ['Prod', ['Web2', 'web10']],
+    ])
+  })
+
+  it('orders groups naturally and case-insensitively', () => {
+    const store = useSessionsStore()
+    store.sessions = [
+      session({ id: '1', group: 'rack10' }),
+      session({ id: '2', group: 'Rack2' }),
+      session({ id: '3', group: 'alpha' }),
+    ]
+    expect(store.grouped.map((g) => g.name)).toEqual(['alpha', 'Rack2', 'rack10'])
+    expect(store.groupNames).toEqual(['alpha', 'Rack2', 'rack10'])
+  })
+
+  it('does not depend on creation order and does not reorder store.sessions', () => {
+    const store = useSessionsStore()
+    const list = [
+      session({ id: 'a', name: 'x2', created: '2026-01-01T00:00:00Z' }),
+      session({ id: 'b', name: 'x1', created: '2026-01-02T00:00:00Z' }),
+    ]
+    store.sessions = list
+    const forward = store.grouped.flatMap((g) => g.sessions.map((s) => s.id))
+    expect(forward).toEqual(['b', 'a'])
+    expect(store.sessions.map((s) => s.id)).toEqual(['a', 'b'])
+    store.sessions = [...list].reverse()
+    expect(store.grouped.flatMap((g) => g.sessions.map((s) => s.id))).toEqual(forward)
+  })
+
+  it('repositions a renamed session immediately', () => {
+    const store = useSessionsStore()
+    store.sessions = [session({ id: 'a', name: 'a1' }), session({ id: 'b', name: 'b1' })]
+    expect(store.grouped[0].sessions.map((s) => s.id)).toEqual(['a', 'b'])
+    store.sessions = [session({ id: 'a', name: 'z1' }), session({ id: 'b', name: 'b1' })]
+    expect(store.grouped[0].sessions.map((s) => s.id)).toEqual(['b', 'a'])
+  })
+
   // No ungrouped block at all when every session is filed somewhere — an
   // empty first block would render as a gap above the first heading.
   it('omits the ungrouped block when it would be empty', () => {
