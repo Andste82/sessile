@@ -2,6 +2,8 @@
 /bin/
 /frontend/dist/
 /frontend/node_modules/
+# A stray vitest run from the repo root leaves a cache here.
+/node_modules/
 
 # Embedded SPA build output (a placeholder index.html is committed so the
 # Go embed directive stays valid; real assets are produced by `make build`).
