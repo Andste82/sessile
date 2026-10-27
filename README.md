@@ -248,7 +248,8 @@ and of the YAML files to `/config/backups/` and keeps the newest three.
 That backup is a safety net, not a replacement for step 1: it only covers
 `/config`, and only the releases that include it. If a release refuses to
 start because the data directory was written by a newer release, either run
-that newer release again or restore one of those backups.
+that newer release again or restore one of those backups (see
+[Restoring a backup](#restoring-a-backup)).
 
 **Sessions from 0.3.x or older** have no owner, because accounts did not
 exist yet, and so they are invisible to every user. The startup log says
@@ -267,6 +268,48 @@ shells, so restarting them needs `allowLocalHost` on (Settings, as admin).
 Running shells do not survive a restart, an upgrade included. Sessions come
 back as stopped, with their scrollback and history, and can be restarted
 from the UI.
+
+### Restoring a backup
+
+A failed migration needs no restore: it rolls back and leaves the database
+as it was. A restore is for a migration that went through but left
+something wrong. Then you go back to the release you came from, because the
+new one would run the same migration again.
+
+1. **Stop the server** and find the backup. Its name says the schema it
+   holds, e.g. `20261018T190002Z-schema-v0`:
+
+   ```bash
+   docker compose stop sessile
+   docker compose run --rm --entrypoint sh sessile -c 'ls -l /config/backups'
+   ```
+
+2. **Copy it back.** This runs inside the image, so it works the same on
+   a bind mount and a named volume, and the copies keep their `0600`
+   modes. Replace `<backup>` with the directory name from step 1:
+
+   ```bash
+   docker compose run --rm --entrypoint sh sessile -c '
+     set -e
+     b=/config/backups/<backup>
+     test -s "$b/sessions.db"
+     rm -f /config/sessions.db-wal /config/sessions.db-shm /config/.sessile-state.yml
+     cp -a "$b/." /config/
+     ls -lA /config'
+   ```
+
+   The `rm` is part of the restore, not cleanup. `sessions.db-wal` and
+   `sessions.db-shm` belong to the database being replaced, and SQLite
+   would apply a leftover WAL to the restored file. `.sessile-state.yml`
+   is not in the backup and still names the newer release. Every release
+   that uses it writes it again on start.
+
+3. **Start the release the backup came from.** Set the `image:` tag in
+   your compose file to that version, then run `docker compose up -d`.
+
+Everything that changed after the backup was taken is gone: sessions,
+accounts, password changes and SSH hosts created since. Scrollback and
+history are not part of a backup and stay where they are.
 
 ## Configuration
 
