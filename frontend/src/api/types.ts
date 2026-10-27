@@ -23,18 +23,67 @@ export interface Session {
   command: string // foreground program, or "bash › ping" for a script and what it started; "" if unknown or ssh
   cwd: string // working directory relative to root, "" if unknown or ssh
   title: string // window title the running program set for itself (OSC 0/2), "" if none
+  env: EnvVarInfo[] // environment variables, sorted by name; secret values are never sent
+  loadDotenv: boolean // read a .env at every start (create and restart)
 }
 
+// One environment variable in a request (session create/update, defaults).
+// `value` may be omitted only for a secret entry on update/PUT, meaning "keep
+// the stored value"; the server never sends a secret's value back.
+export interface EnvEntry {
+  name: string
+  value?: string
+  secret: boolean
+}
+
+// One environment variable in a response. `value` is absent when `secret`.
+export interface EnvVarInfo {
+  name: string
+  value?: string
+  secret: boolean
+  isSet: boolean
+  inherited?: boolean // session JSON only: copied from the user's defaults at create time
+}
+
+export interface EnvDefaults {
+  env: EnvVarInfo[]
+}
+
+// Create (201) and restart (200) carry the spawn's warnings; list/get/update
+// and events never do.
+export type CreateSessionResponse = Session & { warnings: string[] }
+
 // Discriminated on target: "local" needs directory+shell, "ssh" needs hostId.
+// env/removeDefaults/loadDotenv are omitted when the user changed nothing.
 export type CreateSessionBody =
-  | { name: string; target: 'local'; group?: string; directory: string; shell: string }
-  | { name: string; target: 'ssh'; group?: string; hostId: string; directory?: string }
+  | {
+      name: string
+      target: 'local'
+      group?: string
+      directory: string
+      shell: string
+      env?: EnvEntry[]
+      removeDefaults?: string[]
+      loadDotenv?: boolean
+    }
+  | {
+      name: string
+      target: 'ssh'
+      group?: string
+      hostId: string
+      directory?: string
+      env?: EnvEntry[]
+      removeDefaults?: string[]
+      loadDotenv?: boolean
+    }
 
 // Both fields optional, and both meaningful when present: an omitted one is
 // left unchanged, `group: ''` clears the group (§6).
 export interface UpdateSessionBody {
   name?: string
   group?: string
+  env?: EnvEntry[] // FULL replacement list; stopped sessions only
+  loadDotenv?: boolean
 }
 
 export interface AppConfig {
@@ -117,6 +166,7 @@ export interface Host {
   targetOS: TargetOS | ''
   terminalType: string
   customCommand: string
+  supportsEnv: boolean // computed by the server; never recompute it here
   trustedHostKeyType: string
   trustedHostKeyFingerprint: string // empty means "not yet trusted" (§4.5.1)
   created: string // RFC 3339 UTC

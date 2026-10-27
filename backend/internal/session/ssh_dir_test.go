@@ -158,7 +158,7 @@ func TestCreateSSHPersistsStartDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), dir)
+	info, _, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), dir, CreateOptions{})
 	if err != nil {
 		t.Fatalf("CreateSSH: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestCreateSSHWithoutDirectoryIsUnchanged(t *testing.T) {
 	mgr, store, _ := testManager(t)
 	srv := newStartDirServer(t)
 
-	info, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), "")
+	info, _, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), "", CreateOptions{})
 	if err != nil {
 		t.Fatalf("CreateSSH: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestCreateSSHMissingDirectoryCreatesNothing(t *testing.T) {
 	srv := newStartDirServer(t)
 	missing := filepath.Join(t.TempDir(), "gone")
 
-	_, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), missing)
+	_, _, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), missing, CreateOptions{})
 	var nf *sshpty.ErrDirNotFound
 	if !errors.As(err, &nf) {
 		t.Fatalf("err = %v, want *sshpty.ErrDirNotFound", err)
@@ -214,7 +214,7 @@ func TestRestartSSHReusesStoredDirectory(t *testing.T) {
 	mgr.SetHostResolver(fixedResolver{srv.target()})
 	dir := t.TempDir()
 
-	created, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), dir)
+	created, _, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), dir, CreateOptions{})
 	if err != nil {
 		t.Fatalf("CreateSSH: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestRestartSSHReusesStoredDirectory(t *testing.T) {
 	}
 	waitForStatus(t, mgr, created.ID, StatusStopped)
 
-	restarted, err := mgr.Restart(created.ID, "test-user")
+	restarted, _, err := mgr.Restart(created.ID, "test-user")
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestRestartSSHMissingDirectoryStaysStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	created, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), dir)
+	created, _, err := mgr.CreateSSH("test-user", "s", "", "h1", "host", srv.target(), dir, CreateOptions{})
 	if err != nil {
 		t.Fatalf("CreateSSH: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestRestartSSHMissingDirectoryStaysStopped(t *testing.T) {
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
-	_, err = mgr.Restart(created.ID, "test-user")
+	_, _, err = mgr.Restart(created.ID, "test-user")
 	var nf *sshpty.ErrDirNotFound
 	if !errors.As(err, &nf) || nf.Path != dir {
 		t.Fatalf("Restart err = %v, want *ErrDirNotFound for %q", err, dir)

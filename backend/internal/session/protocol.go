@@ -40,11 +40,47 @@ type JSON struct {
 	Command string `json:"command"`
 	Cwd     string `json:"cwd"`
 	Title   string `json:"title"`
+
+	// Env is the session's environment (issue #123), always an array. A
+	// secret entry carries no value: ToJSON is the single place that
+	// guarantees it, and every REST response and every event goes through it.
+	Env        []EnvJSON `json:"env"`
+	LoadDotenv bool      `json:"loadDotenv"`
+}
+
+// EnvJSON is one environment entry on the wire. Value is a pointer so an
+// empty non-secret value ("") is still sent while a secret's is omitted
+// altogether. IsSet is always true — an entry that exists has a value — and is
+// there so the client can render a secret row without ever seeing the value.
+type EnvJSON struct {
+	Name      string  `json:"name"`
+	Value     *string `json:"value,omitempty"`
+	Secret    bool    `json:"secret"`
+	IsSet     bool    `json:"isSet"`
+	Inherited bool    `json:"inherited"`
+}
+
+// EnvToJSON converts env entries to their wire shape, never nil. The value of
+// a secret entry is dropped here and nowhere else gets a second chance to
+// leak it.
+func EnvToJSON(env []EnvVar) []EnvJSON {
+	out := make([]EnvJSON, 0, len(env))
+	for _, e := range env {
+		j := EnvJSON{Name: e.Name, Secret: e.Secret, IsSet: true, Inherited: e.Default}
+		if !e.Secret {
+			v := e.Value
+			j.Value = &v
+		}
+		out = append(out, j)
+	}
+	return out
 }
 
 // ToJSON converts a session snapshot to its wire shape.
 func ToJSON(i Info) JSON {
 	return JSON{
+		Env:             EnvToJSON(i.Env),
+		LoadDotenv:      i.DotEnv,
 		ID:              i.ID,
 		Name:            i.Name,
 		TargetType:      string(i.TargetType),

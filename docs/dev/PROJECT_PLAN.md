@@ -1095,6 +1095,8 @@ never trusts a client-supplied user id.
 | `POST /api/hosts/:id/exchange-keys` | Passwordless login setup (§4.5.2) | `{username,password}`, password used once, never stored. Same host-key 409s as session creation |
 | `GET /api/sessions` | List the caller's sessions | Includes `clientCount` per session; strictly owner-scoped, admins included (§4.3) |
 | `POST /api/sessions` | Create | Body below; 201 + session JSON. 409 `host_key_unverified`/`host_key_changed` for SSH targets whose key needs trusting first (§4.5.1) |
+| `GET /api/env-defaults` | The caller's default environment variables | `{"env":[EnvVar…]}` (no `inherited` key); secret values are never returned. Strictly the caller's own `users/<id>/env.yml` |
+| `PUT /api/env-defaults` | Replace the caller's defaults | Body `{"env":[EnvEntry…]}`, full replacement; a missing `env` field is 400 (cannot wipe by accident), `[]` clears. A secret entry without `value` keeps its stored value. 400 `validation` for bad/reserved/duplicate names or limits |
 | `GET /api/sessions/:id` | Get one | Owner-scoped |
 | `DELETE /api/sessions/:id` | Kill + remove permanently | 204; also drops the session's scrollback snapshot and history file (§8) |
 | `PATCH /api/sessions/:id` | Edit a session's metadata (`{"name":"…","group":"…"}`) | Both fields optional; an omitted one is left unchanged, a present one always applies — `"group":""` is how a session leaves its group (§4.11). Name 1–64 chars, group ≤64. 400 `validation` otherwise |
@@ -1132,6 +1134,47 @@ trimmed, must be absolute (starts with `/`), ≤4096 bytes, no NUL/CR/LF, is not
 validated against the workspace (remote paths are exempt, §4.10), is rejected
 for Windows targets, and must exist on the host (SFTP is required to verify
 it) or the create fails with 400.
+
+#### Environment variables (issue #123)
+
+A session carries an ordered-by-name list of environment entries plus a
+`loadDotenv` flag. Request entry (`EnvEntry`): `{"name":"…","value"?:"…","secret":bool}`.
+Response entry (`EnvVar`): `{"name":"…","value"?:"…","secret":bool,"isSet":true,"inherited":bool}`;
+`value` is **omitted for secret entries** and `inherited` appears in session
+JSON only. Session JSON gains `"env":[EnvVar…]` (always an array) and
+`"loadDotenv":bool`; `session.ToJSON` is the single filter, so REST,
+`/ws/events` snapshots and live events never carry a secret value.
+Host JSON gains the computed `supportsEnv` (false for Windows/`cmd`/`powershell`
+targets; never stored).
+
+- `POST /api/sessions` adds `env?: EnvEntry[]` (every entry needs a value),
+  `removeDefaults?: string[]` (default names to drop; unknown ignored) and
+  `loadDotenv?: bool`. The server merges the caller's defaults at create time
+  (snapshot; later default edits do not touch existing sessions). On a host
+  without env support, non-empty `env`/`loadDotenv` is 400
+  (`host does not support environment variables`) and defaults are not inherited.
+- Create (201) and restart (200) responses add `"warnings":string[]` (always
+  present). Warnings (`.env line N: …`, `no .env file found`, `cannot read .env`,
+  `.env too large, skipped`) carry names and line numbers, never values. No other
+  response or event carries warnings.
+- `PATCH /api/sessions/:id` adds `env?: EnvEntry[]` (full replacement; a secret
+  entry with an omitted value keeps its stored value; names not listed are
+  deleted) and `loadDotenv?: bool`. Env edits are accepted only while the session
+  is `stopped`, otherwise 409 `conflict`. Name/group-only edits are unchanged.
+- Precedence at every spawn (create and restart): inherited defaults < `.env`
+  (if `loadDotenv`) < entries set in the dialog. `.env` is re-read at each spawn
+  and its values are never persisted. Local: `.env` in the session directory,
+  validated by the workspace check (§4.5) including a symlink re-check. SSH:
+  the constant name `.env` read over the session's existing SFTP connection
+  from the start directory, or the account home when none (exempt like §4.10).
+  `.env` failures are warnings, never errors.
+- Names match `^[A-Za-z_][A-Za-z0-9_]*$`; reserved (rejected, or skipped from
+  `.env`): `TERM, LANG, HISTFILE, HISTSIZE, HISTFILESIZE, SAVEHIST,
+  PROMPT_COMMAND, fish_history`. Limits (`internal/envfile`): 100 entries,
+  128-byte names, 4096-byte values, 16384 bytes total per list, `.env` file
+  65536, accepted `.env` content 32768, SSH command line 131072.
+- Error mapping: invalid env and unsupported host/target -> 400 `validation`;
+  env edit on a non-stopped session -> 409 `conflict`.
 
 Session JSON shape (single source of truth — mirror in TS types):
 ```json
@@ -1387,6 +1430,7 @@ of it ever written into SQLite:
   users.yml                  # []auth.User — id, username, bcrypt hash, isAdmin
   users/<user-id>/
     hosts.yml                 # []hosts.Host — SSH targets, credentials, host-key pin
+    env.yml                   # default environment variables (issue #123), plaintext secrets
   sessions.db
   scrollback/<session-id>.bin
   history/<session-id>
@@ -1426,6 +1470,22 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_activity     TEXT NOT NULL
 );
 ```
+Migration step 2 (issue #123) appends `env_vars TEXT NOT NULL DEFAULT '[]'`
+(JSON array of non-secret entries `{"n","v","d"}`), `env_secrets TEXT NOT NULL
+DEFAULT '[]'` (same shape, secret entries) and `dotenv INTEGER NOT NULL
+DEFAULT 0`. Releases older than this migration refuse to open the database.
+Per-user defaults live in `users/<user-id>/env.yml` (`env: [{name,value,secret}]`,
+0600, atomic write), included in the pre-upgrade backups. Both hold secrets in
+plaintext (`// TODO(security)`, same stance as host credentials).
+`env.yml` is validated when it is loaded: a hand-edited file with a duplicate,
+reserved or malformed entry makes the defaults endpoints and session create
+answer 500 "your env.yml is invalid, fix or remove it" (entry names only, never
+values). Read-modify-write of the defaults (`PUT /api/env-defaults`) is atomic
+per user (`EnvStore.Update`). Validation also bounds the fully quoted size of
+the session's own entries (`envfile.ExportSize` against `MaxExportBytes`), so
+create/edit refuse what the spawn would reject; a `.env` read at spawn time is
+still checked there.
+
 Rows created before the migration carry `user_id=''` and are invisible
 under strict per-owner scoping (§4.3, §10). They are not lost: the operator
 hands them to a user explicitly and offline with `adopt-sessions` (M34,
@@ -1823,6 +1883,18 @@ layout and §11 for what they do and don't encrypt.
 - Rate limiting: still deferred — not added in this pass either. Login
   brute-forcing is the main gap this leaves open; worth revisiting before a
   wider deployment than "an admin who trusts their own users."
+
+### 11.0 Environment variable secrets (issue #123)
+
+A secret entry is write-only over the API: it is never returned, logged, put in
+an event, an error or a warning. It is stored in plaintext in the sessions
+database (`env_secrets`) and `users/<id>/env.yml`, and therefore in `backups/`.
+Documented limits, not bugs: the value is visible inside the terminal (`env`,
+`echo`) and in scrollback; for SSH sessions the values appear in the remote
+process list (`ps`) of the wrapper shell until it `exec`s the login shell;
+an rc file can override a variable; the history variables and `TERM`/`LANG`
+are reserved so they cannot be overridden. Multi-line values are not usable
+with csh/tcsh login accounts.
 
 ### 11.1 Known limitation: SSH throughput on high-latency links
 

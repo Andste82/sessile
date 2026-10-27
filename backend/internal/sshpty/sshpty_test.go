@@ -30,6 +30,12 @@ type testServer struct {
 	// sftpEnabled makes the server answer the "sftp" subsystem request with
 	// a real sftp server on the local filesystem; off, it refuses it.
 	sftpEnabled atomic.Bool
+
+	// lastExec is the command line of the most recent exec request.
+	lastExec atomic.Value // string
+
+	// rejectExec makes the server refuse the exec request.
+	rejectExec atomic.Bool
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -141,6 +147,15 @@ func (ts *testServer) serveSession(ch ssh.Channel, requests <-chan *ssh.Request)
 			_ = server.Close()
 			return
 		case "exec", "shell":
+			if req.Type == "exec" {
+				var payload struct{ Command string }
+				_ = ssh.Unmarshal(req.Payload, &payload)
+				ts.lastExec.Store(payload.Command)
+			}
+			if ts.rejectExec.Load() {
+				req.Reply(false, nil)
+				continue
+			}
 			req.Reply(true, nil)
 			if !startOnce {
 				startOnce = true

@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/Andste82/sessile/backend/internal/envfile"
 	"github.com/Andste82/sessile/backend/internal/terminal"
 )
 
@@ -81,13 +82,40 @@ type PTY struct {
 }
 
 // Start dials target, requests a PTY, and starts its configured command.
-// A non-empty dir is the absolute start directory (POSIX targets only): it
-// is verified over SFTP before the shell exists (checkDir) and entered by
-// the exec preamble (wrapWithPIDRecording). Rows/cols size the initial
-// window, exactly like terminal.Start's local equivalent.
+// It is StartWithEnv without an environment.
 func Start(t Target, dir string, rows, cols uint16) (*PTY, error) {
-	if dir != "" && isWindowsTarget(t) {
+	p, _, err := StartWithEnv(t, StartOptions{Dir: dir, Rows: rows, Cols: cols})
+	return p, err
+}
+
+// StartWithEnv dials target, requests a PTY, and starts its configured
+// command. A non-empty o.Dir is the absolute start directory (POSIX targets
+// only): it is verified over SFTP before the shell exists and entered by the
+// exec preamble (wrapWithPIDRecording). Rows/cols size the initial window,
+// exactly like terminal.Start's local equivalent.
+//
+// o.Env and the optional remote .env (o.LoadDotenv) are exported by the same
+// preamble (issue #123). The returned warnings describe a .env that could
+// not be used; they never contain a value and are not stored anywhere.
+func StartWithEnv(t Target, o StartOptions) (*PTY, []string, error) {
+	var warnings []string
+	p, err := startPTY(t, o, &warnings)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, warnings, nil
+}
+
+func startPTY(t Target, o StartOptions, warnings *[]string) (*PTY, error) {
+	dir, rows, cols := o.Dir, o.Rows, o.Cols
+	supportsEnv := SupportsEnv(t.TargetOS, t.TerminalType)
+	if dir != "" && !supportsEnv {
 		return nil, &ErrDirUnsupported{}
+	}
+	// Refused before dialing: nothing would apply the variables, and a .env
+	// must not even be read for such a target.
+	if (len(o.Env) > 0 || o.LoadDotenv) && !supportsEnv {
+		return nil, ErrEnvUnsupported
 	}
 
 	client, err := Dial(context.Background(), t)
@@ -96,13 +124,37 @@ func Start(t Target, dir string, rows, cols uint16) (*PTY, error) {
 	}
 
 	// Checked before NewSession so a missing directory fails visibly
-	// instead of silently landing in the home directory.
-	if dir != "" {
-		if err := checkDir(client, dir); err != nil {
+	// instead of silently landing in the home directory. One SFTP client
+	// serves both this check and the .env read.
+	var dotenv []envfile.Entry
+	if dir != "" || o.LoadDotenv {
+		sc, serr := openSFTP(client)
+		switch {
+		case serr != nil && dir != "":
 			_ = client.Close()
-			return nil, err
+			return nil, &ErrSFTPUnavailable{Err: serr}
+		case serr != nil:
+			// Only the .env wanted SFTP: the session still starts. openSFTP
+			// may have closed the client on timeout; NewSession then fails
+			// visibly, which is the right outcome.
+			*warnings = append(*warnings, warnDotenvUnreadable)
+		default:
+			if dir != "" {
+				if err := checkDirSFTP(sc, dir); err != nil {
+					_ = sc.Close()
+					_ = client.Close()
+					return nil, err
+				}
+			}
+			if o.LoadDotenv {
+				var w []string
+				dotenv, w = readRemoteDotenv(sc, dir)
+				*warnings = append(*warnings, w...)
+			}
+			_ = sc.Close()
 		}
 	}
+	final := envfile.Merge(o.Env, dotenv)
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -145,7 +197,17 @@ func Start(t Target, dir string, rows, cols uint16) (*PTY, error) {
 		cmd = t.CustomCommand
 	}
 
-	pidFilePath, startCmd := wrapWithPIDRecording(t.TargetOS, t.TerminalType, dir, cmd)
+	pidFilePath, startCmd := wrapWithPIDRecording(t.TargetOS, t.TerminalType, dir, cmd, final)
+
+	if len(startCmd) > envfile.MaxExportBytes {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+		_ = session.Close()
+		_ = client.Close()
+		return nil, ErrEnvTooLarge
+	}
 
 	if err := session.Start(startCmd); err != nil {
 		_ = stdinR.Close()
@@ -154,7 +216,10 @@ func Start(t Target, dir string, rows, cols uint16) (*PTY, error) {
 		_ = stdoutW.Close()
 		_ = session.Close()
 		_ = client.Close()
-		return nil, fmt.Errorf("start %q: %w", cmd, err)
+		// cmd, never startCmd: the wrapped line carries the exported values,
+		// and x/crypto's own error ("ssh: command <line> failed") quotes it,
+		// so the line is scrubbed out of the message (and not %w-wrapped).
+		return nil, fmt.Errorf("start %q: %s", cmd, strings.ReplaceAll(err.Error(), startCmd, "<command>"))
 	}
 
 	p := &PTY{
@@ -267,21 +332,38 @@ func authMethods(t Target) ([]ssh.AuthMethod, error) {
 // This is a safety net behind Start's SFTP check: a failed cd exits the
 // wrapper non-zero and never reaches exec, so the user never silently
 // lands in the wrong directory. Windows targets get no wrapper and no cd.
-func wrapWithPIDRecording(targetOS, terminalType, dir, cmd string) (pidFilePath, wrapped string) {
-	if targetOS == "windows" || terminalType == "cmd" || terminalType == "powershell" {
+//
+// env (already merged and sorted, see envfile.Merge) is exported after the
+// cd and before the PID echo: `export K='v'; export K2='v2'; …`. Names are
+// regex-validated upstream so they go in bare; values go through
+// shellSingleQuote, and the whole preamble is quoted once more as the
+// `sh -c` argument. A Windows-flagged target never gets env (StartWithEnv
+// refuses before reaching here).
+func wrapWithPIDRecording(targetOS, terminalType, dir, cmd string, env []envfile.Entry) (pidFilePath, wrapped string) {
+	if !SupportsEnv(targetOS, terminalType) {
 		return "", cmd
 	}
+	var path string
 	token := make([]byte, 8)
-	if _, err := rand.Read(token); err != nil {
+	if _, err := rand.Read(token); err == nil {
+		path = "/tmp/.sessile-pid-" + hex.EncodeToString(token)
+	} else if dir == "" && len(env) == 0 {
 		return "", cmd // can't generate a safe path — run cmd exactly as before
 	}
-	path := "/tmp/.sessile-pid-" + hex.EncodeToString(token)
 
 	target := cmd // a bare shell name (bash/zsh/fish) — nothing to interpret, exec it directly
 	if terminalType == "custom" {
 		target = "sh -c " + shellSingleQuote(cmd)
 	}
-	preamble := fmt.Sprintf("echo $$ > %s 2>/dev/null; exec %s", path, target)
+	var b strings.Builder
+	for _, e := range env {
+		fmt.Fprintf(&b, "export %s=%s; ", e.Name, shellSingleQuote(e.Value))
+	}
+	if path != "" {
+		fmt.Fprintf(&b, "echo $$ > %s 2>/dev/null; ", path)
+	}
+	fmt.Fprintf(&b, "exec %s", target)
+	preamble := b.String()
 	if dir != "" {
 		preamble = fmt.Sprintf("cd -- %s && { %s; }", shellSingleQuote(dir), preamble)
 	}

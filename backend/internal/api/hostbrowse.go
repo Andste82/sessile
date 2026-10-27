@@ -325,10 +325,6 @@ func validateBrowsePath(p string) error {
 	return nil
 }
 
-func isWindowsHost(h hosts.Host) bool {
-	return h.TargetOS == hosts.TargetOS("windows") || h.TerminalType == "cmd" || h.TerminalType == "powershell"
-}
-
 // listHostDirectories handles GET /api/hosts/:id/directories?path=.
 func (s *Server) listHostDirectories(c *gin.Context) {
 	userID := c.MustGet(userIDKey).(string)
@@ -346,7 +342,7 @@ func (s *Server) listHostDirectories(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 		return
 	}
-	if isWindowsHost(host) {
+	if !host.SupportsEnv() {
 		respondError(c, http.StatusBadRequest, CodeValidation, "directory browsing is not supported for Windows targets")
 		return
 	}

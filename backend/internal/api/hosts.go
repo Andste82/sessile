@@ -27,6 +27,9 @@ type hostResponse struct {
 	TrustedHostKeyType        string `json:"trustedHostKeyType"`
 	TrustedHostKeyFingerprint string `json:"trustedHostKeyFingerprint"`
 	Created                   string `json:"created"`
+	// SupportsEnv is computed (hosts.Host.SupportsEnv), never stored: whether
+	// a session on this host can carry environment variables.
+	SupportsEnv bool `json:"supportsEnv"`
 }
 
 func toHostResponse(h hosts.Host) hostResponse {
@@ -41,6 +44,7 @@ func toHostResponse(h hosts.Host) hostResponse {
 		TrustedHostKeyType:        h.TrustedHostKeyType,
 		TrustedHostKeyFingerprint: h.TrustedHostKeyFingerprint,
 		Created:                   h.Created.Format("2006-01-02T15:04:05Z07:00"),
+		SupportsEnv:               h.SupportsEnv(),
 	}
 }
 

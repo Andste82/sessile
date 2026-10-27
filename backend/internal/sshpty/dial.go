@@ -122,12 +122,6 @@ func (e *ErrDirUnsupported) Error() string {
 	return "start directory is not supported for Windows targets"
 }
 
-// isWindowsTarget mirrors wrapWithPIDRecording's gate: either signal alone
-// means the remote side is not a POSIX shell.
-func isWindowsTarget(t Target) bool {
-	return t.TargetOS == "windows" || t.TerminalType == "cmd" || t.TerminalType == "powershell"
-}
-
 // sftpOpenTimeout bounds the SFTP subsystem handshake, which sftp.NewClient
 // itself cannot (no context support).
 const sftpOpenTimeout = 15 * time.Second
@@ -155,15 +149,10 @@ func openSFTP(client *ssh.Client) (*sftp.Client, error) {
 	}
 }
 
-// checkDir verifies dir is an existing directory on the host over SFTP, on
-// the already-dialed (and already TOFU-verified) client.
-func checkDir(client *ssh.Client, dir string) error {
-	sc, err := openSFTP(client)
-	if err != nil {
-		return &ErrSFTPUnavailable{Err: err}
-	}
-	defer sc.Close()
-
+// checkDirSFTP verifies dir is an existing directory on the host, over an
+// SFTP client opened on the already-dialed (and already TOFU-verified)
+// connection.
+func checkDirSFTP(sc *sftp.Client, dir string) error {
 	fi, err := sc.Stat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -2,9 +2,16 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
 import type { ServerEvent } from '@/api/events'
-import type { AppConfig, CreateSessionBody, Session, UpdateSessionBody } from '@/api/types'
+import type {
+  AppConfig,
+  CreateSessionBody,
+  CreateSessionResponse,
+  Session,
+  UpdateSessionBody,
+} from '@/api/types'
 import { compareNames, compareSessions } from '@/utils/naturalSort'
 import { useUiStore } from './ui'
+import { useToastsStore } from './toasts'
 
 /**
  * SessionGroup is one block of the grouped session list. An empty name is the
@@ -253,8 +260,18 @@ export const useSessionsStore = defineStore('sessions', () => {
     else sessions.value = sessions.value.map((s) => (s.id === session.id ? session : s))
   }
 
+  // Create and restart answer with the spawn's warnings next to the session
+  // (e.g. "no .env file found"). They are one-shot: shown as toasts and never
+  // stored on the session, which is what list/get/events carry.
+  function takeWarnings(res: CreateSessionResponse): Session {
+    const { warnings, ...session } = res
+    const toasts = useToastsStore()
+    for (const w of warnings ?? []) toasts.push(w, 'warning')
+    return session
+  }
+
   async function createSession(body: CreateSessionBody): Promise<Session> {
-    const created = await api.createSession(body)
+    const created = takeWarnings(await api.createSession(body))
     sessions.value = [created, ...sessions.value.filter((s) => s.id !== created.id)]
     return created
   }
@@ -301,7 +318,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   // and command history restored. The id is unchanged, so any open tab keeps
   // pointing at the same session and only needs to reconnect.
   async function restartSession(id: string) {
-    const restarted = await api.restartSession(id)
+    const restarted = takeWarnings(await api.restartSession(id))
     sessions.value = sessions.value.map((s) => (s.id === id ? restarted : s))
     return restarted
   }

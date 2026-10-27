@@ -2,6 +2,24 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DirectoriesResponse } from '@/api/types'
 import { createHostBrowse, hostKeyOf, sshCreateBody, supportsStartDir } from './hostBrowse'
 
+describe('sshCreateBody env parts', () => {
+  const common = { name: 'n', group: 'g' }
+  it('adds nothing for empty env parts', () => {
+    expect(sshCreateBody(common, 'h', '', {})).toEqual({ name: 'n', group: 'g', target: 'ssh', hostId: 'h' })
+  })
+  it('spreads env parts into the body', () => {
+    const parts = { env: [{ name: 'A', value: '1', secret: false }], removeDefaults: ['B'], loadDotenv: true }
+    expect(sshCreateBody(common, 'h', ' /x ', parts)).toEqual({
+      name: 'n',
+      group: 'g',
+      target: 'ssh',
+      hostId: 'h',
+      directory: '/x',
+      ...parts,
+    })
+  })
+})
+
 describe('sshCreateBody', () => {
   const common = { name: 'n', group: 'g' }
   it('omits directory when empty or blank', () => {

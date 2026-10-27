@@ -16,8 +16,9 @@ import (
 // currentColumns is the sessions table every migrated database must end up
 // with, whatever it started from.
 var currentColumns = []string{
-	"created", "directory", "group_name", "host_display_name", "host_id", "id",
-	"last_activity", "name", "shell", "status", "target_type", "user_id",
+	"created", "directory", "dotenv", "env_secrets", "env_vars", "group_name",
+	"host_display_name", "host_id", "id", "last_activity", "name", "shell",
+	"status", "target_type", "user_id",
 }
 
 // loadFixture builds a database file from one of the SQL dumps in testdata/.
@@ -85,7 +86,7 @@ func dumpRows(t *testing.T, st *Store) string {
 	defer rows.Close()
 	var b strings.Builder
 	for rows.Next() {
-		var cols [12]string
+		var cols [15]string
 		ptrs := make([]any, len(cols))
 		for i := range cols {
 			ptrs[i] = &cols[i]
@@ -301,5 +302,57 @@ func TestFailedMigrationRollsBack(t *testing.T) {
 		if c == "half_done" {
 			t.Fatal("the failed step's column survived its rollback")
 		}
+	}
+}
+
+// A version-1 database (before environment variables) migrates to the
+// current version: the three new columns appear with their defaults, and the
+// existing rows load with an empty environment and no .env.
+func TestMigrateV1ToEnvColumns(t *testing.T) {
+	path := loadFixture(t, "v1.sql")
+	if v := rawVersion(t, path); v != 1 {
+		t.Fatalf("fixture user_version = %d, want 1", v)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	if SchemaVersion() < 2 {
+		t.Fatalf("SchemaVersion() = %d, want at least 2", SchemaVersion())
+	}
+	if got := columns(t, st); strings.Join(got, ",") != strings.Join(currentColumns, ",") {
+		t.Errorf("columns = %v, want %v", got, currentColumns)
+	}
+	if v := rawVersion(t, path); v != SchemaVersion() {
+		t.Errorf("user_version = %d, want %d", v, SchemaVersion())
+	}
+
+	rows, err := st.db.Query(`SELECT env_vars, env_secrets, dotenv FROM sessions`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var vars, secrets string
+		var dotenv int
+		n++
+		if err := rows.Scan(&vars, &secrets, &dotenv); err != nil {
+			t.Fatal(err)
+		}
+		if vars != "[]" || secrets != "[]" || dotenv != 0 {
+			t.Errorf("defaults = (%q, %q, %d), want ('[]', '[]', 0)", vars, secrets, dotenv)
+		}
+	}
+	if n != 2 {
+		t.Fatalf("%d rows, want 2", n)
+	}
+	got, ok, err := st.Get("11111111-0000-4000-8000-000000000001")
+	if err != nil || !ok {
+		t.Fatalf("Get = (%v, %v)", ok, err)
+	}
+	if len(got.Env) != 0 || got.DotEnv {
+		t.Errorf("migrated row Env=%v DotEnv=%v, want empty/false", got.Env, got.DotEnv)
 	}
 }

@@ -17,7 +17,7 @@ import (
 )
 
 // KeepBackups is how many backups survive pruning. Every one holds a copy of
-// users.yml and hosts.yml credentials, so keeping them all forever would only
+// users.yml, hosts.yml and env.yml credentials, so keeping them all forever would only
 // multiply what has to be protected.
 const KeepBackups = 3
 
@@ -44,10 +44,13 @@ func BackupsDir(dataDir string) string {
 //	sessions.db               via snapshotDB (VACUUM INTO), if non-nil
 //	config.yml, users.yml     copied, where they exist
 //	users/<id>/hosts.yml      copied, every one that exists
+//	users/<id>/env.yml        copied, every one that exists
 //
-// Directories are 0700 and files 0600: users.yml has password hashes and
-// hosts.yml has plaintext SSH credentials (§11), and a backup must not be
-// easier to read than the original.
+// Directories are 0700 and files 0600: users.yml has password hashes,
+// hosts.yml has plaintext SSH credentials (§11), env.yml has plaintext
+// default environment variables, some of them secrets, and sessions.db holds
+// the same for each session. A backup must not be easier to read than the
+// original.
 //
 // The backup is assembled under a ".partial" name and renamed into place
 // only once complete, so a crash or a failure never leaves something that
@@ -90,10 +93,14 @@ func Backup(dataDir, label string, snapshotDB func(dest string) error, now time.
 	if err != nil {
 		return "", fmt.Errorf("list hosts.yml files: %w", err)
 	}
-	for _, f := range hostFiles {
+	envFiles, err := filepath.Glob(filepath.Join(dataDir, "users", "*", "env.yml"))
+	if err != nil {
+		return "", fmt.Errorf("list env.yml files: %w", err)
+	}
+	for _, f := range append(hostFiles, envFiles...) {
 		rel, err := filepath.Rel(dataDir, f)
 		if err != nil {
-			return "", fmt.Errorf("list hosts.yml files: %w", err)
+			return "", fmt.Errorf("list user files: %w", err)
 		}
 		files = append(files, rel)
 	}

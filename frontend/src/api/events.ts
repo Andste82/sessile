@@ -4,7 +4,7 @@
 // where text frames are control messages alongside binary terminal bytes. This
 // one is /ws/events, which carries session list state and nothing else.
 
-import type { Session, Status, TargetType } from './types'
+import type { EnvVarInfo, Session, Status, TargetType } from './types'
 
 export interface SessionsEvent {
   type: 'sessions'
@@ -87,7 +87,29 @@ function parseSession(v: unknown): Session | null {
     command: str(s.command),
     cwd: str(s.cwd),
     title: str(s.title),
+    env: parseEnv(s.env),
+    loadDotenv: s.loadDotenv === true,
   }
+}
+
+// Secret values never arrive on the wire; a malformed list reads as empty.
+function parseEnv(v: unknown): EnvVarInfo[] {
+  if (!Array.isArray(v)) return []
+  const out: EnvVarInfo[] = []
+  for (const e of v) {
+    if (typeof e !== 'object' || e === null) continue
+    const r = e as Record<string, unknown>
+    if (typeof r.name !== 'string') continue
+    const secret = r.secret === true
+    out.push({
+      name: r.name,
+      ...(!secret && typeof r.value === 'string' ? { value: r.value } : {}),
+      secret,
+      isSet: r.isSet !== false,
+      inherited: r.inherited === true,
+    })
+  }
+  return out
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')

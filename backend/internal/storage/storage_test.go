@@ -2,6 +2,8 @@ package storage
 
 import (
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +20,72 @@ func newInfo(id string, status session.Status) session.Info {
 		Status:       status,
 		Created:      now,
 		LastActivity: now,
+	}
+}
+
+// Env and DotEnv survive Insert/Get/LoadStopped, secrets and non-secrets land
+// in their own columns, Default flags are kept, and a later Insert (the
+// upsert Update uses) rewrites them.
+func TestStoreEnvRoundTrip(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	in := newInfo("e", session.StatusStopped)
+	in.DotEnv = true
+	in.Env = []session.EnvVar{
+		{Name: "A_PLAIN", Value: "1", Default: true},
+		{Name: "B_TOKEN", Value: "s3cret-sentinel", Secret: true},
+		{Name: "C_MULTI", Value: "line1\nline2 'q' \"d\""},
+		{Name: "D_TOKEN", Value: "other-secret", Secret: true, Default: true},
+	}
+	if err := st.Insert(in); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	var vars, secrets string
+	var dotenv int
+	if err := st.db.QueryRow(`SELECT env_vars, env_secrets, dotenv FROM sessions WHERE id='e'`).
+		Scan(&vars, &secrets, &dotenv); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(vars, "s3cret-sentinel") || strings.Contains(vars, "other-secret") {
+		t.Errorf("secret value in env_vars: %s", vars)
+	}
+	if !strings.Contains(secrets, "s3cret-sentinel") || strings.Contains(secrets, "A_PLAIN") {
+		t.Errorf("env_secrets = %s", secrets)
+	}
+	if dotenv != 1 {
+		t.Errorf("dotenv = %d, want 1", dotenv)
+	}
+
+	check := func(label string, got session.Info) {
+		t.Helper()
+		if !got.DotEnv || !reflect.DeepEqual(got.Env, in.Env) {
+			t.Errorf("%s: Env=%+v DotEnv=%v, want %+v true", label, got.Env, got.DotEnv, in.Env)
+		}
+	}
+	got, ok, err := st.Get("e")
+	if err != nil || !ok {
+		t.Fatalf("get: %v %v", ok, err)
+	}
+	check("Get", got)
+	stopped, err := st.LoadStopped()
+	if err != nil || len(stopped) != 1 {
+		t.Fatalf("LoadStopped: %v %v", stopped, err)
+	}
+	check("LoadStopped", stopped[0])
+
+	// Upsert replaces the environment, including clearing it.
+	in.Env, in.DotEnv = nil, false
+	if err := st.Insert(in); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = st.Get("e")
+	if len(got.Env) != 0 || got.DotEnv {
+		t.Errorf("after clearing: Env=%+v DotEnv=%v", got.Env, got.DotEnv)
 	}
 }
 

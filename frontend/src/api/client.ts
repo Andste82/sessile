@@ -5,7 +5,10 @@ import type {
   AuthStatus,
   Credentials,
   CreateSessionBody,
+  CreateSessionResponse,
   DirectoriesResponse,
+  EnvDefaults,
+  EnvEntry,
   ExchangeKeysResponse,
   Host,
   HostBody,
@@ -100,7 +103,19 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+const getEnvDefaults = () => request<EnvDefaults>('/api/env-defaults')
+// Full replacement; a secret entry without a value keeps its stored value.
+const putEnvDefaults = (entries: EnvEntry[]) =>
+  request<EnvDefaults>('/api/env-defaults', {
+    method: 'PUT',
+    body: JSON.stringify({ env: entries }),
+  })
+
+export { getEnvDefaults, putEnvDefaults }
+
 export const api = {
+  getEnvDefaults,
+  putEnvDefaults,
   health: () => request<{ status: string }>('/api/health'),
   config: () => request<AppConfig>('/api/config'),
   directories: (path?: string) =>
@@ -128,7 +143,7 @@ export const api = {
   listSessions: () => request<Session[]>('/api/sessions'),
   getSession: (id: string) => request<Session>(`/api/sessions/${id}`),
   createSession: (body: CreateSessionBody) =>
-    request<Session>('/api/sessions', {
+    request<CreateSessionResponse>('/api/sessions', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -143,7 +158,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   restartSession: (id: string) =>
-    request<Session>(`/api/sessions/${id}/restart`, { method: 'POST' }),
+    request<CreateSessionResponse>(`/api/sessions/${id}/restart`, { method: 'POST' }),
   processTree: (id: string, scope?: 'session' | 'all') =>
     request<ProcessTreeResponse>(
       `/api/sessions/${id}/hostops/process-tree${scope ? `?scope=${scope}` : ''}`,
