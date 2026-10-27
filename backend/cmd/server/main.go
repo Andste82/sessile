@@ -22,6 +22,7 @@ import (
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/sshpty"
 	"github.com/Andste82/sessile/backend/internal/storage"
+	"github.com/Andste82/sessile/backend/internal/upgrade"
 	"github.com/Andste82/sessile/backend/internal/ws"
 	"github.com/Andste82/sessile/backend/web"
 )
@@ -49,7 +50,13 @@ func (r *hostResolver) Resolve(userID, hostID string) (sshpty.Target, string, er
 }
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	args := os.Args[1:]
+	cmd := run
+	if len(args) > 0 && args[0] == adoptCommand {
+		args = args[1:]
+		cmd = func(a []string) error { return runAdopt(a, os.Stdout, os.Stderr) }
+	}
+	if err := cmd(args); err != nil {
 		// --version and --help are requests, not failures: they must exit 0 and
 		// must not be reported as "fatal". flag has already printed the usage
 		// text by the time ErrHelp surfaces.
@@ -81,6 +88,46 @@ func run(args []string) error {
 		return fmt.Errorf("load embedded frontend: %w", err)
 	}
 
+	// Before anything else writes to the data directory: say so loudly if it
+	// holds nothing, refuse one a newer release has already upgraded, and
+	// back it up before migrating it (§8, §12e). Every later step may create
+	// or rewrite files in it.
+	if upgrade.LooksFresh(cfg.DataDir) {
+		log.Warn("data directory is empty: starting as a new install. "+
+			"Fine on a first start. If this is an upgrade, STOP: your data is not where the server is looking. "+
+			"Check the volume mounts (docker inspect <container> --format '{{json .Mounts}}') "+
+			"and see Upgrading in the README before creating an admin account",
+			"data-dir", cfg.DataDir)
+	}
+	// Open the metadata store; it migrates the schema (backing up first) and
+	// reconciles any session left "running" by a previous process to
+	// "stopped" on open (§8).
+	store, state, err := openStore(cfg.DataDir, cfg.DB, false, log)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	log.Info("store ready", "db", cfg.DB, "schema-version", storage.SchemaVersion())
+	if n, err := store.CountOwnerless(); err != nil {
+		log.Error("count ownerless sessions failed", "err", err)
+	} else if n > 0 {
+		log.Warn("sessions without an owner are invisible to every user. "+
+			"They predate accounts (0.3.x and older). To hand them to a user, stop the server and run "+
+			"'sessile adopt-sessions --data-dir=<data-dir> --user=<username>' "+
+			"(Docker: docker compose run --rm sessile adopt-sessions --data-dir=/config --user=<username>)",
+			"count", n, "data-dir", cfg.DataDir)
+	}
+
+	if state.LastVersion != "" && state.LastVersion != config.Version {
+		log.Info("version changed since the last start", "from", state.LastVersion, "to", config.Version)
+	}
+	if err := upgrade.WriteState(cfg.DataDir, upgrade.State{
+		LastVersion:   config.Version,
+		LayoutVersion: upgrade.LayoutVersion,
+	}); err != nil {
+		return err
+	}
+
 	serverCfg, err := serverconfig.Open(filepath.Join(cfg.DataDir, "config.yml"))
 	if err != nil {
 		return fmt.Errorf("open config.yml: %w", err)
@@ -97,15 +144,6 @@ func run(args []string) error {
 	defer webSessions.Stop()
 
 	hostsRegistry := hosts.NewRegistry(cfg.DataDir)
-
-	// Open the metadata store; it reconciles any session left "running" by a
-	// previous process to "stopped" on open (§8).
-	store, err := storage.Open(cfg.DB)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-	defer store.Close()
-	log.Info("store ready", "db", cfg.DB)
 
 	manager := session.NewManager(cfg.WorkspaceDir, cfg.Shells, cfg.BufferSize, cfg.DataDir, store, log)
 	manager.SetHostResolver(&hostResolver{registry: hostsRegistry})
