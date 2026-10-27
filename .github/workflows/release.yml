@@ -1,6 +1,8 @@
 name: Release
 
-# Tag a commit on master and push the tag:
+# Bump frontend/package.json, rename "Unreleased" in CHANGELOG.md to the
+# version (docs/dev/development.md, "Releasing"), merge, then tag the merge
+# commit on master and push the tag:
 #   git tag v0.2.0 && git push origin v0.2.0
 # Everything below derives from that tag — no workflow ever commits to master.
 on:
@@ -31,8 +33,10 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       # Gate: refuse to release if the tag disagrees with the declared version,
-      # or if a placeholder got a hardcoded version baked back into it. Runs
-      # before any build, so a drifted tag costs seconds, not a bad release.
+      # if a placeholder got a hardcoded version baked back into it, or if
+      # CHANGELOG.md has no section for this version with its Upgrade /
+      # Breaking part. Runs before any build, so a drifted tag costs seconds,
+      # not a bad release.
       - name: Version gate
         run: scripts/check-version.sh "${{ steps.v.outputs.version }}"
 
@@ -211,9 +215,58 @@ jobs:
           fi
           echo "$IMAGE is $got"
 
+  # The upgrade an operator is about to do (§12e M35): the previous release
+  # writes the data, the image just pushed has to start on it with nothing
+  # lost. Like verify-image, it runs against the pushed image, so a failure
+  # cannot unpush it — but it does stop the GitHub release below, which is
+  # what announces the version.
+  upgrade-test:
+    name: Upgrade test ${{ matrix.variant }} (from ${{ matrix.from }})
+    needs: [version, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [alpine, ubuntu]
+        from: [previous, "0.5.0"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: repo
+        run: echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Upgrade test
+        run: |
+          suffix="${{ matrix.variant == 'ubuntu' && '-ubuntu' || '' }}"
+          from="${{ matrix.from }}"
+          if [ "$from" = previous ]; then
+            # The tag being released is HEAD; the one before it is the
+            # release operators are upgrading from.
+            from="$(git describe --tags --abbrev=0 --match 'v*' HEAD^)"
+            from="${from#v}"
+          fi
+          scripts/upgrade-smoke.sh \
+            "${{ steps.repo.outputs.image }}:${from}${suffix}" \
+            "${{ steps.repo.outputs.image }}:${{ needs.version.outputs.version }}${suffix}"
+
   release:
     name: Publish GitHub release
-    needs: [version, binaries, verify-image]
+    needs: [version, binaries, verify-image, upgrade-test]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -238,6 +291,11 @@ jobs:
           generate_release_notes: true
           files: dist/*
           body: |
+            ### Upgrade / Breaking
+
+            Before you pull, read the Upgrade / Breaking part of every release
+            since yours in the [changelog](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md).
+
             ### Container
 
             ```

@@ -80,6 +80,10 @@ jobs:
             target: runtime-ubuntu
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The upgrade test below finds the previous release with
+          # git describe, which needs the tags.
+          fetch-depth: 0
 
       # No tag to compare against on a PR, but this still catches a hardcoded
       # version sneaking back into a placeholder — long before release time.
@@ -103,3 +107,28 @@ jobs:
 
       - name: Smoke test
         run: scripts/smoke-docker.sh sessile:${{ matrix.variant }}
+
+      # For cmd/wsclient, which the upgrade test drives the WebSocket with.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # The upgrade an operator does (§12e M35): the last published release
+      # writes the data, this build has to start on it with nothing lost.
+      # HEAD^, not HEAD: on master, a release tag on the merge commit would
+      # otherwise name the release being built, whose image is not pushed yet.
+      # On a PR, HEAD is the merge ref and HEAD^ is master, so nothing changes.
+      - name: Upgrade test from the previous release
+        run: |
+          prev="$(git describe --tags --abbrev=0 --match 'v*' HEAD^)"
+          suffix="${{ matrix.variant == 'ubuntu' && '-ubuntu' || '' }}"
+          scripts/upgrade-smoke.sh "ghcr.io/andste82/sessile:${prev#v}${suffix}" sessile:${{ matrix.variant }}
+
+      # And across several releases at once, from the oldest one still
+      # supported: 0.5.0 is the first with accounts, the API the test uses.
+      - name: Upgrade test from 0.5.0
+        run: |
+          suffix="${{ matrix.variant == 'ubuntu' && '-ubuntu' || '' }}"
+          scripts/upgrade-smoke.sh "ghcr.io/andste82/sessile:0.5.0${suffix}" sessile:${{ matrix.variant }}

@@ -7,14 +7,15 @@
 # derives its default from `git describe`, so it is checked the other way round:
 # it must not name a version at all.
 #
-# This checks both halves of that contract:
-#   1. the tag being released matches the declared version, and
-#   2. nobody re-hardcoded a release version into a placeholder.
+# This checks that contract, and that the release is documented:
+#   1. the tag being released matches the declared version,
+#   2. nobody re-hardcoded a release version into a placeholder, and
+#   3. CHANGELOG.md has a section for that release with its Upgrade / Breaking part.
 #
 # Usage: scripts/check-version.sh 0.2.0     # verify the repo is ready for v0.2.0
 #        scripts/check-version.sh           # just check placeholders + print
 #
-# Requires: bash, grep. No jq (not guaranteed on every runner).
+# Requires: bash, grep, awk. No jq (not guaranteed on every runner).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -41,6 +42,22 @@ if [ -n "$WANT" ]; then
   echo "requested release version (git tag):      $WANT"
   if [ "$DECLARED" != "$WANT" ]; then
     err "version drift: tag says '$WANT' but frontend/package.json says '$DECLARED'. Bump package.json and re-tag."
+  fi
+fi
+
+# --- the changelog says what the release asks of an operator ----------------
+# Only for a release: between releases, the entries sit under "Unreleased".
+# A heading "## <version> — <date>" must exist and carry its own
+# "### Upgrade / Breaking" part, so that a missing part can never be read as
+# "nothing to do" (CHANGELOG.md, §12e M30).
+if [ -n "$WANT" ]; then
+  if ! awk -v want="$WANT" '/^## / && $2 == want { found = 1 } END { exit !found }' CHANGELOG.md; then
+    err "CHANGELOG.md has no '## $WANT' section. Rename 'Unreleased' to '$WANT — <date>' before tagging."
+  elif ! awk -v want="$WANT" '
+      /^## / { inside = ($2 == want); next }
+      inside && /^### Upgrade \/ Breaking/ { found = 1 }
+      END { exit !found }' CHANGELOG.md; then
+    err "CHANGELOG.md section '$WANT' has no '### Upgrade / Breaking' part. Write one, even if it only says 'None.'"
   fi
 fi
 
