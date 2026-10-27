@@ -12,6 +12,8 @@ import { useHostsStore } from '@/stores/hosts'
 import { ApiRequestError } from '@/api/client'
 import DirectoryBrowser from './DirectoryBrowser.vue'
 import GroupInput from './GroupInput.vue'
+import SshDirectoryChooser from './SshDirectoryChooser.vue'
+import { sshCreateBody, supportsStartDir } from '@/utils/hostBrowse'
 import HostKeyTrustDialog from './HostKeyTrustDialog.vue'
 import type { CreateSessionBody, HostKeyErrorDetails, Session } from '@/api/types'
 
@@ -44,9 +46,19 @@ const error = ref<string | null>(null)
 // Set only while a create attempt is blocked on an unrecognized/changed
 // host key. Holding the pending request body here (rather than recomputing
 // it) means "trust and retry" resends exactly what was refused.
-const pendingHostKey = ref<{ hostId: string; hostName: string; details: HostKeyErrorDetails } | null>(
-  null,
-)
+// `purpose` says which action to re-run once the key is trusted: the blocked
+// create, or the chooser's directory browse.
+const pendingHostKey = ref<{
+  hostId: string
+  hostName: string
+  details: HostKeyErrorDetails
+  purpose: 'browse' | 'create'
+} | null>(null)
+const chooser = ref<InstanceType<typeof SshDirectoryChooser> | null>(null)
+// Chosen start directory on the SSH host; "" = the sshd default.
+const sshDirectory = ref('')
+const selectedHost = computed(() => hosts.value.find((h) => h.id === hostId.value) ?? null)
+const startDirSupported = computed(() => (selectedHost.value ? supportsStartDir(selectedHost.value) : true))
 const pendingBody = ref<CreateSessionBody | null>(null)
 
 const shells = computed(() => store.config?.shells ?? [])
@@ -63,7 +75,12 @@ const canSubmit = computed(() => {
 watch(
   () => props.open,
   (isOpen) => {
-    if (!isOpen) return
+    if (!isOpen) {
+      // Drop the browse connection now rather than waiting for unmount.
+      chooser.value?.stop()
+      return
+    }
+    sshDirectory.value = ''
     error.value = null
     pendingHostKey.value = null
     pendingBody.value = null
@@ -82,7 +99,11 @@ watch(
 function bodyFromForm(): CreateSessionBody {
   const common = { name: name.value.trim(), group: group.value.trim() }
   if (target.value === 'ssh') {
-    return { ...common, target: 'ssh', hostId: hostId.value }
+    return sshCreateBody(
+      common,
+      hostId.value,
+      startDirSupported.value ? sshDirectory.value : '',
+    )
   }
   return { ...common, target: 'local', directory: directory.value, shell: shell.value }
 }
@@ -104,6 +125,7 @@ async function attemptCreate(body: CreateSessionBody) {
         hostId: body.hostId,
         hostName: host?.name ?? 'this host',
         details: hostKeyDetails,
+        purpose: 'create',
       }
     } else {
       error.value = e instanceof Error ? e.message : String(e)
@@ -119,10 +141,35 @@ function submit() {
 }
 
 function retryAfterTrust() {
+  const purpose = pendingHostKey.value?.purpose
   const body = pendingBody.value
   pendingHostKey.value = null
-  if (body) void attemptCreate(body)
+  if (purpose === 'browse') void chooser.value?.retry()
+  else if (body) void attemptCreate(body)
 }
+
+function onBrowseHostKey(details: HostKeyErrorDetails) {
+  pendingHostKey.value = {
+    hostId: hostId.value,
+    hostName: selectedHost.value?.name ?? 'this host',
+    details,
+    purpose: 'browse',
+  }
+}
+
+// Dismissing the trust dialog leaves a browse attempt in its error state
+// (with Retry); a blocked create just stays blocked, as before.
+function closeHostKeyDialog() {
+  const purpose = pendingHostKey.value?.purpose
+  pendingHostKey.value = null
+  if (purpose === 'browse') chooser.value?.dismissTrust()
+}
+
+// A host key dialog opened for browsing is moot once the host changes.
+watch(selection, () => {
+  if (pendingHostKey.value?.purpose === 'browse') pendingHostKey.value = null
+  sshDirectory.value = ''
+})
 </script>
 
 <template>
@@ -151,7 +198,7 @@ function retryAfterTrust() {
           leave-to="opacity-0 scale-95"
         >
           <DialogPanel
-            class="w-full max-w-md rounded-xl border border-slate-700 bg-slate-800 p-6 shadow-xl"
+            class="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl border border-slate-700 bg-slate-800 p-6 shadow-xl"
           >
             <DialogTitle class="text-lg font-semibold text-slate-100">
               New session
@@ -193,6 +240,21 @@ function retryAfterTrust() {
               <p v-if="hosts.length === 0 && !allowLocalHost" class="text-xs text-slate-400">
                 Add a host on the Hosts page before starting a session.
               </p>
+
+              <template v-if="target === 'ssh' && hostId">
+                <SshDirectoryChooser
+                  v-if="startDirSupported"
+                  ref="chooser"
+                  v-model="sshDirectory"
+                  :host-id="hostId"
+                  :host-name="selectedHost?.name ?? 'host'"
+                  @host-key="onBrowseHostKey"
+                />
+                <p v-else class="text-xs text-slate-400">
+                  A start directory is not supported for Windows hosts; the session starts in the
+                  host's default directory.
+                </p>
+              </template>
 
               <template v-if="target === 'local'">
                 <label class="flex flex-col gap-1 text-sm">
@@ -241,7 +303,7 @@ function retryAfterTrust() {
     :host-id="pendingHostKey?.hostId ?? ''"
     :host-name="pendingHostKey?.hostName ?? ''"
     :details="pendingHostKey?.details ?? null"
-    @close="pendingHostKey = null"
+    @close="closeHostKeyDialog"
     @trusted="retryAfterTrust"
   />
 </template>

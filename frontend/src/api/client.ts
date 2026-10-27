@@ -74,7 +74,15 @@ export function setUnauthorizedHandler(fn: () => void) {
   unauthorizedHandler = fn
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// isAbort reports whether a request failed only because the caller cancelled
+// it (AbortController) — never worth showing to the user.
+export function isAbort(e: unknown): boolean {
+  return (
+    typeof e === 'object' && e !== null && (e as { name?: unknown }).name === 'AbortError'
+  )
+}
+
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
@@ -99,6 +107,24 @@ export const api = {
     request<DirectoriesResponse>(
       path ? `/api/directories?path=${encodeURIComponent(path)}` : '/api/directories',
     ),
+  // Session-less directory lister on an SSH host (§4.10): absolute paths, the
+  // empty path means the host's home directory. Directories only.
+  hostDirectories: (hostId: string, path?: string, opts?: { signal?: AbortSignal }) =>
+    request<DirectoriesResponse>(
+      `/api/hosts/${encodeURIComponent(hostId)}/directories${path ? `?path=${encodeURIComponent(path)}` : ''}`,
+      { signal: opts?.signal },
+    ),
+  // Drops the server's cached browse connection. Best effort: the server's
+  // idle timeout is the backstop, so failures are swallowed.
+  closeHostBrowse: async (hostId: string): Promise<void> => {
+    try {
+      await request<void>(`/api/hosts/${encodeURIComponent(hostId)}/directories`, {
+        method: 'DELETE',
+      })
+    } catch {
+      /* best effort */
+    }
+  },
   listSessions: () => request<Session[]>('/api/sessions'),
   getSession: (id: string) => request<Session>(`/api/sessions/${id}`),
   createSession: (body: CreateSessionBody) =>

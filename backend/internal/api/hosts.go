@@ -228,6 +228,7 @@ func (s *Server) updateHost(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, CodeInternal, "failed to update host")
 		return
 	}
+	s.dropHostBrowse(c.MustGet(userIDKey).(string), id)
 	c.JSON(http.StatusOK, toHostResponse(updated))
 }
 
@@ -245,5 +246,6 @@ func (s *Server) deleteHost(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, CodeInternal, "failed to delete host")
 		return
 	}
+	s.dropHostBrowse(c.MustGet(userIDKey).(string), c.Param("id"))
 	c.Status(http.StatusNoContent)
 }

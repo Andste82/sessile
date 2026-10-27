@@ -25,7 +25,7 @@ func TestWrapWithPIDRecordingSkipsWindowsTargets(t *testing.T) {
 	// finding #4's case: terminalType alone doesn't say the target is
 	// Windows, targetOS does.
 	for _, terminalType := range []string{"cmd", "powershell", "custom"} {
-		path, wrapped := wrapWithPIDRecording("windows", terminalType, "powershell.exe -NoLogo")
+		path, wrapped := wrapWithPIDRecording("windows", terminalType, "", "powershell.exe -NoLogo")
 		if path != "" {
 			t.Errorf("targetOS=windows terminalType=%q: pidFilePath = %q, want empty", terminalType, path)
 		}
@@ -39,14 +39,14 @@ func TestWrapWithPIDRecordingDoesNotWrapANonWindowsCustomCommandJustBecauseItLoo
 	// The old (wrong) gate keyed off terminalType == "cmd"/"powershell";
 	// confirm a Linux/other target with those exact terminalType values
 	// still gets wrapped — the gate is targetOS now, not terminalType.
-	path, _ := wrapWithPIDRecording("linux", "bash", "bash")
+	path, _ := wrapWithPIDRecording("linux", "bash", "", "bash")
 	if path == "" {
 		t.Fatal("targetOS=linux: pidFilePath is empty, want a preamble written")
 	}
 }
 
 func TestWrapWithPIDRecordingWrapsPOSIXTargets(t *testing.T) {
-	path, wrapped := wrapWithPIDRecording("linux", "bash", "bash")
+	path, wrapped := wrapWithPIDRecording("linux", "bash", "", "bash")
 	if path == "" || !strings.HasPrefix(path, "/tmp/.sessile-pid-") {
 		t.Fatalf("pidFilePath = %q, want a /tmp/.sessile-pid-* path", path)
 	}
@@ -67,7 +67,7 @@ func TestWrapWithPIDRecordingRunsCustomCommandsThroughSh(t *testing.T) {
 	// A CustomCommand containing shell operators must still run as one
 	// whole unit under the inner sh -c, not have `exec` bind to only its
 	// first word — that would silently drop everything after the `;`.
-	_, wrapped := wrapWithPIDRecording("linux", "custom", "echo hi; tmux new -A -s main")
+	_, wrapped := wrapWithPIDRecording("linux", "custom", "", "echo hi; tmux new -A -s main")
 	if !strings.Contains(wrapped, `exec sh -c `) {
 		t.Fatalf("wrapped = %q, want the custom command run through an inner sh -c", wrapped)
 	}
@@ -144,7 +144,7 @@ func TestWrapWithPIDRecordingAgainstRealCsh(t *testing.T) {
 func testWrapWithPIDRecordingAgainstRealLoginShell(t *testing.T, loginShell string) {
 	t.Helper()
 	dir := t.TempDir()
-	path, wrapped := wrapWithPIDRecording("linux", "custom", "echo started")
+	path, wrapped := wrapWithPIDRecording("linux", "custom", "", "echo started")
 	// Redirect the preamble's own pidfile into a location we control so
 	// this test doesn't touch the real /tmp path another test might race
 	// with, and so it's easy to read back afterward.
@@ -180,7 +180,7 @@ func testWrapWithPIDRecordingAgainstRealLoginShell(t *testing.T, loginShell stri
 func TestWrapWithPIDRecordingSkipsWindowsWithoutTargetOS(t *testing.T) {
 	for _, terminalType := range []string{"cmd", "powershell"} {
 		for _, targetOS := range []string{"", "windows"} {
-			path, wrapped := wrapWithPIDRecording(targetOS, terminalType, "powershell.exe -NoLogo")
+			path, wrapped := wrapWithPIDRecording(targetOS, terminalType, "", "powershell.exe -NoLogo")
 			if path != "" {
 				t.Errorf("targetOS=%q terminalType=%q: pid file %q, want none", targetOS, terminalType, path)
 			}
@@ -193,11 +193,11 @@ func TestWrapWithPIDRecordingSkipsWindowsWithoutTargetOS(t *testing.T) {
 
 	// The complementary half still has to work: a Windows host whose
 	// terminal type says nothing (a CustomCommand) is caught by targetOS.
-	if path, _ := wrapWithPIDRecording("windows", "custom", "powershell.exe -File x.ps1"); path != "" {
+	if path, _ := wrapWithPIDRecording("windows", "custom", "", "powershell.exe -File x.ps1"); path != "" {
 		t.Errorf("windows/custom: pid file %q, want none", path)
 	}
 	// ...and a POSIX target is still wrapped.
-	if path, _ := wrapWithPIDRecording("", "bash", "bash"); path == "" {
+	if path, _ := wrapWithPIDRecording("", "bash", "", "bash"); path == "" {
 		t.Error("linux/bash: no pid file, want one")
 	}
 }

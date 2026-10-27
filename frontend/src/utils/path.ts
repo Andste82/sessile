@@ -35,3 +35,31 @@ export function relativeTo(base: string, target: string): string {
 
   return [...Array<string>(up).fill('..'), ...down].join('/')
 }
+
+// Helpers for absolute remote (SSH host) paths, as the directory chooser
+// shows them. Remote paths are the user's own on their own host, so these only
+// shape strings for display and navigation; the server resolves them.
+
+/** One breadcrumb: the label to show and the absolute path it jumps to. */
+export interface Crumb {
+  name: string
+  path: string
+}
+
+/** remoteCrumbs splits an absolute path into jump targets, excluding "/". */
+export function remoteCrumbs(path: string): Crumb[] {
+  const segs = path.split('/').filter((s) => s !== '')
+  return segs.map((name, i) => ({ name, path: '/' + segs.slice(0, i + 1).join('/') }))
+}
+
+/** joinRemote appends a child name to an absolute directory path. */
+export function joinRemote(base: string, name: string): string {
+  return base.endsWith('/') ? base + name : `${base}/${name}`
+}
+
+/** parentRemote returns the parent directory, or null at "/". */
+export function parentRemote(path: string): string | null {
+  const segs = path.split('/').filter((s) => s !== '')
+  if (segs.length === 0) return null
+  return segs.length === 1 ? '/' : '/' + segs.slice(0, -1).join('/')
+}

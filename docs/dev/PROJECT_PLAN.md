@@ -384,6 +384,10 @@ trust, and never silently accepts a key that changed:
   can't be persisted.
 - The same TOFU check gates `ExchangeKeys` (§4.5.2) — passwordless setup is
   not a bypass.
+- The session-less directory browse (§4.10) dials through `sshpty.Dial`, the
+  same pinned callback: an unknown or changed key is a 409
+  (`host_key_unverified` / `host_key_changed`) with no cached connection left
+  behind, and trusting a key drops any cached browse connection for that host.
 
 ### 4.5.2 SSH key exchange (passwordless login setup)
 `internal/sshpty.ExchangeKeys(target, username, password)` is the backend for
@@ -847,6 +851,38 @@ and `hosts.yml`/session-metadata modeling for "isolated in a container, on
 top of host X" — product decisions, not architecture, and stay open until
 they're actually asked.
 
+#### Session-less directory lister and SSH start directory
+
+An SSH session may carry an optional start directory (`sessions.directory`,
+an absolute remote path; `""` means the sshd default, today's behaviour). It
+is chosen in the new-session dialog with a **session-less directory lister**:
+`GET /api/hosts/:id/directories?path=` and `DELETE /api/hosts/:id/directories`
+(§6). It is a typed operation like the others in this section: one path
+argument, directories only, read-only.
+
+- Transport: SFTP over a cached `*ssh.Client` dialled with `sshpty.Dial`
+  (pinned host-key callback, §4.5.1). Cache key is (user, host); concurrent
+  requests share one dial; a failed dial leaves no entry. Idle timeout 60s
+  (reset on use), at most 2 connections per user (least recently used is
+  evicted), closed by the explicit `DELETE`, on a dead-connection error, on a
+  15s request timeout, on host update/delete, on trusting a host key, and on
+  server shutdown.
+- `path` empty or `.` means the home directory (SFTP `RealPath(".")`);
+  otherwise it must be absolute. `RealPath` follows symlinks, so the returned
+  `path` is the resolved form. Symlinks to directories are listed. Remote
+  paths are exempt from workspace validation (CLAUDE.md); the per-user host
+  ownership check is the boundary.
+- Windows targets (`targetOS` windows, or `terminalType` cmd/powershell) are
+  not supported: 400.
+- Start directory on create and restart: `sshpty.Start(target, dir, …)` stats
+  `dir` over SFTP before opening the shell and requires a directory. A
+  missing path, a file, or permission-denied is `ErrDirNotFound`; a host
+  without an SFTP subsystem is `ErrSFTPUnavailable`; a Windows target is
+  `ErrDirUnsupported`. All map to 400 `validation`. There is **no fallback to
+  home**. On create no session row exists afterwards; on restart the session
+  stays stopped. As a safety net the shell is started as
+  `cd -- '<dir>' && { …; exec <cmd>; }`, so a failed `cd` never reaches `exec`.
+
 ### 4.11 Session groups (dynamic, no group entity)
 
 A session carries a free-text `Group` label, `""` for none. That is the whole
@@ -1056,7 +1092,9 @@ never trusts a client-supplied user id.
 | `GET /api/sessions/:id` | Get one | Owner-scoped |
 | `DELETE /api/sessions/:id` | Kill + remove permanently | 204; also drops the session's scrollback snapshot and history file (§8) |
 | `PATCH /api/sessions/:id` | Edit a session's metadata (`{"name":"…","group":"…"}`) | Both fields optional; an omitted one is left unchanged, a present one always applies — `"group":""` is how a session leaves its group (§4.11). Name 1–64 chars, group ≤64. 400 `validation` otherwise |
-| `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (local), 404 `host_not_found` or 409 host-key responses (SSH) |
+| `POST /api/sessions/:id/restart` | Give a stopped session a new shell under the same id | No body; 200 + session JSON. 404 unknown, 409 still running, 400 if the directory or shell no longer validates (local), 404 `host_not_found`, 409 host-key responses, or 400 `validation` if the stored start directory no longer exists / SFTP is unavailable (SSH) |
+| `GET /api/hosts/:id/directories?path=` | Session-less remote directory lister (§4.10) | Owner-scoped (404 otherwise). `path` empty = home, else absolute. `{"path":"/home/u","parent":"/home"\|null,"directories":["a",…]}` — directories only, sorted case-insensitively, `parent` null at `/`. 400 `validation` for a relative/NUL/over-4096-byte path, a missing or non-directory path, a Windows host, SFTP unavailable, or dial/auth failure; 409 host-key responses; 409 `conflict` if the cached connection was closed mid-request; 504 `timeout` after 15s |
+| `DELETE /api/hosts/:id/directories` | Close the cached browse connection | 204, idempotent; 404 only if the host is unknown to the caller |
 | `GET /api/directories` | Browse dirs under the local-host workspace; optional `?path=` (relative, validated by §4.5) navigates into subdirs | 403 if `allowLocalHost` is off. `{"path":"project-a","parent":".","directories":["nested", …]}` — `path` is the cleaned listed path (`.`=root), `parent` is `null` at root |
 | `GET /api/config` | Display name, available shells, `allowLocalHost`, version | Shells = allowlist ∩ installed |
 | `GET /api/sessions/:id/hostops/process-tree?scope=` | Process tree (§4.10) | `scope` is `session` (default, narrowed to this session's own processes) or `all` (the whole target). `{"rootPid":123,"scoped":true,"processes":[…Process…]}` — `scoped` is false when `session` was asked for but couldn't be resolved (falls back to `all` rather than erroring). 501 `unsupported_platform` if the target's `Platform` has no `ProcessTree` |
@@ -1078,12 +1116,16 @@ everywhere else. `DirEntry` is `{"name":"…","isDir":bool,"size":123,"modTime":
 Create-session body is a discriminator on `target`:
 ```json
 {"name":"Backend","target":"local","group":"Production","directory":"project-a","shell":"bash"}
-{"name":"prod-db","target":"ssh","hostId":"…"}
+{"name":"prod-db","target":"ssh","hostId":"…","directory":"/srv/app"}
 ```
 Validation: name 1–64 chars; `group` optional, ≤64 chars, trimmed, `""` (or
 absent) means no group (§4.11); `target:"local"` requires `allowLocalHost` on,
 directory passes §4.5, shell in allowlist; `target:"ssh"` requires `hostId`
-to resolve to one of the caller's own hosts.
+to resolve to one of the caller's own hosts; the optional SSH `directory` is
+trimmed, must be absolute (starts with `/`), ≤4096 bytes, no NUL/CR/LF, is not
+validated against the workspace (remote paths are exempt, §4.10), is rejected
+for Windows targets, and must exist on the host (SFTP is required to verify
+it) or the create fails with 400.
 
 Session JSON shape (single source of truth — mirror in TS types):
 ```json
@@ -1097,7 +1139,9 @@ Session JSON shape (single source of truth — mirror in TS types):
   "command":"claude","cwd":"project-a/backend","title":"claude — sessile"
 }
 ```
-An SSH session instead carries `"targetType":"ssh","directory":null,
+An SSH session instead carries `"targetType":"ssh","directory":""` (the
+absolute remote start directory, or `""` when none; the TS type is
+`string`),
 "shell":null,"hostId":"…","hostDisplayName":"prod-db"` and `pid` is always
 `0` (§4.2's `Backend.Pid()`).
 
@@ -1168,8 +1212,8 @@ frontend/src/
   read for SSH, when it can be determined — a blank line otherwise, not a
   guess) with the session's window title (§4.8, both local and SSH) on the
   line below it, the working directory — `cwd` when known, falling back to
-  the stored `directory` (local only; still always blank for SSH, no
-  equally cheap remote call for it yet) — the client count when more than
+  the stored `directory` (local, or the SSH start directory when one was
+  chosen; blank for SSH otherwise) — the client count when more than
   one browser is attached, and last activity.
 
   The two middle lines are deliberately unequal: the foreground is mono and the
