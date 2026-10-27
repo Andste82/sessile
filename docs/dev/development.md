@@ -176,6 +176,30 @@ auth); `GET /ws/events` pushes session list changes. See
 endpoint list, including account and admin management, host CRUD and the
 SSH key exchange endpoint.
 
+## Releasing
+
+A release is a tag on master; `.github/workflows/release.yml` does the rest.
+Before tagging, one commit (usually its own `release/<version>` PR):
+
+1. Set `version` in `frontend/package.json` (and `npm install` to update
+   the lock file). It is the only place the version is written down.
+2. In `CHANGELOG.md`, rename `## Unreleased` to `## <version> — <date>` and
+   make sure it has a `### Upgrade / Breaking` part. Write `None.` if the
+   release needs nothing from an operator; never leave the part out. Every
+   moved file, removed flag, changed default or step by hand goes there.
+   Start a new, empty `## Unreleased` above it.
+
+Merge, then tag the merge commit and push the tag:
+
+```bash
+git tag v<version> && git push origin v<version>
+```
+
+`scripts/check-version.sh <version>` runs first in the release workflow and
+refuses the release if the tag and `package.json` disagree or the changelog
+has no section for that version with its Upgrade / Breaking part. Run it
+locally before tagging to find out in seconds instead of in CI.
+
 ## Design documents
 
 - [`PROJECT_PLAN.md`](PROJECT_PLAN.md) — the specification: architecture,
