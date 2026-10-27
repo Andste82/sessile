@@ -117,9 +117,12 @@ jobs:
 
       # The upgrade an operator does (§12e M35): the last published release
       # writes the data, this build has to start on it with nothing lost.
+      # HEAD^, not HEAD: on master, a release tag on the merge commit would
+      # otherwise name the release being built, whose image is not pushed yet.
+      # On a PR, HEAD is the merge ref and HEAD^ is master, so nothing changes.
       - name: Upgrade test from the previous release
         run: |
-          prev="$(git describe --tags --abbrev=0 --match 'v*' HEAD)"
+          prev="$(git describe --tags --abbrev=0 --match 'v*' HEAD^)"
           suffix="${{ matrix.variant == 'ubuntu' && '-ubuntu' || '' }}"
           scripts/upgrade-smoke.sh "ghcr.io/andste82/sessile:${prev#v}${suffix}" sessile:${{ matrix.variant }}
 
