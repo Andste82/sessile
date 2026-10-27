@@ -26,6 +26,10 @@ Protect the data directory accordingly.
   defaults in Settings. A session can also load a `.env` file from its start
   directory on every start. Secret values are write-only: never returned by
   the API, sent in events or logged.
+- The file browser of an SSH session now opens in the session's start
+  directory the first time it is shown, as it already did for local sessions
+  (issue #97). It does not follow a `cd` in the terminal, and afterwards it
+  stays where you left it.
 
 Downgrades: the guard below only exists from this release on. 0.7.0 and
 older do not read the schema version, so nothing stops them from starting
