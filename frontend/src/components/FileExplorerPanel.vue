@@ -371,7 +371,9 @@ function formatSize(bytes: number): string {
  * workspace-relative, for an SSH session an absolute remote path (§6); the
  * listing endpoint takes either. '' — no start directory chosen, or a session
  * record that has not been fetched yet — lands in the target's own root (the
- * login home for SSH).
+ * login home for SSH). A start directory that no longer exists is shown as a
+ * listing error, with no fallback to the home — the session itself fails the
+ * same way on create and restart.
  */
 function sessionRoot(): string {
   return sessions.byId(props.sessionId)?.directory ?? ''
