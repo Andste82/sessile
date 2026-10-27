@@ -136,5 +136,8 @@ func (s *Server) trustHostKey(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, CodeInternal, "failed to update host")
 		return
 	}
+	// The pin changed: a cached browse connection was verified against the
+	// old one.
+	s.dropHostBrowse(c.MustGet(userIDKey).(string), host.ID)
 	c.JSON(http.StatusOK, toHostResponse(updated))
 }

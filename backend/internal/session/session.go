@@ -44,7 +44,7 @@ type Session struct {
 	UserID string // owner — every lookup on Manager is scoped to this (§4.5, §10)
 
 	TargetType TargetType // "local" | "ssh"
-	Directory  string     // relative to root, as supplied by the user (local only)
+	Directory  string     // local: relative to root, as supplied by the user; SSH: absolute remote start directory, or "" for the sshd default
 	Shell      string     // local only
 	HostID     string     // the owning user's host id (ssh only)
 	// HostDisplayName is the host's name, snapshotted at creation time (ssh

@@ -6,7 +6,7 @@ import type { Session } from '@/api/types'
  * is all that is left once the session stops.
  */
 export function displayDirectory(s: Session): string {
-  return s.cwd || s.directory
+  return s.cwd || s.directory || ''
 }
 
 /**

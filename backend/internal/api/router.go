@@ -65,6 +65,10 @@ type Server struct {
 	// the terminal state — see hostops_ops.go.
 	opsMu sync.Mutex
 	ops   map[string]*hostopStatus
+
+	// browse caches the session-less directory-lister connections
+	// (hostbrowse.go, §4.10). Closed by Close.
+	browse *browseCache
 }
 
 // NewServer constructs a Server.
@@ -73,7 +77,8 @@ func NewServer(cfg *config.Config, manager *session.Manager, wsHandler *ws.Handl
 		cfg: cfg, manager: manager, ws: wsHandler, log: log,
 		workspaceRoot: workspaceRoot, serverConfig: serverCfg,
 		users: users, webSessions: webSessions, hosts: hostsRegistry,
-		ops: make(map[string]*hostopStatus),
+		ops:    make(map[string]*hostopStatus),
+		browse: newBrowseCache(),
 	}
 }
 
@@ -130,6 +135,8 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/hosts/:id/host-key/probe", s.probeHostKey)
 		authGroup.POST("/hosts/:id/host-key/trust", s.trustHostKey)
 		authGroup.POST("/hosts/:id/exchange-keys", s.exchangeHostKeys)
+		authGroup.GET("/hosts/:id/directories", s.listHostDirectories)
+		authGroup.DELETE("/hosts/:id/directories", s.closeHostBrowse)
 		authGroup.GET("/sessions", s.listSessions)
 		authGroup.POST("/sessions", s.createSession)
 		authGroup.GET("/sessions/:id", s.getSession)

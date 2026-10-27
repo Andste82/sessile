@@ -142,9 +142,9 @@ func (m *Manager) CreateLocal(userID, name, group, dir, shell string) (Info, err
 // §4.5.1) this returns that error unwrapped and creates no session and no
 // store row — a clean no-op the caller retries after the user trusts the
 // key (§6).
-func (m *Manager) CreateSSH(userID, name, group, hostID, hostDisplayName string, target sshpty.Target) (Info, error) {
+func (m *Manager) CreateSSH(userID, name, group, hostID, hostDisplayName string, target sshpty.Target, dir string) (Info, error) {
 	now := timeNow()
-	s, err := m.spawnSSH(uuid.NewString(), userID, name, hostID, hostDisplayName, target, now)
+	s, err := m.spawnSSH(uuid.NewString(), userID, name, hostID, hostDisplayName, target, dir, now)
 	if err != nil {
 		return Info{}, err
 	}
@@ -201,7 +201,7 @@ func (m *Manager) Restart(id, userID string) (Info, error) {
 		if rerr != nil {
 			return Info{}, rerr
 		}
-		s, err = m.spawnSSH(meta.ID, meta.UserID, meta.Name, meta.HostID, displayName, target, meta.Created)
+		s, err = m.spawnSSH(meta.ID, meta.UserID, meta.Name, meta.HostID, displayName, target, meta.Directory, meta.Created)
 	default: // TargetLocal, and pre-M17 rows the migration defaulted to it
 		s, err = m.spawnLocal(meta.ID, meta.UserID, meta.Name, meta.Directory, meta.Shell, meta.Created)
 	}
@@ -401,12 +401,12 @@ func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.T
 // hostKeyErr (an *sshpty.ErrHostKeyUnknown or *ErrHostKeyChanged) is
 // returned unwrapped so the caller can map it to the API's distinct
 // host-key responses (§4.5.1, §6) instead of a generic connection failure.
-func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, target sshpty.Target, created time.Time) (*Session, error) {
+func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, target sshpty.Target, dir string, created time.Time) (*Session, error) {
 	if l := len(name); l < 1 || l > 64 {
 		return nil, ErrInvalidName
 	}
 
-	pty, err := sshpty.Start(target, defaultRows, defaultCols)
+	pty, err := sshpty.Start(target, dir, defaultRows, defaultCols)
 	if err != nil {
 		return nil, err
 	}
@@ -419,6 +419,7 @@ func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, tar
 		TargetType:      TargetSSH,
 		HostID:          hostID,
 		HostDisplayName: hostDisplayName,
+		Directory:       dir,
 		Status:          StatusRunning,
 		PID:             pty.Pid(),
 		Created:         created,

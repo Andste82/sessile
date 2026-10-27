@@ -8,7 +8,7 @@ export interface Session {
   id: string
   name: string
   targetType: TargetType
-  directory: string // local only
+  directory: string // local: workspace-relative; ssh: absolute start directory on the host, "" if none
   shell: string // local only
   hostId: string // ssh only
   hostDisplayName: string // ssh only — snapshotted at creation, survives a host rename/delete
@@ -28,7 +28,7 @@ export interface Session {
 // Discriminated on target: "local" needs directory+shell, "ssh" needs hostId.
 export type CreateSessionBody =
   | { name: string; target: 'local'; group?: string; directory: string; shell: string }
-  | { name: string; target: 'ssh'; group?: string; hostId: string }
+  | { name: string; target: 'ssh'; group?: string; hostId: string; directory?: string }
 
 // Both fields optional, and both meaningful when present: an omitted one is
 // left unchanged, `group: ''` clears the group (§6).
@@ -43,9 +43,11 @@ export interface AppConfig {
   allowLocalHost: boolean
 }
 
+// Shared by GET /api/directories (local, workspace-relative paths) and
+// GET /api/hosts/:id/directories (SSH host, absolute paths, parent null at "/").
 export interface DirectoriesResponse {
-  path: string // cleaned relative path being listed ("." = root)
-  parent: string | null // parent relative path, or null at the root
+  path: string // cleaned path being listed ("." = workspace root locally, absolute on a host)
+  parent: string | null // parent path, or null at the root
   directories: string[] // immediate subdirectory names, sorted
 }
 

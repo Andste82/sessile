@@ -9,6 +9,7 @@ import (
 
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/session"
+	"github.com/Andste82/sessile/backend/internal/sshpty"
 )
 
 // The §6 session shape is session.JSON, built by session.ToJSON. It lives in
@@ -27,6 +28,34 @@ type createSessionBody struct {
 	Directory string `json:"directory"`
 	Shell     string `json:"shell"`
 	HostID    string `json:"hostId"`
+}
+
+// maxRemotePathLen bounds a remote path an API caller supplies.
+const maxRemotePathLen = 4096
+
+// isStartDirError reports whether err is one of sshpty's typed start-directory
+// failures.
+func isStartDirError(err error) bool {
+	var nf *sshpty.ErrDirNotFound
+	var un *sshpty.ErrSFTPUnavailable
+	var ds *sshpty.ErrDirUnsupported
+	return errors.As(err, &nf) || errors.As(err, &un) || errors.As(err, &ds)
+}
+
+// validateSSHStartDir checks the shape of an already-trimmed SSH start
+// directory against host and returns a user-facing message, or "" if it is
+// acceptable (including the empty "no start directory" case).
+func validateSSHStartDir(host hosts.Host, dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if len(dir) > maxRemotePathLen || strings.ContainsAny(dir, "\x00\n\r") || !strings.HasPrefix(dir, "/") {
+		return "start directory must be an absolute path"
+	}
+	if host.TargetOS == hosts.OSWindows || host.TerminalType == "cmd" || host.TerminalType == "powershell" {
+		return "start directory is not supported for Windows targets"
+	}
+	return ""
 }
 
 func (s *Server) listSessions(c *gin.Context) {
@@ -82,7 +111,17 @@ func (s *Server) createSSHSession(c *gin.Context, userID string, body createSess
 		return
 	}
 
-	info, err := s.manager.CreateSSH(userID, body.Name, strings.TrimSpace(body.Group), host.ID, host.Name, host.SSHTarget())
+	// The start directory is a path on the user's own remote host, so it is
+	// deliberately NOT passed through resolveDir (CLAUDE.md: remote paths are
+	// exempt from the local workspace check). Only its shape is validated
+	// here; existence is checked over SFTP before the shell starts.
+	dir := strings.TrimSpace(body.Directory)
+	if msg := validateSSHStartDir(host, dir); msg != "" {
+		respondError(c, http.StatusBadRequest, CodeValidation, msg)
+		return
+	}
+
+	info, err := s.manager.CreateSSH(userID, body.Name, strings.TrimSpace(body.Group), host.ID, host.Name, host.SSHTarget(), dir)
 	if err != nil {
 		if s.respondHostKeyError(c, err) {
 			return
@@ -189,6 +228,10 @@ func (s *Server) respondSessionError(c *gin.Context, err error) {
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 	case errors.Is(err, session.ErrShuttingDown):
 		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
+	case isStartDirError(err):
+		// A missing/unverifiable SSH start directory fails visibly (create
+		// and restart alike); there is no fallback to the home directory.
+		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 	default:
 		// resolveDir, sshpty dial failures and other validation-style failures
 		// surface here as 400; treat unknown errors as validation to avoid

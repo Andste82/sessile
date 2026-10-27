@@ -187,6 +187,7 @@ func run(args []string) error {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Error("http shutdown error", "err", err)
 	}
+	srv.Close()
 	// Terminate shell processes and mark sessions stopped (§4.6).
 	manager.Shutdown()
 	log.Info("shutdown complete")

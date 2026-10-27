@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { relativeTo } from './path'
+import { joinRemote, parentRemote, relativeTo, remoteCrumbs } from './path'
 
 describe('relativeTo', () => {
   it('strips the shared prefix for a file below', () => {
@@ -30,5 +30,31 @@ describe('relativeTo', () => {
   // total rather than a case that occurs.
   it('falls back to the target when either path is not absolute', () => {
     expect(relativeTo('relative', '/home/me/a.txt')).toBe('/home/me/a.txt')
+  })
+})
+
+describe('remote path helpers', () => {
+  it.each([
+    ['/', []],
+    ['/home/me', [{ name: 'home', path: '/home' }, { name: 'me', path: '/home/me' }]],
+    ['/a//b/', [{ name: 'a', path: '/a' }, { name: 'b', path: '/a/b' }]],
+  ])('remoteCrumbs(%s)', (input, want) => {
+    expect(remoteCrumbs(input)).toEqual(want)
+  })
+
+  it.each([
+    ['/', 'etc', '/etc'],
+    ['/home', 'me', '/home/me'],
+    ['/home/', 'me', '/home/me'],
+  ])('joinRemote(%s, %s)', (base, name, want) => {
+    expect(joinRemote(base, name)).toBe(want)
+  })
+
+  it.each([
+    ['/', null],
+    ['/home', '/'],
+    ['/home/me', '/home'],
+  ])('parentRemote(%s)', (input, want) => {
+    expect(parentRemote(input)).toBe(want)
   })
 })

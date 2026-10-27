@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"errors"
 	"net"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -24,6 +26,10 @@ type testServer struct {
 
 	signals chan ssh.Signal
 	resizes chan [2]int // rows, cols
+
+	// sftpEnabled makes the server answer the "sftp" subsystem request with
+	// a real sftp server on the local filesystem; off, it refuses it.
+	sftpEnabled atomic.Bool
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -119,6 +125,21 @@ func (ts *testServer) serveSession(ch ssh.Channel, requests <-chan *ssh.Request)
 			case ts.signals <- ssh.Signal(payload.Signal):
 			default:
 			}
+		case "subsystem":
+			var payload struct{ Name string }
+			_ = ssh.Unmarshal(req.Payload, &payload)
+			if payload.Name != "sftp" || !ts.sftpEnabled.Load() {
+				req.Reply(false, nil)
+				continue
+			}
+			req.Reply(true, nil)
+			server, err := sftp.NewServer(ch)
+			if err != nil {
+				return
+			}
+			_ = server.Serve()
+			_ = server.Close()
+			return
 		case "exec", "shell":
 			req.Reply(true, nil)
 			if !startOnce {
@@ -171,7 +192,7 @@ func testTarget(addr string, fingerprint string) Target {
 func TestStartRoundTripsData(t *testing.T) {
 	ts := newTestServer(t)
 
-	pty, err := Start(testTarget(ts.addr, ts.fingerprint), 24, 80)
+	pty, err := Start(testTarget(ts.addr, ts.fingerprint), "", 24, 80)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -200,7 +221,7 @@ func TestStartRoundTripsData(t *testing.T) {
 func TestStartUnknownHostKey(t *testing.T) {
 	ts := newTestServer(t)
 
-	_, err := Start(testTarget(ts.addr, ""), 24, 80)
+	_, err := Start(testTarget(ts.addr, ""), "", 24, 80)
 	var unknown *ErrHostKeyUnknown
 	if !errors.As(err, &unknown) {
 		t.Fatalf("Start with no pinned key: err = %v, want *ErrHostKeyUnknown", err)
@@ -213,7 +234,7 @@ func TestStartUnknownHostKey(t *testing.T) {
 func TestStartChangedHostKey(t *testing.T) {
 	ts := newTestServer(t)
 
-	_, err := Start(testTarget(ts.addr, "SHA256:not-the-real-fingerprint"), 24, 80)
+	_, err := Start(testTarget(ts.addr, "SHA256:not-the-real-fingerprint"), "", 24, 80)
 	var changed *ErrHostKeyChanged
 	if !errors.As(err, &changed) {
 		t.Fatalf("Start with wrong pinned key: err = %v, want *ErrHostKeyChanged", err)
@@ -231,7 +252,7 @@ func TestStartWrongCredentials(t *testing.T) {
 
 	target := testTarget(ts.addr, ts.fingerprint)
 	target.Password = "wrong"
-	if _, err := Start(target, 24, 80); err == nil {
+	if _, err := Start(target, "", 24, 80); err == nil {
 		t.Fatal("Start with wrong password succeeded, want an error")
 	}
 }
@@ -254,7 +275,7 @@ func TestProbeHostKey(t *testing.T) {
 func TestResizeSendsWindowChange(t *testing.T) {
 	ts := newTestServer(t)
 
-	pty, err := Start(testTarget(ts.addr, ts.fingerprint), 24, 80)
+	pty, err := Start(testTarget(ts.addr, ts.fingerprint), "", 24, 80)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -277,7 +298,7 @@ func TestResizeSendsWindowChange(t *testing.T) {
 func TestSignalForwardsToServer(t *testing.T) {
 	ts := newTestServer(t)
 
-	pty, err := Start(testTarget(ts.addr, ts.fingerprint), 24, 80)
+	pty, err := Start(testTarget(ts.addr, ts.fingerprint), "", 24, 80)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -298,7 +319,7 @@ func TestSignalForwardsToServer(t *testing.T) {
 func TestWaitUnblocksOnRemoteExit(t *testing.T) {
 	ts := newTestServer(t)
 
-	pty, err := Start(testTarget(ts.addr, ts.fingerprint), 24, 80)
+	pty, err := Start(testTarget(ts.addr, ts.fingerprint), "", 24, 80)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

@@ -6,9 +6,9 @@
 package sshpty
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -81,36 +81,27 @@ type PTY struct {
 }
 
 // Start dials target, requests a PTY, and starts its configured command.
-// Rows/cols size the initial window, exactly like terminal.Start's local
-// equivalent.
-func Start(t Target, rows, cols uint16) (*PTY, error) {
-	methods, err := authMethods(t)
+// A non-empty dir is the absolute start directory (POSIX targets only): it
+// is verified over SFTP before the shell exists (checkDir) and entered by
+// the exec preamble (wrapWithPIDRecording). Rows/cols size the initial
+// window, exactly like terminal.Start's local equivalent.
+func Start(t Target, dir string, rows, cols uint16) (*PTY, error) {
+	if dir != "" && isWindowsTarget(t) {
+		return nil, &ErrDirUnsupported{}
+	}
+
+	client, err := Dial(context.Background(), t)
 	if err != nil {
 		return nil, err
 	}
 
-	address := ensurePort(t.Address)
-	cfg := &ssh.ClientConfig{
-		User:            t.Username,
-		Auth:            methods,
-		HostKeyCallback: pinnedHostKeyCallback(t.TrustedHostKeyFingerprint),
-		Timeout:         dialTimeout,
-	}
-
-	client, err := ssh.Dial("tcp", address, cfg)
-	if err != nil {
-		// Host-key rejections come back wrapped by x/crypto/ssh's handshake
-		// error; unwrap them so callers can type-switch on the originals
-		// (session.CreateSSH maps them to distinct API responses, §6).
-		var unknown *ErrHostKeyUnknown
-		if errors.As(err, &unknown) {
-			return nil, unknown
+	// Checked before NewSession so a missing directory fails visibly
+	// instead of silently landing in the home directory.
+	if dir != "" {
+		if err := checkDir(client, dir); err != nil {
+			_ = client.Close()
+			return nil, err
 		}
-		var changed *ErrHostKeyChanged
-		if errors.As(err, &changed) {
-			return nil, changed
-		}
-		return nil, fmt.Errorf("ssh dial %s: %w", address, err)
 	}
 
 	session, err := client.NewSession()
@@ -154,7 +145,7 @@ func Start(t Target, rows, cols uint16) (*PTY, error) {
 		cmd = t.CustomCommand
 	}
 
-	pidFilePath, startCmd := wrapWithPIDRecording(t.TargetOS, t.TerminalType, cmd)
+	pidFilePath, startCmd := wrapWithPIDRecording(t.TargetOS, t.TerminalType, dir, cmd)
 
 	if err := session.Start(startCmd); err != nil {
 		_ = stdinR.Close()
@@ -271,7 +262,12 @@ func authMethods(t Target) ([]ssh.AuthMethod, error) {
 // through cmd.exe, "echo $$ > /tmp/…" writes a nonsense file or fails
 // outright, and "exec" is not a cmd.exe builtin — the session fails to
 // start. Either signal saying "Windows" is therefore enough to skip.
-func wrapWithPIDRecording(targetOS, terminalType, cmd string) (pidFilePath, wrapped string) {
+//
+// A non-empty dir (POSIX only) prefixes the preamble with `cd -- <dir> &&`.
+// This is a safety net behind Start's SFTP check: a failed cd exits the
+// wrapper non-zero and never reaches exec, so the user never silently
+// lands in the wrong directory. Windows targets get no wrapper and no cd.
+func wrapWithPIDRecording(targetOS, terminalType, dir, cmd string) (pidFilePath, wrapped string) {
 	if targetOS == "windows" || terminalType == "cmd" || terminalType == "powershell" {
 		return "", cmd
 	}
@@ -286,6 +282,9 @@ func wrapWithPIDRecording(targetOS, terminalType, cmd string) (pidFilePath, wrap
 		target = "sh -c " + shellSingleQuote(cmd)
 	}
 	preamble := fmt.Sprintf("echo $$ > %s 2>/dev/null; exec %s", path, target)
+	if dir != "" {
+		preamble = fmt.Sprintf("cd -- %s && { %s; }", shellSingleQuote(dir), preamble)
+	}
 	return path, "sh -c " + shellSingleQuote(preamble)
 }
 
