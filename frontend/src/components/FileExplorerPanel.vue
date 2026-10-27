@@ -367,15 +367,16 @@ function formatSize(bytes: number): string {
 
 /**
  * sessionRoot is the directory the session was created with — its own root,
- * not wherever its shell has since cd'd to. An SSH session's directory is an
- * absolute remote path (§6), not workspace-relative, so it is not used as a
- * root here: '' lands the listing in the login home, and the same fallback
- * covers a session record that has not been fetched yet.
+ * not wherever its shell has since cd'd to. For a local session that is
+ * workspace-relative, for an SSH session an absolute remote path (§6); the
+ * listing endpoint takes either. '' — no start directory chosen, or a session
+ * record that has not been fetched yet — lands in the target's own root (the
+ * login home for SSH). A start directory that no longer exists is shown as a
+ * listing error, with no fallback to the home — the session itself fails the
+ * same way on create and restart.
  */
 function sessionRoot(): string {
-  const s = sessions.byId(props.sessionId)
-  if (!s || s.targetType !== 'local') return ''
-  return s.directory ?? ''
+  return sessions.byId(props.sessionId)?.directory ?? ''
 }
 
 /**
