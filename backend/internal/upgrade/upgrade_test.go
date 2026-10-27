@@ -42,6 +42,7 @@ func oldDataDir(t *testing.T) string {
 	write("config.yml", "allowLocalHost: true\n")
 	write("users.yml", "- id: u1\n  username: admin\n")
 	write("users/u1/hosts.yml", "- id: h1\n  password: secret\n")
+	write("users/u1/env.yml", "env:\n  - name: TOKEN\n    value: env-secret\n    secret: true\n")
 	return dir
 }
 
@@ -108,7 +109,7 @@ func TestBackupBeforeMigration(t *testing.T) {
 		t.Errorf("backup has %d sessions, want 2", rows)
 	}
 
-	for _, rel := range []string{"sessions.db", "config.yml", "users.yml", "users/u1/hosts.yml"} {
+	for _, rel := range []string{"sessions.db", "config.yml", "users.yml", "users/u1/hosts.yml", "users/u1/env.yml"} {
 		fi, err := os.Stat(filepath.Join(backup, rel))
 		if err != nil {
 			t.Errorf("backup is missing %s: %v", rel, err)
@@ -117,6 +118,9 @@ func TestBackupBeforeMigration(t *testing.T) {
 		if fi.Mode().Perm() != 0o600 {
 			t.Errorf("%s mode = %v, want 0600", rel, fi.Mode().Perm())
 		}
+	}
+	if env, _ := os.ReadFile(filepath.Join(backup, "users/u1/env.yml")); !strings.Contains(string(env), "env-secret") {
+		t.Errorf("env.yml copy = %q, want the original content", env)
 	}
 	got, _ := os.ReadFile(filepath.Join(backup, "users/u1/hosts.yml"))
 	if !strings.Contains(string(got), "secret") {

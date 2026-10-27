@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 // rely on that shape and may rewrite data, not only add columns.
 var migrations = []func(*sql.Tx) error{
 	migrateLegacyColumns,
+	migrateEnvColumns,
 }
 
 // SchemaVersion is the user_version this build migrates a database to.
@@ -95,6 +96,31 @@ func migrateLegacyColumns(tx *sql.Tx) error {
 		}
 		if _, err := tx.Exec(c.ddl); err != nil {
 			return fmt.Errorf("add column %s: %w", c.name, err)
+		}
+	}
+	return nil
+}
+
+// migrateEnvColumns is step 2 (issue #123): per-session environment
+// variables and the .env flag.
+//
+// Non-secret and secret entries live in separate columns, so a future change
+// (encrypting the secrets, excluding them from a diagnostic dump) can treat
+// them differently without parsing the other. Both hold a JSON array of
+// {"n","v","d"} objects; rows written before this step get '[]' and 0, which
+// is exactly "no environment, no .env". Older releases refuse to open a
+// database at this version (SchemaTooNewError), as for every step.
+var envColumns = []string{
+	`ALTER TABLE sessions ADD COLUMN env_vars TEXT NOT NULL DEFAULT '[]'`,
+	// TODO(security): plaintext at rest, optional encryption later
+	`ALTER TABLE sessions ADD COLUMN env_secrets TEXT NOT NULL DEFAULT '[]'`,
+	`ALTER TABLE sessions ADD COLUMN dotenv INTEGER NOT NULL DEFAULT 0`,
+}
+
+func migrateEnvColumns(tx *sql.Tx) error {
+	for _, ddl := range envColumns {
+		if _, err := tx.Exec(ddl); err != nil {
+			return fmt.Errorf("add env column: %w", err)
 		}
 	}
 	return nil

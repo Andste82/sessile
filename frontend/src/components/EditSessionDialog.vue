@@ -8,22 +8,66 @@ import {
   TransitionChild,
 } from '@headlessui/vue'
 import { useSessionsStore } from '@/stores/sessions'
+import { useHostsStore } from '@/stores/hosts'
 import GroupInput from './GroupInput.vue'
-import type { Session } from '@/api/types'
+import EnvTable from './EnvTable.vue'
+import { patchEntries, rowsFromSession, validateRows, type EnvRow } from '@/utils/env'
+import type { Session, UpdateSessionBody } from '@/api/types'
 
-// Name and group only. Directory, shell and host are what the session *is* —
-// changing them would mean a different session, which is what creating one is
-// for. Editing works on a stopped session too: both fields are metadata, and
-// tidying a session up is exactly what one does once it has stopped (§4.11).
+// Name, group and environment. Directory, shell and host are what the session
+// *is* — changing them would mean a different session, which is what creating
+// one is for. Name and group work on a stopped session too: both are metadata,
+// and tidying a session up is exactly what one does once it has stopped
+// (§4.11). The environment is editable only while stopped: it is applied at
+// spawn, so changing it under a live shell would change nothing and mislead.
 const props = defineProps<{ open: boolean; session: Session | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const store = useSessionsStore()
+const hostsStore = useHostsStore()
+
+// Status comes from the live store session, not the prop snapshot, so a
+// session that starts or stops while the dialog is open flips the table.
+const live = computed(() => (props.session ? (store.byId(props.session.id) ?? props.session) : null))
+const stopped = computed(() => live.value?.status === 'stopped')
+// A host that is gone from the list is treated as supported; restart decides.
+const envSupported = computed(() => {
+  const hid = props.session?.hostId
+  if (!hid) return true
+  return hostsStore.hosts.find((h) => h.id === hid)?.supportsEnv !== false
+})
+const envEditable = computed(() => stopped.value && envSupported.value)
+const envNote = computed(() => {
+  if (!stopped.value) return 'Stop the session to edit its environment; it applies when the session starts.'
+  if (!envSupported.value) return 'This host does not support environment variables.'
+  return ''
+})
+
+const envRows = ref<EnvRow[]>([])
+const envTouched = ref(false)
+const loadDotenv = ref(false)
+const dotenvTouched = ref(false)
+const envError = computed(() => (envEditable.value && envTouched.value ? validateRows(envRows.value) : null))
+
+function onRows(rows: EnvRow[]) {
+  envRows.value = rows
+  envTouched.value = true
+}
 
 const name = ref('')
 const group = ref('')
 const submitting = ref(false)
 const error = ref<string | null>(null)
+
+// Secret values typed here must not outlive the dialog.
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!isOpen) envRows.value = []
+  },
+)
+
+if (hostsStore.hosts.length === 0) void hostsStore.fetchHosts()
 
 watch(
   () => [props.open, props.session?.id] as const,
@@ -32,21 +76,30 @@ watch(
     error.value = null
     name.value = props.session.name
     group.value = props.session.group
+    envRows.value = rowsFromSession(props.session.env ?? [])
+    loadDotenv.value = props.session.loadDotenv ?? false
+    envTouched.value = false
+    dotenvTouched.value = false
   },
   { immediate: true },
 )
 
-const canSubmit = computed(() => name.value.trim().length > 0)
+const canSubmit = computed(() => name.value.trim().length > 0 && !envError.value)
 
 async function submit() {
   if (!canSubmit.value || submitting.value || !props.session) return
   submitting.value = true
   error.value = null
   try {
-    await store.updateSession(props.session.id, {
+    const body: UpdateSessionBody = {
       name: name.value.trim(),
       group: group.value.trim(),
-    })
+    }
+    // The full list goes only when touched; an untouched table sends nothing,
+    // so a name-only edit also works on a running session.
+    if (envEditable.value && envTouched.value) body.env = patchEntries(envRows.value)
+    if (envEditable.value && dotenvTouched.value) body.loadDotenv = loadDotenv.value
+    await store.updateSession(props.session.id, body)
     emit('close')
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -82,7 +135,7 @@ async function submit() {
           leave-to="opacity-0 scale-95"
         >
           <DialogPanel
-            class="w-full max-w-md rounded-xl border border-slate-700 bg-slate-800 p-6 shadow-xl"
+            class="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl border border-slate-700 bg-slate-800 p-6 shadow-xl"
           >
             <DialogTitle class="text-lg font-semibold text-slate-100">Edit session</DialogTitle>
 
@@ -106,6 +159,28 @@ async function submit() {
                 Clearing this removes the session from its group. A group with no
                 sessions left disappears on its own.
               </p>
+
+              <div class="flex flex-col gap-2 rounded-md border border-slate-700 p-3">
+                <span class="text-sm text-slate-300">Environment ({{ envRows.length }})</span>
+                <EnvTable
+                  :rows="envRows"
+                  mode="edit"
+                  :disabled="!envEditable"
+                  :disabled-note="envNote"
+                  @update:rows="onRows"
+                />
+                <label class="flex items-center gap-2 text-sm text-slate-300">
+                  <input
+                    v-model="loadDotenv"
+                    type="checkbox"
+                    :disabled="!envEditable"
+                    class="accent-emerald-500"
+                    @change="dotenvTouched = true"
+                  />
+                  Load .env
+                </label>
+                <p v-if="envError" class="text-xs text-rose-400">{{ envError }}</p>
+              </div>
 
               <p v-if="error" class="text-sm text-rose-400">{{ error }}</p>
 

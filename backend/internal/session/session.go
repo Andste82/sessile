@@ -59,6 +59,12 @@ type Session struct {
 	// grouping (§4.11).
 	Group string
 
+	// Env and DotEnv are the session's environment (issue #123), snapshotted at
+	// create time and re-applied at every spawn. Env is sorted by name. Secret
+	// values stay in here and the store; ToJSON is what keeps them off the wire.
+	Env    []EnvVar
+	DotEnv bool
+
 	Status       Status
 	PID          int
 	Created      time.Time
@@ -124,6 +130,11 @@ type Info struct {
 	Rows, Cols      uint16
 	ClientCount     int
 
+	// Env and DotEnv: see Session. Info may carry secret values and must
+	// never be handed to slog as a value — log fields individually.
+	Env    []EnvVar
+	DotEnv bool
+
 	// Derived, never persisted (§4.7, §4.8). Empty for a stopped session, and
 	// where they cannot be determined.
 	Command string
@@ -155,6 +166,8 @@ func (s *Session) infoLocked() Info {
 		HostID:          s.HostID,
 		HostDisplayName: s.HostDisplayName,
 		Group:           s.Group,
+		Env:             cloneEnv(s.Env),
+		DotEnv:          s.DotEnv,
 		Status:          s.Status,
 		PID:             s.PID,
 		Created:         s.Created,

@@ -9,7 +9,9 @@ import {
 } from '@headlessui/vue'
 import { useSessionsStore } from '@/stores/sessions'
 import { useHostsStore } from '@/stores/hosts'
-import { ApiRequestError } from '@/api/client'
+import { ApiRequestError, getEnvDefaults } from '@/api/client'
+import EnvTable from './EnvTable.vue'
+import { envBodyParts, seedWithDefaults, validateRows, type EnvRow } from '@/utils/env'
 import DirectoryBrowser from './DirectoryBrowser.vue'
 import GroupInput from './GroupInput.vue'
 import SshDirectoryChooser from './SshDirectoryChooser.vue'
@@ -61,12 +63,51 @@ const selectedHost = computed(() => hosts.value.find((h) => h.id === hostId.valu
 const startDirSupported = computed(() => (selectedHost.value ? supportsStartDir(selectedHost.value) : true))
 const pendingBody = ref<CreateSessionBody | null>(null)
 
+// Environment (issue #123). Values live in this component's state only: never
+// in storage, and dropped when the dialog closes. Rows are seeded from the
+// user's defaults as inherited rows; only deviations are sent on create.
+const envRows = ref<EnvRow[]>([])
+const envOpen = ref(false)
+const loadDotenv = ref(false)
+// Unknown host (list not loaded) is treated as supported; the server decides.
+const envSupported = computed(() => selectedHost.value?.supportsEnv !== false)
+// An unsupported host sends no environment at all, so inherited rows must not
+// be counted as if they would apply.
+const envCount = computed(() =>
+  envSupported.value ? envRows.value.filter((r) => !r.removed).length : 0,
+)
+// Set when the defaults could not be loaded, so a user with (secret) defaults
+// is told they are missing instead of silently creating a session without them.
+const defaultsFailed = ref(false)
+const envError = computed(() => (envSupported.value ? validateRows(envRows.value) : null))
+const dotenvHint = computed(() =>
+  target.value === 'local'
+    ? '.env in the session directory'
+    : '.env in the remote start directory, or the home directory when none is chosen',
+)
+
+async function seedEnvDefaults() {
+  try {
+    const d = await getEnvDefaults()
+    // Do not resurrect rows if the dialog was closed (and cleared) meanwhile.
+    if (!props.open) return
+    // Merge rather than replace: rows typed before a slow response arrived
+    // stay, and win over an inherited default of the same name.
+    envRows.value = seedWithDefaults(envRows.value, d.env)
+  } catch {
+    // Defaults are a convenience; creating a session must not depend on them,
+    // but the user is told they did not load.
+    if (props.open) defaultsFailed.value = true
+  }
+}
+
 const shells = computed(() => store.config?.shells ?? [])
 const allowLocalHost = computed(() => store.config?.allowLocalHost ?? false)
 const hosts = computed(() => hostsStore.hosts)
 
 const canSubmit = computed(() => {
   if (name.value.trim().length === 0) return false
+  if (envError.value) return false
   if (target.value === 'ssh') return hostId.value !== ''
   return directory.value !== '' && shell.value !== ''
 })
@@ -78,8 +119,18 @@ watch(
     if (!isOpen) {
       // Drop the browse connection now rather than waiting for unmount.
       chooser.value?.stop()
+      // Secret values must not outlive the dialog.
+      envRows.value = []
+      loadDotenv.value = false
+      envOpen.value = false
+      defaultsFailed.value = false
       return
     }
+    envRows.value = []
+    loadDotenv.value = false
+    envOpen.value = false
+    defaultsFailed.value = false
+    void seedEnvDefaults()
     sshDirectory.value = ''
     error.value = null
     pendingHostKey.value = null
@@ -103,9 +154,16 @@ function bodyFromForm(): CreateSessionBody {
       common,
       hostId.value,
       startDirSupported.value ? sshDirectory.value : '',
+      envBodyParts(envRows.value, loadDotenv.value, envSupported.value),
     )
   }
-  return { ...common, target: 'local', directory: directory.value, shell: shell.value }
+  return {
+    ...common,
+    target: 'local',
+    directory: directory.value,
+    shell: shell.value,
+    ...envBodyParts(envRows.value, loadDotenv.value, true),
+  }
 }
 
 async function attemptCreate(body: CreateSessionBody) {
@@ -198,7 +256,7 @@ watch(selection, () => {
           leave-to="opacity-0 scale-95"
         >
           <DialogPanel
-            class="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl border border-slate-700 bg-slate-800 p-6 shadow-xl"
+            class="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl border border-slate-700 bg-slate-800 p-6 shadow-xl"
           >
             <DialogTitle class="text-lg font-semibold text-slate-100">
               New session
@@ -272,6 +330,45 @@ watch(selection, () => {
                   </select>
                 </label>
               </template>
+
+              <div v-if="selection" class="flex flex-col gap-2 rounded-md border border-slate-700 p-3">
+                <button
+                  type="button"
+                  class="flex items-center justify-between text-sm text-slate-300"
+                  :aria-expanded="envOpen"
+                  @click="envOpen = !envOpen"
+                >
+                  <span>Environment ({{ envCount }})</span>
+                  <span class="text-xs text-slate-500">{{ envOpen ? 'Hide' : 'Show' }}</span>
+                </button>
+                <div v-show="envOpen" class="flex flex-col gap-3">
+                  <p v-if="defaultsFailed && envSupported" class="text-xs text-amber-400">
+                    Your default variables could not be loaded; this session will start without them.
+                  </p>
+                  <p v-if="!envSupported" class="text-xs text-slate-400">
+                    Environment variables are not supported for Windows hosts; the session starts
+                    without them.
+                  </p>
+                  <EnvTable
+                    v-model:rows="envRows"
+                    mode="create"
+                    :disabled="!envSupported"
+                  />
+                  <label class="flex items-start gap-2 text-sm text-slate-300">
+                    <input
+                      v-model="loadDotenv"
+                      type="checkbox"
+                      :disabled="!envSupported"
+                      class="mt-0.5 accent-emerald-500"
+                    />
+                    <span>
+                      Load .env
+                      <span class="block text-xs text-slate-500">{{ dotenvHint }}</span>
+                    </span>
+                  </label>
+                  <p v-if="envError" class="text-xs text-rose-400">{{ envError }}</p>
+                </div>
+              </div>
 
               <p v-if="error" class="text-sm text-rose-400">{{ error }}</p>
 

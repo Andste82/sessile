@@ -137,6 +137,8 @@ func (s *Server) Router(dist fs.FS) *gin.Engine {
 		authGroup.POST("/hosts/:id/exchange-keys", s.exchangeHostKeys)
 		authGroup.GET("/hosts/:id/directories", s.listHostDirectories)
 		authGroup.DELETE("/hosts/:id/directories", s.closeHostBrowse)
+		authGroup.GET("/env-defaults", s.getEnvDefaults)
+		authGroup.PUT("/env-defaults", s.putEnvDefaults)
 		authGroup.GET("/sessions", s.listSessions)
 		authGroup.POST("/sessions", s.createSession)
 		authGroup.GET("/sessions/:id", s.getSession)

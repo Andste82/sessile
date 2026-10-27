@@ -6,8 +6,11 @@ withDefaults(
   defineProps<{
     autocomplete?: string
     placeholder?: string
+    disabled?: boolean
+    // Accessible name of the input itself (attrs fall through to the root div).
+    ariaLabel?: string
   }>(),
-  { autocomplete: 'current-password', placeholder: '' },
+  { autocomplete: 'current-password', placeholder: '', disabled: false, ariaLabel: undefined },
 )
 
 const model = defineModel<string>({ required: true })
@@ -29,7 +32,9 @@ const shown = ref(false)
       :type="shown ? 'text' : 'password'"
       :autocomplete="autocomplete"
       :placeholder="placeholder"
-      class="w-full rounded-md border border-slate-600 bg-slate-900 py-2 pl-3 pr-10 text-slate-100 outline-none focus:border-emerald-500"
+      :disabled="disabled"
+      :aria-label="ariaLabel"
+      class="w-full rounded-md border border-slate-600 bg-slate-900 py-2 pl-3 pr-10 text-slate-100 outline-none focus:border-emerald-500 disabled:opacity-60"
     />
     <button
       type="button"

@@ -39,6 +39,8 @@ function session(over: Partial<Session> = {}): Session {
     command: 'bash',
     cwd: '.',
     title: '',
+    env: [],
+    loadDotenv: false,
     ...over,
   }
 }

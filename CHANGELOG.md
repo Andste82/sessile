@@ -12,12 +12,27 @@ README under [Upgrading](README.md#upgrading).
 
 ## Unreleased
 
+Upgrade / Breaking (environment variables, issue #123): this release adds
+schema migration step 2 (new `env_vars`, `env_secrets` and `dotenv` columns
+on `sessions`). **Releases older than this one refuse to open the migrated
+database**, so going back means restoring the pre-migration backup under
+`<data-dir>/backups/*-schema-v1/`. New plaintext secrets: `users/<id>/env.yml`
+(default environment variables), the sessions database and `backups/` all
+hold environment variable values, including ones marked secret, in plaintext.
+Protect the data directory accordingly.
+
+- Sessions can carry environment variables, set per session in the new
+  session dialog (editable while the session is stopped) and as per-user
+  defaults in Settings. A session can also load a `.env` file from its start
+  directory on every start. Secret values are write-only: never returned by
+  the API, sent in events or logged.
+
 Downgrades: the guard below only exists from this release on. 0.7.0 and
 older do not read the schema version, so nothing stops them from starting
 on a database a newer release has migrated. Going back to 0.7.0 from this
-release still works, because schema version 1 has exactly the columns
-0.7.0 knows. Once a later release adds a migration step, going back past
-it means restoring a backup.
+release only works if the database is still at schema version 1; with the
+environment variable migration (step 2, below) applied, going back past it
+means restoring a backup.
 
 - `sessions.db` records its schema version (`PRAGMA user_version`), and
   every schema change is a numbered migration step that is applied

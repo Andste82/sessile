@@ -91,6 +91,24 @@ else
   exit 1
 fi
 
+echo "== environment variables (issue #123): plain value visible, secret never in JSON =="
+ENV_RESP="$(curl -sf -b "$COOKIES" -X POST "http://$ADDR/api/sessions" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"wstest-env\",\"target\":\"local\",\"directory\":\"project-a\",\"shell\":\"$SHELL_NAME\",\"env\":[{\"name\":\"WSTEST_VAR\",\"value\":\"plain-env-value\",\"secret\":false},{\"name\":\"WSTEST_SECRET\",\"value\":\"s3cret-sentinel-xyz\",\"secret\":true}]}")"
+echo "$ENV_RESP"
+if echo "$ENV_RESP" | grep -q "s3cret-sentinel-xyz"; then
+  echo "FAIL: secret value present in the create response"; exit 1
+fi
+ENV_ID="$(echo "$ENV_RESP" | json_field id)"
+[ -n "$ENV_ID" ] || { echo "failed to create env session"; exit 1; }
+if curl -sf -b "$COOKIES" "http://$ADDR/api/sessions" | grep -q "s3cret-sentinel-xyz"; then
+  echo "FAIL: secret value present in the session list"; exit 1
+fi
+/tmp/sessile-wsclient -url "ws://$ADDR/ws/sessions/$ENV_ID" -cookie "$COOKIE_HEADER" -input 'echo "v=$WSTEST_VAR"\n' -duration 2s | tee /tmp/wstest-env.out
+grep -q "v=plain-env-value" /tmp/wstest-env.out || { echo "FAIL: env var not visible in the shell"; exit 1; }
+echo "PASS: env var reached the shell, secret absent from JSON"
+curl -sf -b "$COOKIES" -o /dev/null -X DELETE "http://$ADDR/api/sessions/$ENV_ID"
+
 echo "== DELETE /api/sessions/$ID =="
 curl -sf -b "$COOKIES" -o /dev/null -w "delete status: %{http_code}\n" -X DELETE "http://$ADDR/api/sessions/$ID"
 echo "== done =="

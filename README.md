@@ -221,9 +221,11 @@ as long as that directory is the same before and after. In order:
    tar czf sessile-config-$(date +%F).tgz -C data config
    ```
 
-   The archive contains `users.yml` and every user's `hosts.yml`, and
-   `hosts.yml` holds SSH credentials in plaintext. Store it as carefully
-   as the original.
+   The archive contains `users.yml`, every user's `hosts.yml` and
+   `env.yml`, and the sessions database. `hosts.yml` holds SSH credentials
+   in plaintext, and `env.yml` and the database hold environment variable
+   values (including ones marked secret) in plaintext. Store it as
+   carefully as the original.
 
 2. **Read the [changelog](CHANGELOG.md).** Read the "Upgrade / Breaking"
    part of every release between the version you run now and the one you
@@ -340,6 +342,11 @@ Everything server- and account-level lives in hand-editable YAML under
   credentials, target OS, terminal type, and the pinned host-key
   fingerprint. **Credentials are stored in plaintext by design** — see
   [Security](#security--operational-notes).
+- **`users/<id>/env.yml`** — that user's default environment variables for
+  new sessions (Settings, "Environment defaults"). Values, **including ones
+  marked secret, are stored in plaintext**; "secret" only hides a value from
+  the API and the UI. A session's own variables live in the sessions
+  database the same way, and both end up in `backups/`.
 
 ## Security & operational notes
 
@@ -356,6 +363,14 @@ Everything server- and account-level lives in hand-editable YAML under
   The operator is the trusted owner of their own server and edits this file
   by hand. Anyone who can read that file has those credentials, so keep the
   data directory to the account running sessile.
+- **Environment variable values are plaintext at rest too:** the per-user
+  `env.yml`, the `env_vars`/`env_secrets` columns of the sessions database
+  and every backup under `backups/` hold them. A "secret" variable is
+  write-only through the API (never returned, logged or sent in events), but
+  it is an ordinary environment variable inside the shell: `env` and `echo`
+  show it in the terminal and scrollback, and for SSH sessions it is visible
+  in the remote process list until the shell starts. Multi-line values do not
+  work for csh/tcsh login accounts on SSH hosts.
 - **SSH host-key verification is trust-on-first-use with explicit user
   prompts** — never `ssh.InsecureIgnoreHostKey()`. An unknown or changed key
   blocks the connection (and creates no session) until the user explicitly

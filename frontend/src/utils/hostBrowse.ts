@@ -6,20 +6,34 @@
 // (a late response from a host the user has already left is ignored; the
 // server connection is closed exactly once) are testable without a DOM.
 
-import type { CreateSessionBody, DirectoriesResponse, HostKeyErrorDetails } from '@/api/types'
+import type {
+  CreateSessionBody,
+  DirectoriesResponse,
+  EnvEntry,
+  HostKeyErrorDetails,
+} from '@/api/types'
+
+/** The env-related keys of a create body; empty when nothing deviates. */
+export interface EnvBodyParts {
+  env?: EnvEntry[]
+  removeDefaults?: string[]
+  loadDotenv?: boolean
+}
 
 /**
  * sshCreateBody builds the SSH variant of the create-session body. The
  * directory is sent only when non-empty after trimming; absent means the
- * sshd default, exactly as before the chooser existed.
+ * sshd default, exactly as before the chooser existed. envParts (from
+ * envBodyParts) is spread in as-is and is empty when nothing deviates.
  */
 export function sshCreateBody(
   common: { name: string; group: string },
   hostId: string,
   directory: string,
+  envParts: EnvBodyParts = {},
 ): Extract<CreateSessionBody, { target: 'ssh' }> {
   const dir = directory.trim()
-  return { ...common, target: 'ssh', hostId, ...(dir ? { directory: dir } : {}) }
+  return { ...common, target: 'ssh', hostId, ...(dir ? { directory: dir } : {}), ...envParts }
 }
 
 export type BrowseStatus = 'idle' | 'connecting' | 'ready' | 'error' | 'needsTrust'

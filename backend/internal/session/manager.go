@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Andste82/sessile/backend/internal/envfile"
 	"github.com/Andste82/sessile/backend/internal/hostops"
 	"github.com/Andste82/sessile/backend/internal/sshpty"
 	"github.com/Andste82/sessile/backend/internal/terminal"
@@ -115,23 +116,28 @@ func (m *Manager) SetHostResolver(r HostResolver) {
 }
 
 // CreateLocal validates inputs, starts a local PTY-backed shell, begins its
-// read/broadcast goroutine, persists metadata and returns a snapshot.
-func (m *Manager) CreateLocal(userID, name, group, dir, shell string) (Info, error) {
+// read/broadcast goroutine, persists metadata and returns a snapshot. The
+// returned warnings describe a .env that could not be used (issue #123);
+// they never contain a value.
+func (m *Manager) CreateLocal(userID, name, group, dir, shell string, opts CreateOptions) (Info, []string, error) {
+	if err := envfile.Validate(opts.Env); err != nil {
+		return Info{}, nil, invalidEnv(err)
+	}
 	now := timeNow()
-	s, err := m.spawnLocal(uuid.NewString(), userID, name, dir, shell, now)
+	s, warnings, err := m.spawnLocal(uuid.NewString(), userID, name, dir, shell, now, opts.Env, opts.DotEnv)
 	if err != nil {
-		return Info{}, err
+		return Info{}, nil, err
 	}
 	// Set before register, which is what publishes and persists it: nothing
 	// else can see s yet, so this needs no lock.
 	s.Group = group
 	info, err := m.register(s)
 	if err != nil {
-		return Info{}, err
+		return Info{}, nil, err
 	}
 	m.log.Info("session created", "id", s.ID, "name", name, "shell", shell, "pid", s.PID)
 	m.publishSession(info)
-	return info, nil
+	return info, warnings, nil
 }
 
 // CreateSSH connects to target and starts a remote shell/command under it.
@@ -142,20 +148,26 @@ func (m *Manager) CreateLocal(userID, name, group, dir, shell string) (Info, err
 // §4.5.1) this returns that error unwrapped and creates no session and no
 // store row — a clean no-op the caller retries after the user trusts the
 // key (§6).
-func (m *Manager) CreateSSH(userID, name, group, hostID, hostDisplayName string, target sshpty.Target, dir string) (Info, error) {
+func (m *Manager) CreateSSH(userID, name, group, hostID, hostDisplayName string, target sshpty.Target, dir string, opts CreateOptions) (Info, []string, error) {
+	if err := envfile.Validate(opts.Env); err != nil {
+		return Info{}, nil, invalidEnv(err)
+	}
+	if err := checkEnvTarget(target, opts.Env, opts.DotEnv); err != nil {
+		return Info{}, nil, err
+	}
 	now := timeNow()
-	s, err := m.spawnSSH(uuid.NewString(), userID, name, hostID, hostDisplayName, target, dir, now)
+	s, warnings, err := m.spawnSSH(uuid.NewString(), userID, name, hostID, hostDisplayName, target, dir, now, opts.Env, opts.DotEnv)
 	if err != nil {
-		return Info{}, err
+		return Info{}, nil, err
 	}
 	s.Group = group
 	info, err := m.register(s)
 	if err != nil {
-		return Info{}, err
+		return Info{}, nil, err
 	}
 	m.log.Info("session created", "id", s.ID, "name", name, "target", "ssh", "hostId", hostID)
 	m.publishSession(info)
-	return info, nil
+	return info, warnings, nil
 }
 
 // Restart gives a stopped session a new shell under the same id, in the same
@@ -166,15 +178,15 @@ func (m *Manager) CreateSSH(userID, name, group, hostID, hostDisplayName string,
 // Reusing the id is the whole point: it is what makes the persisted scrollback
 // file and the shell's HISTFILE line up again, and it keeps the row, the open
 // browser tab and any bookmarked URL pointing at the same session.
-func (m *Manager) Restart(id, userID string) (Info, error) {
+func (m *Manager) Restart(id, userID string) (Info, []string, error) {
 	if err := m.claimRestart(id); err != nil {
-		return Info{}, err
+		return Info{}, nil, err
 	}
 	defer m.releaseRestart(id)
 
 	meta, err := m.restartable(id, userID)
 	if err != nil {
-		return Info{}, err
+		return Info{}, nil, err
 	}
 
 	// The stopped session object, captured before register replaces the map
@@ -185,6 +197,7 @@ func (m *Manager) Restart(id, userID string) (Info, error) {
 	prev := m.live(id)
 
 	var s *Session
+	var warnings []string
 	switch meta.TargetType {
 	case TargetSSH:
 		// SSH credentials are never persisted to sqlite (§8), so a restart
@@ -195,18 +208,24 @@ func (m *Manager) Restart(id, userID string) (Info, error) {
 		// from the resolver; a changed remote host key surfaces the same
 		// *sshpty.ErrHostKeyChanged a fresh connect would.
 		if m.hostResolver == nil {
-			return Info{}, ErrHostNotFound
+			return Info{}, nil, ErrHostNotFound
 		}
 		target, displayName, rerr := m.hostResolver.Resolve(meta.UserID, meta.HostID)
 		if rerr != nil {
-			return Info{}, rerr
+			return Info{}, nil, rerr
 		}
-		s, err = m.spawnSSH(meta.ID, meta.UserID, meta.Name, meta.HostID, displayName, target, meta.Directory, meta.Created)
+		// The host may have stopped supporting env since the session was
+		// created (its OS or terminal type was edited): refuse before
+		// spawning, the session stays stopped.
+		if cerr := checkEnvTarget(target, meta.Env, meta.DotEnv); cerr != nil {
+			return Info{}, nil, cerr
+		}
+		s, warnings, err = m.spawnSSH(meta.ID, meta.UserID, meta.Name, meta.HostID, displayName, target, meta.Directory, meta.Created, meta.Env, meta.DotEnv)
 	default: // TargetLocal, and pre-M17 rows the migration defaulted to it
-		s, err = m.spawnLocal(meta.ID, meta.UserID, meta.Name, meta.Directory, meta.Shell, meta.Created)
+		s, warnings, err = m.spawnLocal(meta.ID, meta.UserID, meta.Name, meta.Directory, meta.Shell, meta.Created, meta.Env, meta.DotEnv)
 	}
 	if err != nil {
-		return Info{}, err
+		return Info{}, nil, err
 	}
 	// Metadata the spawn helpers do not take: a restart must not drop the
 	// session out of its group (§4.11).
@@ -226,7 +245,7 @@ func (m *Manager) Restart(id, userID string) (Info, error) {
 	}
 
 	if _, err := m.register(s); err != nil {
-		return Info{}, err
+		return Info{}, nil, err
 	}
 
 	// Hand the stopped shell's viewers to the replacement. They are the clients
@@ -253,7 +272,7 @@ func (m *Manager) Restart(id, userID string) (Info, error) {
 	// Snapshotted after the migration so the reply carries the real client count.
 	info := s.Info()
 	m.publishSession(info)
-	return info, nil
+	return info, warnings, nil
 }
 
 // claimRestart reserves id for one restart, refusing if the session is already
@@ -344,30 +363,40 @@ func (m *Manager) restartable(id, userID string) (Info, error) {
 // allowlist and workspace checks (§4.5) — a directory that has since been
 // deleted, or a shell dropped from the allowlist, must fail here rather
 // than at PTY start.
-func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.Time) (*Session, error) {
+func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.Time, env []EnvVar, dotenv bool) (*Session, []string, error) {
 	if l := len(name); l < 1 || l > 64 {
-		return nil, ErrInvalidName
+		return nil, nil, ErrInvalidName
 	}
 	shellPath, err := m.resolveShell(shell)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resolvedDir, err := resolveDir(m.root, dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	var extraEnv []string
+	// Environment (issue #123): default-flagged entries < .env < dialog
+	// entries, then the history variables LAST so they win over a user value
+	// (exec resolves duplicates to the last occurrence). TERM/LANG cannot be
+	// overridden either: reserved names never get here.
+	var warnings []string
+	var fromFile []envfile.Entry
+	if dotenv {
+		fromFile, warnings = readLocalDotenv(m.root, dir)
+	}
+	extraEnv := toAssignments(envfile.Merge(env, fromFile))
 	if m.dataDir != "" {
-		extraEnv, err = historyEnv(m.dataDir, shell, id)
+		hist, err := historyEnv(m.dataDir, shell, id)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		extraEnv = append(extraEnv, hist...)
 	}
 
 	pty, err := terminal.Start(shellPath, resolvedDir, defaultRows, defaultCols, extraEnv)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	now := timeNow()
@@ -378,6 +407,8 @@ func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.T
 		TargetType:   TargetLocal,
 		Directory:    dir,
 		Shell:        shell,
+		Env:          cloneEnv(env),
+		DotEnv:       dotenv,
 		Status:       StatusRunning,
 		PID:          pty.Pid(),
 		Created:      created,
@@ -390,7 +421,7 @@ func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.T
 		clients:      make(map[Client]clientGeom),
 		lastPersist:  now,
 		exited:       make(chan struct{}),
-	}, nil
+	}, warnings, nil
 }
 
 // spawnSSH validates the inputs, connects to target and returns the
@@ -401,14 +432,17 @@ func (m *Manager) spawnLocal(id, userID, name, dir, shell string, created time.T
 // hostKeyErr (an *sshpty.ErrHostKeyUnknown or *ErrHostKeyChanged) is
 // returned unwrapped so the caller can map it to the API's distinct
 // host-key responses (§4.5.1, §6) instead of a generic connection failure.
-func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, target sshpty.Target, dir string, created time.Time) (*Session, error) {
+func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, target sshpty.Target, dir string, created time.Time, env []EnvVar, dotenv bool) (*Session, []string, error) {
 	if l := len(name); l < 1 || l > 64 {
-		return nil, ErrInvalidName
+		return nil, nil, ErrInvalidName
 	}
 
-	pty, err := sshpty.Start(target, dir, defaultRows, defaultCols)
+	pty, warnings, err := sshpty.StartWithEnv(target, sshpty.StartOptions{
+		Dir: dir, Rows: defaultRows, Cols: defaultCols,
+		Env: env, LoadDotenv: dotenv,
+	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	now := timeNow()
@@ -420,6 +454,8 @@ func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, tar
 		HostID:          hostID,
 		HostDisplayName: hostDisplayName,
 		Directory:       dir,
+		Env:             cloneEnv(env),
+		DotEnv:          dotenv,
 		Status:          StatusRunning,
 		PID:             pty.Pid(),
 		Created:         created,
@@ -432,7 +468,7 @@ func (m *Manager) spawnSSH(id, userID, name, hostID, hostDisplayName string, tar
 		clients:         make(map[Client]clientGeom),
 		lastPersist:     now,
 		exited:          make(chan struct{}),
-	}, nil
+	}, warnings, nil
 }
 
 // register publishes a spawned session, persists it and starts its read loop.
@@ -824,7 +860,13 @@ func (m *Manager) discardState(id string) {
 // clearing a name — it is 1-64 characters or an error). This is the same
 // omitted-means-unchanged shape the host update body already uses (§6).
 //
-// Status is deliberately not checked. Name and group are metadata; filing a
+// The environment (env != nil, issue #123) is the exception to the next
+// paragraph: it only takes effect at the next spawn, so it is editable only
+// while the session is stopped (ErrEnvRunning otherwise), on the live object
+// and on a stored-only row alike. Update does not check whether the host
+// still supports env — the host may be gone; Restart enforces it.
+//
+// For name and group, status is deliberately not checked. They are metadata; filing a
 // stopped session under a group is exactly when one wants to, and the
 // published Info reaches every attached browser over the event channel (§5.1)
 // without either side polling for it.
@@ -834,7 +876,7 @@ func (m *Manager) discardState(id string) {
 // restarts (§4.3, the same reason Get and Restart read through to the store).
 // Editing has to reach those too, or every session would become uneditable
 // the moment the server was restarted under it.
-func (m *Manager) Update(id, userID string, name, group *string) (Info, error) {
+func (m *Manager) Update(id, userID string, name, group *string, env *EnvUpdate) (Info, error) {
 	if name != nil {
 		if l := len(*name); l < 1 || l > 64 {
 			return Info{}, ErrInvalidName
@@ -843,22 +885,53 @@ func (m *Manager) Update(id, userID string, name, group *string) (Info, error) {
 	if group != nil && len(*group) > 64 {
 		return Info{}, ErrInvalidGroup
 	}
+	if env != nil {
+		// The environment only takes effect at the next spawn, so it can only
+		// change while the session is stopped. The restart reservation is held
+		// for the edit: a restart that started first makes this refuse, and one
+		// that starts later is refused until the edit has landed — otherwise it
+		// could spawn from the old list and re-persist it over the new one.
+		if err := m.claimEnvEdit(id, userID); err != nil {
+			return Info{}, err
+		}
+		defer m.releaseRestart(id)
+	}
 	m.mu.RLock()
 	s, ok := m.sessions[id]
 	m.mu.RUnlock()
 	if !ok {
-		return m.updateStoredOnly(id, userID, name, group)
+		return m.updateStoredOnly(id, userID, name, group, env)
 	}
 	s.mu.Lock()
 	if s.UserID != userID {
 		s.mu.Unlock()
 		return Info{}, ErrNotFound
 	}
+	// Everything that can fail is evaluated before anything is applied, so a
+	// rejected edit leaves name, group and environment as they were.
+	var newEnv []EnvVar
+	if env != nil {
+		if s.Status != StatusStopped {
+			s.mu.Unlock()
+			return Info{}, ErrEnvRunning
+		}
+		var err error
+		if newEnv, err = applyEnvUpdate(s.Env, env); err != nil {
+			s.mu.Unlock()
+			return Info{}, err
+		}
+	}
 	if name != nil {
 		s.Name = *name
 	}
 	if group != nil {
 		s.Group = *group
+	}
+	if env != nil {
+		s.Env = newEnv
+		if env.DotEnv != nil {
+			s.DotEnv = *env.DotEnv
+		}
 	}
 	info := s.infoLocked()
 	s.mu.Unlock()
@@ -871,6 +944,48 @@ func (m *Manager) Update(id, userID string, name, group *string) (Info, error) {
 	return info, nil
 }
 
+// applyEnvUpdate computes the entry list an EnvUpdate leads to; the result
+// is sorted. The errors name entries only.
+func applyEnvUpdate(existing []EnvVar, u *EnvUpdate) ([]EnvVar, error) {
+	if u.Entries == nil {
+		return cloneEnv(existing), nil
+	}
+	out, err := envfile.ApplyPatch(existing, *u.Entries)
+	if err != nil {
+		return nil, invalidEnv(err)
+	}
+	return out, nil
+}
+
+// claimEnvEdit reserves id for an environment edit, using the same
+// reservation as a restart. Someone else's session reports ErrNotFound, the
+// same as everywhere (§4.5, §10), before anything about its state is told.
+func (m *Manager) claimEnvEdit(id, userID string) error {
+	m.mu.Lock()
+	if _, busy := m.restarting[id]; !busy {
+		m.restarting[id] = struct{}{}
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+	if !m.owns(id, userID) {
+		return ErrNotFound
+	}
+	return ErrEnvRunning // a restart (or another edit) is in flight
+}
+
+// owns reports whether id exists and belongs to userID.
+func (m *Manager) owns(id, userID string) bool {
+	if s := m.live(id); s != nil {
+		return s.Info().UserID == userID
+	}
+	if m.store == nil {
+		return false
+	}
+	info, found, err := m.store.Get(id)
+	return err == nil && found && info.UserID == userID
+}
+
 // updateStoredOnly applies an Update to a session that has no live object —
 // a stopped row the server has reloaded from disk but not restarted (§8).
 // The row is the whole session at this point, so the store is both where the
@@ -878,7 +993,7 @@ func (m *Manager) Update(id, userID string, name, group *string) (Info, error) {
 //
 // A row owned by someone else is reported exactly like one that does not
 // exist, the same as everywhere else (§4.5, §10).
-func (m *Manager) updateStoredOnly(id, userID string, name, group *string) (Info, error) {
+func (m *Manager) updateStoredOnly(id, userID string, name, group *string, env *EnvUpdate) (Info, error) {
 	if m.store == nil {
 		return Info{}, ErrNotFound
 	}
@@ -888,6 +1003,19 @@ func (m *Manager) updateStoredOnly(id, userID string, name, group *string) (Info
 	}
 	if !found || info.UserID != userID {
 		return Info{}, ErrNotFound
+	}
+	if env != nil {
+		if info.Status != StatusStopped {
+			return Info{}, ErrEnvRunning
+		}
+		newEnv, err := applyEnvUpdate(info.Env, env)
+		if err != nil {
+			return Info{}, err
+		}
+		info.Env = newEnv
+		if env.DotEnv != nil {
+			info.DotEnv = *env.DotEnv
+		}
 	}
 	if name != nil {
 		info.Name = *name

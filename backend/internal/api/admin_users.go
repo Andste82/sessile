@@ -24,7 +24,8 @@ func (s *Server) listUsers(c *gin.Context) {
 // — otherwise a browser that was already logged in would keep working
 // against an account that no longer exists — and cascades to what an
 // orphaned account would otherwise leave behind: its plaintext hosts.yml
-// (SSH passwords and private keys, §11) sitting on disk indefinitely, and
+// (SSH passwords and private keys, §11) and env.yml (default environment
+// variables, some of them secret) sitting on disk indefinitely, and
 // its live terminal sessions running on as orphans nobody can list, attach
 // to, or delete (Manager.Delete requires a matching userID, and the account
 // that matched is gone). Cascade failures are logged, not fatal — the
@@ -48,7 +49,7 @@ func (s *Server) deleteUser(c *gin.Context) {
 	}
 	if s.hosts != nil {
 		if err := s.hosts.Remove(id); err != nil {
-			s.log.Error("remove hosts.yml for deleted user failed", "id", id, "err", err)
+			s.log.Error("remove user data directory for deleted user failed", "id", id, "err", err)
 		}
 	}
 

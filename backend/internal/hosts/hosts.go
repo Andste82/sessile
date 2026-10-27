@@ -87,6 +87,14 @@ func (h Host) SSHTarget() sshpty.Target {
 	}
 }
 
+// SupportsEnv reports whether sessions on this host can carry environment
+// variables (issue #123). The rule lives in sshpty.SupportsEnv — it is the
+// code that builds the remote command line — and is computed here, never
+// stored, so a host edited to a different OS changes answer at once.
+func (h Host) SupportsEnv() bool {
+	return sshpty.SupportsEnv(string(h.TargetOS), h.TerminalType)
+}
+
 // Store guards one user's hosts.yml: an in-memory cache kept in sync with an
 // atomically-rewritten file on every mutation, mirroring auth.UserStore and
 // serverconfig.Store.

@@ -260,7 +260,7 @@ func TestRestartReattachesEveryClient(t *testing.T) {
 
 	// The restart one browser performs, over REST, while both still hold their
 	// sockets. Only c1 knows it happened; c2 has to be told.
-	info, err := mgr.Restart(id, userID)
+	info, _, err := mgr.Restart(id, userID)
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}

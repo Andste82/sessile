@@ -16,7 +16,7 @@ import (
 // TestWrapWithPIDRecordingEmptyDirIsUnchanged pins that dir == "" produces
 // exactly the pre-start-directory preamble.
 func TestWrapWithPIDRecordingEmptyDirIsUnchanged(t *testing.T) {
-	path, wrapped := wrapWithPIDRecording("linux", "bash", "", "bash")
+	path, wrapped := wrapWithPIDRecording("linux", "bash", "", "bash", nil)
 	want := "sh -c " + shellSingleQuote("echo $$ > "+path+" 2>/dev/null; exec bash")
 	if wrapped != want {
 		t.Fatalf("wrapped = %q, want %q", wrapped, want)
@@ -44,7 +44,7 @@ func TestWrapWithPIDRecordingChangesDirectory(t *testing.T) {
 			if err := os.Mkdir(dir, 0o755); err != nil {
 				t.Skipf("filesystem refuses this name: %v", err)
 			}
-			path, wrapped := wrapWithPIDRecording("linux", "custom", dir, "pwd -P")
+			path, wrapped := wrapWithPIDRecording("linux", "custom", dir, "pwd -P", nil)
 			pidFile := filepath.Join(pidBase, "pid-"+strconv.Itoa(i))
 			wrapped = strings.ReplaceAll(wrapped, path, pidFile)
 
@@ -73,7 +73,7 @@ func TestWrapWithPIDRecordingChangesDirectory(t *testing.T) {
 // cd must exit non-zero and never reach exec.
 func TestWrapWithPIDRecordingMissingDirDoesNotExec(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone")
-	path, wrapped := wrapWithPIDRecording("linux", "custom", missing, "echo SHOULD-NOT-RUN")
+	path, wrapped := wrapWithPIDRecording("linux", "custom", missing, "echo SHOULD-NOT-RUN", nil)
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	wrapped = strings.ReplaceAll(wrapped, path, pidFile)
 
@@ -99,7 +99,7 @@ func TestWrapWithPIDRecordingNoDirOnWindows(t *testing.T) {
 		{"", "powershell"},
 	}
 	for _, c := range cases {
-		path, wrapped := wrapWithPIDRecording(c.targetOS, c.terminalType, "/srv/x", "powershell.exe")
+		path, wrapped := wrapWithPIDRecording(c.targetOS, c.terminalType, "/srv/x", "powershell.exe", nil)
 		if path != "" || wrapped != "powershell.exe" {
 			t.Errorf("%+v: got (%q, %q), want unwrapped", c, path, wrapped)
 		}

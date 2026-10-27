@@ -2,19 +2,83 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Andste82/sessile/backend/internal/session"
 )
 
+// envRow is one stored environment entry. Short keys keep the column small;
+// the secret flag is not stored because it is implied by which column holds
+// the row.
+type envRow struct {
+	N string `json:"n"`
+	V string `json:"v"`
+	D bool   `json:"d,omitempty"`
+}
+
+// marshalEnv splits entries into the env_vars (non-secret) and env_secrets
+// columns. Both are always a JSON array, never null.
+func marshalEnv(env []session.EnvVar) (vars, secrets string, err error) {
+	plain, secret := []envRow{}, []envRow{}
+	for _, e := range env {
+		r := envRow{N: e.Name, V: e.Value, D: e.Default}
+		if e.Secret {
+			secret = append(secret, r)
+		} else {
+			plain = append(plain, r)
+		}
+	}
+	vb, err := json.Marshal(plain)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal env: %w", err)
+	}
+	// TODO(security): plaintext at rest, optional encryption later
+	sb, err := json.Marshal(secret)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal env secrets: %w", err)
+	}
+	return string(vb), string(sb), nil
+}
+
+// unmarshalEnv rebuilds Env from the two columns, sorted by name. The error
+// never includes the column text: it may hold secrets.
+func unmarshalEnv(vars, secrets string) ([]session.EnvVar, error) {
+	out := []session.EnvVar{}
+	for _, col := range []struct {
+		text   string
+		secret bool
+	}{{vars, false}, {secrets, true}} {
+		var rows []envRow
+		if err := json.Unmarshal([]byte(col.text), &rows); err != nil {
+			return nil, errors.New("decode stored environment")
+		}
+		for _, r := range rows {
+			out = append(out, session.EnvVar{Name: r.N, Value: r.V, Secret: col.secret, Default: r.D})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 // Insert upserts a session's metadata (used on create and update).
 func (s *Store) Insert(i session.Info) error {
-	_, err := s.db.Exec(
+	envVars, envSecrets, err := marshalEnv(i.Env)
+	if err != nil {
+		return err
+	}
+	dotenv := 0
+	if i.DotEnv {
+		dotenv = 1
+	}
+	_, err = s.db.Exec(
 		`INSERT INTO sessions (id, name, directory, shell, status, created, last_activity,
-		                       user_id, target_type, host_id, host_display_name, group_name)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                       user_id, target_type, host_id, host_display_name, group_name,
+		                       env_vars, env_secrets, dotenv)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   name=excluded.name,
 		   directory=excluded.directory,
@@ -25,10 +89,14 @@ func (s *Store) Insert(i session.Info) error {
 		   target_type=excluded.target_type,
 		   host_id=excluded.host_id,
 		   host_display_name=excluded.host_display_name,
-		   group_name=excluded.group_name`,
+		   group_name=excluded.group_name,
+		   env_vars=excluded.env_vars,
+		   env_secrets=excluded.env_secrets,
+		   dotenv=excluded.dotenv`,
 		i.ID, i.Name, i.Directory, i.Shell, string(i.Status),
 		i.Created.UTC().Format(time.RFC3339), i.LastActivity.UTC().Format(time.RFC3339),
 		i.UserID, string(i.TargetType), i.HostID, i.HostDisplayName, i.Group,
+		envVars, envSecrets, dotenv,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
@@ -67,7 +135,8 @@ func (s *Store) Delete(id string) error {
 // selectColumns lists every column scan expects, in order — shared by Get
 // and LoadStopped so the two queries can never drift apart.
 const selectColumns = `id, name, directory, shell, status, created, last_activity,
-	                       user_id, target_type, host_id, host_display_name, group_name`
+	                       user_id, target_type, host_id, host_display_name, group_name,
+	                       env_vars, env_secrets, dotenv`
 
 // Get returns a single session's persisted metadata.
 func (s *Store) Get(id string) (session.Info, bool, error) {
@@ -181,13 +250,21 @@ func scan(sc scanner) (session.Info, error) {
 		info                     session.Info
 		status, created, lastAct string
 		targetType               string
+		envVars, envSecrets      string
+		dotenv                   int
 	)
 	if err := sc.Scan(&info.ID, &info.Name, &info.Directory, &info.Shell,
 		&status, &created, &lastAct,
 		&info.UserID, &targetType, &info.HostID, &info.HostDisplayName,
-		&info.Group); err != nil {
+		&info.Group, &envVars, &envSecrets, &dotenv); err != nil {
 		return session.Info{}, err
 	}
+	env, err := unmarshalEnv(envVars, envSecrets)
+	if err != nil {
+		return session.Info{}, err
+	}
+	info.Env = env
+	info.DotEnv = dotenv != 0
 	info.Status = session.Status(status)
 	info.TargetType = session.TargetType(targetType)
 	if t, err := time.Parse(time.RFC3339, created); err == nil {

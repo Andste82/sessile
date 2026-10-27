@@ -16,11 +16,12 @@ type Registry struct {
 
 	mu     sync.Mutex
 	stores map[string]*Store
+	envs   map[string]*EnvStore
 }
 
 // NewRegistry constructs a Registry rooted at <dataDir>/users.
 func NewRegistry(dataDir string) *Registry {
-	return &Registry{dataDir: dataDir, stores: make(map[string]*Store)}
+	return &Registry{dataDir: dataDir, stores: make(map[string]*Store), envs: make(map[string]*EnvStore)}
 }
 
 // For returns the Store for userID, opening (and caching) it on first use.
@@ -40,14 +41,36 @@ func (r *Registry) For(userID string) (*Store, error) {
 	return s, nil
 }
 
+// EnvFor returns the EnvStore (users/<id>/env.yml) for userID, opening and
+// caching it on first use. Opening does not create the file or directory.
+func (r *Registry) EnvFor(userID string) (*EnvStore, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if s, ok := r.envs[userID]; ok {
+		return s, nil
+	}
+	s, err := openEnvStore(filepath.Join(r.dataDir, "users", userID, "env.yml"))
+	if err != nil {
+		return nil, fmt.Errorf("open env.yml for user %s: %w", userID, err)
+	}
+	if r.envs == nil {
+		r.envs = make(map[string]*EnvStore)
+	}
+	r.envs[userID] = s
+	return s, nil
+}
+
 // Remove deletes userID's entire per-user directory (hosts.yml — plaintext
-// SSH passwords and private keys, by design, §11 — and anything else ever
-// added under it) and evicts any cached Store, so a deleted account's
-// credentials don't linger on disk indefinitely. Called by admin user
-// deletion (§12b M11); a no-op if the directory never existed.
+// SSH passwords and private keys, by design, §11 — env.yml with the user's
+// default environment variables, and anything else ever added under it) and
+// evicts both cached stores, so a deleted account's credentials don't linger
+// on disk indefinitely. Called by admin user deletion (§12b M11); a no-op if
+// the directory never existed.
 func (r *Registry) Remove(userID string) error {
 	r.mu.Lock()
 	delete(r.stores, userID)
+	delete(r.envs, userID)
 	r.mu.Unlock()
 
 	dir := filepath.Join(r.dataDir, "users", userID)

@@ -20,6 +20,11 @@ const validSession = {
   command: 'claude',
   cwd: 'project-a/backend',
   title: 'npm run dev',
+  env: [
+    { name: 'A', value: '1', secret: false, isSet: true, inherited: false },
+    { name: 'S', secret: true, isSet: true, inherited: true },
+  ],
+  loadDotenv: true,
 }
 
 describe('parseEvent', () => {

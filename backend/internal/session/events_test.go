@@ -80,7 +80,7 @@ func TestSubscriberSeesTheSessionLifecycle(t *testing.T) {
 	unsub := mgr.Subscribe(sub, "test-user")
 	defer unsub()
 
-	info, err := mgr.CreateLocal("test-user", "first", "", ".", "sh")
+	info, _, err := mgr.CreateLocal("test-user", "first", "", ".", "sh", CreateOptions{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSubscriberSeesTheSessionLifecycle(t *testing.T) {
 		return false
 	})
 
-	if _, err := mgr.Update(info.ID, "test-user", ptr("second"), nil); err != nil {
+	if _, err := mgr.Update(info.ID, "test-user", ptr("second"), nil, nil); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	waitFor(t, "the rename message", func() bool {
@@ -177,7 +177,7 @@ func TestUnsubscribeStopsDeliveryAndIsIdempotent(t *testing.T) {
 // session would produce a message every second whether or not anything moved.
 func TestSamplerPublishesOnlyOnChange(t *testing.T) {
 	mgr, _, _ := testManager(t)
-	info, err := mgr.CreateLocal("test-user", "probe", "", ".", "sh")
+	info, _, err := mgr.CreateLocal("test-user", "probe", "", ".", "sh", CreateOptions{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestDeletedSessionIsNotRepublishedByItsLateReadLoop(t *testing.T) {
 	}
 	mgr, _, _ := testManager(t)
 
-	info, err := mgr.CreateLocal("test-user", "wedged", "", ".", "sh")
+	info, _, err := mgr.CreateLocal("test-user", "wedged", "", ".", "sh", CreateOptions{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

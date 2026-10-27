@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import EnvTable from '@/components/EnvTable.vue'
+import { useEnvDefaultsStore } from '@/stores/envDefaults'
 import { useSessionsStore } from '@/stores/sessions'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore, minFontSize, maxFontSize, defaultFontSize } from '@/stores/ui'
@@ -12,6 +14,7 @@ const store = useSessionsStore()
 const auth = useAuthStore()
 const ui = useUiStore()
 const installPrompt = useInstallPrompt()
+const envDefaults = useEnvDefaultsStore()
 
 // beforeinstallprompt never fires at all over plain HTTP to anything but
 // localhost — that's a browser platform rule (the Secure Context spec), not
@@ -108,7 +111,11 @@ onMounted(() => {
   // Deliberately not awaited: the page renders while the config loads.
   if (!store.config) void store.fetchConfig()
   void loadAdminConfig()
+  void envDefaults.load()
 })
+
+// Secret values typed here must not outlive the page.
+onBeforeUnmount(() => envDefaults.clear())
 
 // The store clamps, so the buttons can step past either end without checking —
 // they only need to disable themselves so the edge is visible.
@@ -321,6 +328,44 @@ const stepBtn =
           copied anyway — but copy on select and
           <kbd :class="kbd">Ctrl + Insert</kbd> keep the devtools out of it.
         </p>
+      </section>
+
+      <section class="mb-4 rounded-lg border border-slate-700 bg-slate-800/50 p-6">
+        <h2 class="mb-4 text-sm font-medium uppercase tracking-wide text-slate-400">
+          Environment defaults
+        </h2>
+
+        <form v-if="envDefaults.loaded" class="flex flex-col gap-4" @submit.prevent="envDefaults.save()">
+          <EnvTable
+            mode="defaults"
+            :rows="envDefaults.rows"
+            @update:rows="envDefaults.setRows($event)"
+          />
+
+          <p class="text-xs text-slate-500">
+            Defaults apply to new sessions only: they are copied into a session
+            when it is created, so later changes here do not touch existing
+            sessions. They apply to every host that supports environment
+            variables. Secret values are write-only here, but they are visible
+            inside the terminal (<code class="font-mono">env</code>,
+            <code class="font-mono">echo</code>) and in its scrollback.
+          </p>
+
+          <p v-if="envDefaults.saveError" class="text-sm text-rose-400">{{ envDefaults.saveError }}</p>
+
+          <div class="flex items-center gap-3">
+            <button
+              type="submit"
+              :disabled="envDefaults.saving"
+              class="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {{ envDefaults.saving ? 'Saving…' : 'Save' }}
+            </button>
+            <span v-if="envDefaults.saved" class="text-sm text-slate-500">Saved.</span>
+          </div>
+        </form>
+        <p v-else-if="envDefaults.loadError" class="text-sm text-rose-400">{{ envDefaults.loadError }}</p>
+        <p v-else class="text-sm text-slate-500">Loading…</p>
       </section>
 
       <section class="rounded-lg border border-slate-700 bg-slate-800/50 p-6">

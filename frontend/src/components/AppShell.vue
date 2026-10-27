@@ -2,6 +2,7 @@
 import { RouterView } from 'vue-router'
 import AppSidebar from '@/components/AppSidebar.vue'
 import BottomNav from '@/components/BottomNav.vue'
+import ToastHost from '@/components/ToastHost.vue'
 import { useSessionEvents } from '@/composables/useSessionEvents'
 import { useUiStore } from '@/stores/ui'
 import { hasFinePointer } from '@/utils/device'
@@ -55,5 +56,7 @@ const touchPrimary = !hasFinePointer(window)
 
     <!-- Bottom navigation on phones only, hidden while typing. -->
     <BottomNav v-if="touchPrimary && !ui.keyboardOpen" />
+
+    <ToastHost />
   </div>
 </template>

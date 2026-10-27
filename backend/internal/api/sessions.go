@@ -3,10 +3,12 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Andste82/sessile/backend/internal/envfile"
 	"github.com/Andste82/sessile/backend/internal/hosts"
 	"github.com/Andste82/sessile/backend/internal/session"
 	"github.com/Andste82/sessile/backend/internal/sshpty"
@@ -28,6 +30,98 @@ type createSessionBody struct {
 	Directory string `json:"directory"`
 	Shell     string `json:"shell"`
 	HostID    string `json:"hostId"`
+
+	// Env holds the entries the user added or overrode in the dialog; every
+	// one must carry a value. Defaults the user left alone travel as nothing
+	// - the server merges them in (envfile.Inherit), so the secret defaults
+	// never have to round-trip through the browser. RemoveDefaults names the
+	// defaults to drop for this session.
+	Env            []envEntryBody `json:"env"`
+	RemoveDefaults []string       `json:"removeDefaults"`
+	LoadDotenv     bool           `json:"loadDotenv"`
+}
+
+// envEntryBody is one environment entry in a request. Value is a pointer so
+// "omitted" (keep the stored value of a secret) differs from "".
+type envEntryBody struct {
+	Name   string  `json:"name"`
+	Value  *string `json:"value"`
+	Secret bool    `json:"secret"`
+}
+
+// patchEntries converts request entries for envfile.ApplyPatch.
+func patchEntries(in []envEntryBody) []envfile.PatchEntry {
+	out := make([]envfile.PatchEntry, 0, len(in))
+	for _, e := range in {
+		out = append(out, envfile.PatchEntry{Name: e.Name, Value: e.Value, Secret: e.Secret})
+	}
+	return out
+}
+
+// sessionWithWarnings is the create (201) and restart (200) response: the
+// session plus whatever the start had to say about a .env it could not use.
+// Warnings carry names and line numbers only, and are never stored - list,
+// get, update and event shapes do not have the field.
+type sessionWithWarnings struct {
+	session.JSON
+	Warnings []string `json:"warnings"`
+}
+
+func newSessionWithWarnings(info session.Info, warnings []string) sessionWithWarnings {
+	if warnings == nil {
+		warnings = []string{}
+	}
+	return sessionWithWarnings{JSON: session.ToJSON(info), Warnings: warnings}
+}
+
+// errEnvUnsupportedHost is the message for environment variables sent for a
+// host that cannot take them.
+const errEnvUnsupportedHost = "host does not support environment variables"
+
+// createEnvOptions turns the environment part of a create body into
+// session.CreateOptions, writing the 400 itself on failure. supportsEnv is
+// false only for an SSH host that cannot take variables: explicit entries or
+// loadDotenv are then refused, and the user's defaults are not inherited
+// (so a Windows host does not fail just because the user keeps defaults).
+func (s *Server) createEnvOptions(c *gin.Context, userID string, body createSessionBody, supportsEnv bool) (session.CreateOptions, bool) {
+	if !supportsEnv {
+		if len(body.Env) > 0 || body.LoadDotenv {
+			respondError(c, http.StatusBadRequest, CodeValidation, errEnvUnsupportedHost)
+			return session.CreateOptions{}, false
+		}
+		return session.CreateOptions{}, true
+	}
+
+	own := make([]envfile.Entry, 0, len(body.Env))
+	for _, e := range body.Env {
+		if e.Value == nil {
+			respondError(c, http.StatusBadRequest, CodeValidation,
+				"environment variable "+strconv.Quote(e.Name)+" needs a value")
+			return session.CreateOptions{}, false
+		}
+		own = append(own, envfile.Entry{Name: e.Name, Value: *e.Value, Secret: e.Secret})
+	}
+	if err := envfile.Validate(own); err != nil {
+		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
+		return session.CreateOptions{}, false
+	}
+
+	// The defaults are always the authenticated caller's own.
+	var defaults []envfile.Entry
+	if s.hosts != nil {
+		store, err := s.hosts.EnvFor(userID)
+		if err == nil {
+			defaults, err = store.Load()
+		}
+		if err != nil {
+			s.envStoreFailed(c, err)
+			return session.CreateOptions{}, false
+		}
+	}
+	return session.CreateOptions{
+		Env:    envfile.Inherit(defaults, own, body.RemoveDefaults),
+		DotEnv: body.LoadDotenv,
+	}, true
 }
 
 // maxRemotePathLen bounds a remote path an API caller supplies.
@@ -52,7 +146,7 @@ func validateSSHStartDir(host hosts.Host, dir string) string {
 	if len(dir) > maxRemotePathLen || strings.ContainsAny(dir, "\x00\n\r") || !strings.HasPrefix(dir, "/") {
 		return "start directory must be an absolute path"
 	}
-	if host.TargetOS == hosts.OSWindows || host.TerminalType == "cmd" || host.TerminalType == "powershell" {
+	if !host.SupportsEnv() {
 		return "start directory is not supported for Windows targets"
 	}
 	return ""
@@ -92,12 +186,16 @@ func (s *Server) createLocalSession(c *gin.Context, userID string, body createSe
 		respondError(c, http.StatusForbidden, CodeForbidden, "local-host sessions are disabled")
 		return
 	}
-	info, err := s.manager.CreateLocal(userID, body.Name, strings.TrimSpace(body.Group), body.Directory, body.Shell)
+	opts, ok := s.createEnvOptions(c, userID, body, true)
+	if !ok {
+		return
+	}
+	info, warnings, err := s.manager.CreateLocal(userID, body.Name, strings.TrimSpace(body.Group), body.Directory, body.Shell, opts)
 	if err != nil {
 		s.respondSessionError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, session.ToJSON(info))
+	c.JSON(http.StatusCreated, newSessionWithWarnings(info, warnings))
 }
 
 func (s *Server) createSSHSession(c *gin.Context, userID string, body createSessionBody) {
@@ -121,7 +219,12 @@ func (s *Server) createSSHSession(c *gin.Context, userID string, body createSess
 		return
 	}
 
-	info, err := s.manager.CreateSSH(userID, body.Name, strings.TrimSpace(body.Group), host.ID, host.Name, host.SSHTarget(), dir)
+	opts, ok := s.createEnvOptions(c, userID, body, host.SupportsEnv())
+	if !ok {
+		return
+	}
+
+	info, warnings, err := s.manager.CreateSSH(userID, body.Name, strings.TrimSpace(body.Group), host.ID, host.Name, host.SSHTarget(), dir, opts)
 	if err != nil {
 		if s.respondHostKeyError(c, err) {
 			return
@@ -129,7 +232,7 @@ func (s *Server) createSSHSession(c *gin.Context, userID string, body createSess
 		s.respondSessionError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, session.ToJSON(info))
+	c.JSON(http.StatusCreated, newSessionWithWarnings(info, warnings))
 }
 
 func (s *Server) getSession(c *gin.Context) {
@@ -156,9 +259,16 @@ func (s *Server) deleteSession(c *gin.Context) {
 // a present one always applies — the same distinction the host update body
 // draws for its secrets (§6). Without it there would be no way to clear a
 // group, since "" is the value that does it.
+//
+// Env is the FULL replacement list (nil = unchanged, [] = remove everything);
+// a secret entry without a value keeps its stored value, which is the only
+// way a secret survives an edit, since the API never returns it. Env changes
+// are refused unless the session is stopped.
 type updateBody struct {
-	Name  *string `json:"name"`
-	Group *string `json:"group"`
+	Name       *string         `json:"name"`
+	Group      *string         `json:"group"`
+	Env        *[]envEntryBody `json:"env"`
+	LoadDotenv *bool           `json:"loadDotenv"`
 }
 
 func (s *Server) updateSession(c *gin.Context) {
@@ -172,7 +282,15 @@ func (s *Server) updateSession(c *gin.Context) {
 		trimmed := strings.TrimSpace(*body.Group)
 		body.Group = &trimmed
 	}
-	info, err := s.manager.Update(c.Param("id"), userID, body.Name, body.Group)
+	var envUpdate *session.EnvUpdate
+	if body.Env != nil || body.LoadDotenv != nil {
+		envUpdate = &session.EnvUpdate{DotEnv: body.LoadDotenv}
+		if body.Env != nil {
+			entries := patchEntries(*body.Env)
+			envUpdate.Entries = &entries
+		}
+	}
+	info, err := s.manager.Update(c.Param("id"), userID, body.Name, body.Group, envUpdate)
 	if err != nil {
 		s.respondSessionError(c, err)
 		return
@@ -199,7 +317,7 @@ func (s *Server) restartSession(c *gin.Context) {
 		return
 	}
 
-	info, err := s.manager.Restart(id, userID)
+	info, warnings, err := s.manager.Restart(id, userID)
 	if err != nil {
 		if s.respondHostKeyError(c, err) {
 			return
@@ -207,7 +325,7 @@ func (s *Server) restartSession(c *gin.Context) {
 		s.respondSessionError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, session.ToJSON(info))
+	c.JSON(http.StatusOK, newSessionWithWarnings(info, warnings))
 }
 
 // respondSessionError maps domain errors to the unified error envelope.
@@ -220,11 +338,19 @@ func (s *Server) respondSessionError(c *gin.Context, err error) {
 	case errors.Is(err, session.ErrAlreadyRunning):
 		respondError(c, http.StatusConflict, CodeAlreadyRunning, err.Error())
 	case errors.Is(err, session.ErrStopped),
-		errors.Is(err, session.ErrRestarting):
+		errors.Is(err, session.ErrRestarting),
+		errors.Is(err, session.ErrEnvRunning):
 		respondError(c, http.StatusConflict, CodeConflict, err.Error())
 	case errors.Is(err, session.ErrInvalidGroup),
 		errors.Is(err, session.ErrInvalidName),
 		errors.Is(err, session.ErrInvalidShell):
+		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
+	case errors.Is(err, session.ErrInvalidEnv),
+		errors.Is(err, envfile.ErrInvalid),
+		errors.Is(err, session.ErrEnvUnsupported),
+		errors.Is(err, sshpty.ErrEnvUnsupported),
+		errors.Is(err, sshpty.ErrEnvTooLarge):
+		// Messages name variables and .env line numbers, never values.
 		respondError(c, http.StatusBadRequest, CodeValidation, err.Error())
 	case errors.Is(err, session.ErrShuttingDown):
 		respondError(c, http.StatusServiceUnavailable, CodeUnavailable, err.Error())
