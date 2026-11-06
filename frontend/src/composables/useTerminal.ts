@@ -1,5 +1,6 @@
 import { ref, shallowRef, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
+import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -201,6 +202,26 @@ export function useTerminal() {
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // OSC 52 (tmux/vim yanks on the remote end) -> the browser clipboard.
+  //
+  // Write-only on purpose: a read query (`ESC ] 52 ; c ; ?`) would let any
+  // process in the session pull whatever the user last copied, so readText
+  // answers with an empty string. Sessions are mirrored into every open tab;
+  // only the tab the user is looking at writes, or each mirror would race to
+  // overwrite the clipboard. A refused write (insecure context, no user
+  // gesture) is dropped — the terminal must not break over a clipboard.
+  const clipboardProvider: IClipboardProvider = {
+    readText: () => "",
+    async writeText(_selection, text) {
+      if (!document.hasFocus()) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        // Clipboard access denied; nothing sensible to do.
+      }
+    },
+  };
+
   // loadWebgl swaps the DOM renderer for the GPU one, which is what VS Code's
   // terminal runs on. It has to happen after open(): the addon needs the
   // element the terminal was opened into.
@@ -251,6 +272,7 @@ export function useTerminal() {
     fit = new FitAddon();
     t.loadAddon(fit);
     t.loadAddon(new WebLinksAddon());
+    t.loadAddon(new ClipboardAddon(clipboardProvider));
     // Wide-character widths (issue #27) — see utils/unicode.ts for why the
     // built-in table is not the one we want.
     applyUnicodeVersion(t);
