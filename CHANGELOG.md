@@ -12,32 +12,25 @@ README under [Upgrading](README.md#upgrading).
 
 ## Unreleased
 
-Upgrade / Breaking (environment variables, issue #123): this release adds
-schema migration step 2 (new `env_vars`, `env_secrets` and `dotenv` columns
-on `sessions`). **Releases older than this one refuse to open the migrated
-database**, so going back means restoring the pre-migration backup under
-`<data-dir>/backups/*-schema-v1/`. New plaintext secrets: `users/<id>/env.yml`
-(default environment variables), the sessions database and `backups/` all
-hold environment variable values, including ones marked secret, in plaintext.
-Protect the data directory accordingly.
+## 0.8.0 — 2026-11-13
 
 - Sessions can carry environment variables, set per session in the new
   session dialog (editable while the session is stopped) and as per-user
   defaults in Settings. A session can also load a `.env` file from its start
   directory on every start. Secret values are write-only: never returned by
-  the API, sent in events or logged.
+  the API, sent in events or logged (issue #123).
 - The file browser of an SSH session now opens in the session's start
   directory the first time it is shown, as it already did for local sessions
   (issue #97). It does not follow a `cd` in the terminal, and afterwards it
   stays where you left it.
-
-Downgrades: the guard below only exists from this release on. 0.7.0 and
-older do not read the schema version, so nothing stops them from starting
-on a database a newer release has migrated. Going back to 0.7.0 from this
-release only works if the database is still at schema version 1; with the
-environment variable migration (step 2, below) applied, going back past it
-means restoring a backup.
-
+- Creating an SSH session can browse the target host to pick a start
+  directory — a directory chooser in the new-session dialog, read-only and
+  scoped to that host, instead of typing the path by hand (issue #122).
+- Sessions and groups sort in natural name order (`session-2` before
+  `session-10`), not plain string order (issue #121).
+- The terminal answers OSC 52 clipboard writes, so a `tmux`/`vim` yank on the
+  remote end reaches the browser clipboard. Reads are always answered empty,
+  and only the focused tab writes.
 - `sessions.db` records its schema version (`PRAGMA user_version`), and
   every schema change is a numbered migration step that is applied
   completely or not at all. A release refuses to start on a database a
@@ -60,7 +53,25 @@ means restoring a backup.
 
 ### Upgrade / Breaking
 
-None.
+This release adds the versioned-migration machinery itself (schema step 1,
+the old idempotent column check) and, on top of it, schema step 2 for
+environment variables (new `env_vars`, `env_secrets` and `dotenv` columns on
+`sessions`). **Releases older than this one refuse to open a database this
+release has migrated.** 0.7.0 and older do not read the schema version at
+all, so nothing on their end stops them from starting on it anyway and
+writing into a schema they do not understand — the refusal only exists from
+this release on, and only protects going forward from here.
+
+Going back to 0.7.0 works only if the database is still at schema version 1
+(step 1 applied, step 2 not yet). Once step 2 has run, going back past this
+release means restoring the pre-migration backup under
+`<data-dir>/backups/*-schema-v1/` (taken automatically; the newest three are
+kept).
+
+New plaintext secrets: `users/<id>/env.yml` (default environment variables),
+the sessions database and every backup under `backups/` now hold environment
+variable values, including ones marked secret, in plaintext. Protect the
+data directory accordingly.
 
 ## 0.7.0 — 2026-09-14
 
